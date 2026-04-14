@@ -107,6 +107,36 @@ func (r *groupRepository) GetByIDLite(ctx context.Context, id int64) (*service.G
 	return groupEntityToService(m), nil
 }
 
+func (r *groupRepository) GetGroupCapacitySnapshotGroup(ctx context.Context, id int64) (*service.GroupCapacitySnapshotGroupRecord, error) {
+	if r == nil || r.sql == nil || id <= 0 {
+		return nil, nil
+	}
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT id, status
+		FROM groups
+		WHERE id = $1
+			AND deleted_at IS NULL
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	var record service.GroupCapacitySnapshotGroupRecord
+	if err := rows.Scan(&record.GroupID, &record.Status); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
 func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) error {
 	builder := r.client.Group.UpdateOneID(groupIn.ID).
 		SetName(groupIn.Name).

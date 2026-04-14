@@ -88,12 +88,20 @@ const (
 
 // ConcurrencyService manages concurrent request limiting for accounts and users
 type ConcurrencyService struct {
-	cache ConcurrencyCache
+	cache               ConcurrencyCache
+	groupRuntimeCounter *GroupCapacityRuntimeCounter
 }
 
 // NewConcurrencyService creates a new ConcurrencyService
 func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 	return &ConcurrencyService{cache: cache}
+}
+
+func (s *ConcurrencyService) SetGroupCapacityRuntimeCounter(counter *GroupCapacityRuntimeCounter) {
+	if s == nil {
+		return
+	}
+	s.groupRuntimeCounter = counter
 }
 
 // AcquireResult represents the result of acquiring a concurrency slot
@@ -147,9 +155,19 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	}
 
 	if acquired {
+		counterRelease := func() {}
+		if s.groupRuntimeCounter != nil {
+			release, counterErr := s.groupRuntimeCounter.TrackAcquire(ctx, accountID)
+			if counterErr != nil {
+				logger.LegacyPrintf("service.concurrency", "Warning: failed to track group runtime acquire for %d: %v", accountID, counterErr)
+			} else if release != nil {
+				counterRelease = release
+			}
+		}
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
+				defer counterRelease()
 				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {

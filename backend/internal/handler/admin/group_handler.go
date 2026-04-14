@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -15,11 +16,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type groupCapacitySummaryService interface {
+	GetAllGroupCapacity(ctx context.Context) ([]service.GroupCapacitySummary, error)
+}
+
 // GroupHandler handles admin group management
 type GroupHandler struct {
 	adminService         service.AdminService
 	dashboardService     *service.DashboardService
-	groupCapacityService *service.GroupCapacityService
+	groupCapacityService groupCapacitySummaryService
 }
 
 type optionalLimitField struct {
@@ -72,7 +77,7 @@ func (f optionalLimitField) ToServiceInput() *float64 {
 }
 
 // NewGroupHandler creates a new admin group handler
-func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService) *GroupHandler {
+func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService groupCapacitySummaryService) *GroupHandler {
 	return &GroupHandler{
 		adminService:         adminService,
 		dashboardService:     dashboardService,
