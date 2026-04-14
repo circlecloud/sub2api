@@ -217,4 +217,62 @@ describe('BulkEditAccountModal', () => {
     })
     expect(wrapper.text()).toContain('admin.accounts.openai.modelRestrictionDisabledByPassthrough')
   })
+
+  it('按当前分页大小分批执行批量更新', async () => {
+    const wrapper = mountModal({
+      accountIds: [1, 2, 3],
+      batchSize: 2,
+      selectedPlatforms: ['anthropic'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(2)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenNthCalledWith(1, [1, 2], {
+      credentials: {
+        model_mapping: {}
+      }
+    })
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenNthCalledWith(2, [3], {
+      credentials: {
+        model_mapping: {}
+      }
+    })
+  })
+
+  it('批量更新失败后会按当前批次自动重试一次', async () => {
+    vi.mocked(adminAPI.accounts.bulkUpdate)
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValueOnce({
+        success: 2,
+        failed: 0,
+        results: []
+      } as any)
+
+    const wrapper = mountModal({
+      accountIds: [1, 2],
+      batchSize: 2,
+      selectedPlatforms: ['anthropic'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(2)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenNthCalledWith(1, [1, 2], {
+      credentials: {
+        model_mapping: {}
+      }
+    })
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenNthCalledWith(2, [1, 2], {
+      credentials: {
+        model_mapping: {}
+      }
+    })
+  })
 })

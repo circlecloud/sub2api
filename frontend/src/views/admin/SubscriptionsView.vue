@@ -81,14 +81,6 @@
                 @change="applyFilters"
               />
             </div>
-            <div class="w-full sm:w-40">
-              <Select
-                v-model="filters.platform"
-                :options="platformFilterOptions"
-                :placeholder="t('admin.subscriptions.allPlatforms')"
-                @change="applyFilters"
-              />
-            </div>
           </div>
 
           <!-- Right: Actions -->
@@ -158,6 +150,25 @@
               :title="t('admin.subscriptions.guide.showGuide')"
             >
               <Icon name="questionCircle" size="md" />
+            </button>
+            <div class="hidden text-xs text-gray-500 md:block">
+              {{ t('admin.subscriptions.batchTargetCount', { count: pagination.total }) }}
+            </div>
+            <button
+              @click="openBulkSetExpiryModal"
+              :disabled="!canRunBatchActions"
+              class="btn btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Icon name="calendar" size="md" class="mr-2" />
+              {{ t('admin.subscriptions.bulkSetExpiry') }}
+            </button>
+            <button
+              @click="openBulkRevokeDialog"
+              :disabled="!canRunBatchActions"
+              class="btn btn-secondary text-red-600 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400 dark:hover:text-red-300"
+            >
+              <Icon name="trash" size="md" class="mr-2" />
+              {{ t('admin.subscriptions.bulkDeleteFiltered') }}
             </button>
             <button @click="showAssignModal = true" class="btn btn-primary">
               <Icon name="plus" size="md" class="mr-2" />
@@ -380,7 +391,7 @@
           <template #cell-actions="{ row }">
             <div class="flex items-center gap-1">
               <button
-                v-if="row.status === 'active' || row.status === 'expired'"
+                v-if="row.status === 'active' || row.status === 'expired' || row.status === 'suspended'"
                 @click="handleExtend(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
               >
@@ -388,7 +399,7 @@
                 <span class="text-xs">{{ t('admin.subscriptions.adjust') }}</span>
               </button>
               <button
-                v-if="row.status === 'active'"
+                v-if="row.status === 'active' || row.status === 'suspended'"
                 @click="handleResetQuota(row)"
                 :disabled="resettingQuota && resettingSubscription?.id === row.id"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-orange-50 hover:text-orange-600 dark:hover:bg-orange-900/20 dark:hover:text-orange-400 disabled:cursor-not-allowed disabled:opacity-50"
@@ -397,7 +408,7 @@
                 <span class="text-xs">{{ t('admin.subscriptions.resetQuota') }}</span>
               </button>
               <button
-                v-if="row.status === 'active'"
+                v-if="row.status === 'active' || row.status === 'expired' || row.status === 'suspended'"
                 @click="handleRevoke(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
               >
@@ -430,6 +441,52 @@
       />
       </template>
     </TablePageLayout>
+
+    <!-- Bulk Set Expiry Modal -->
+    <BaseDialog
+      :show="showBulkSetExpiryModal"
+      :title="t('admin.subscriptions.bulkSetExpiryTitle')"
+      width="normal"
+      @close="closeBulkSetExpiryModal"
+    >
+      <form
+        id="bulk-set-expiry-form"
+        @submit.prevent="handleBulkSetExpiry"
+        class="space-y-5"
+      >
+        <div class="rounded-lg bg-gray-50 p-4 text-sm text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+          <p class="font-medium text-gray-900 dark:text-white">
+            {{ t('admin.subscriptions.batchTargetCount', { count: pagination.total }) }}
+          </p>
+          <p class="mt-1">{{ t('admin.subscriptions.batchTargetHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.subscriptions.form.expiresAt') }}</label>
+          <input
+            v-model="bulkSetExpiryForm.expires_at_str"
+            type="datetime-local"
+            class="input"
+            required
+          />
+          <p class="input-hint">{{ t('admin.subscriptions.bulkSetExpiryHint') }}</p>
+        </div>
+      </form>
+      <template #footer>
+        <div class="flex justify-end gap-3">
+          <button @click="closeBulkSetExpiryModal" type="button" class="btn btn-secondary">
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="submit"
+            form="bulk-set-expiry-form"
+            :disabled="bulkSettingExpiry"
+            class="btn btn-primary"
+          >
+            {{ bulkSettingExpiry ? t('admin.subscriptions.bulkSettingExpiry') : t('admin.subscriptions.bulkSetExpiryConfirm') }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
 
     <!-- Assign Subscription Modal -->
     <BaseDialog
@@ -645,6 +702,18 @@
       @cancel="showRevokeDialog = false"
     />
 
+    <!-- Bulk Revoke Confirmation Dialog -->
+    <ConfirmDialog
+      :show="showBulkRevokeDialog"
+      :title="t('admin.subscriptions.bulkRevokeTitle')"
+      :message="t('admin.subscriptions.bulkRevokeConfirm', { count: pagination.total })"
+      :confirm-text="t('admin.subscriptions.bulkDeleteFiltered')"
+      :cancel-text="t('common.cancel')"
+      :danger="true"
+      @confirm="confirmBulkRevoke"
+      @cancel="showBulkRevokeDialog = false"
+    />
+
     <!-- Reset Quota Confirmation Dialog -->
     <ConfirmDialog
       :show="showResetQuotaConfirm"
@@ -745,7 +814,7 @@ import { adminAPI } from '@/api/admin'
 import type { UserSubscription, Group, GroupPlatform, SubscriptionType } from '@/types'
 import type { SimpleUser } from '@/api/admin/usage'
 import type { Column } from '@/components/common/types'
-import { formatDateOnly } from '@/utils/format'
+import { formatDateOnly, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -892,7 +961,7 @@ const statusOptions = computed(() => [
   { value: '', label: t('admin.subscriptions.allStatus') },
   { value: 'active', label: t('admin.subscriptions.status.active') },
   { value: 'expired', label: t('admin.subscriptions.status.expired') },
-  { value: 'revoked', label: t('admin.subscriptions.status.revoked') }
+  { value: 'suspended', label: t('admin.subscriptions.status.suspended') }
 ])
 
 const subscriptions = ref<UserSubscription[]>([])
@@ -917,9 +986,8 @@ const selectedUser = ref<SimpleUser | null>(null)
 let userSearchTimeout: ReturnType<typeof setTimeout> | null = null
 
 const filters = reactive({
-  status: 'active',
+  status: 'active' as '' | 'active' | 'expired' | 'suspended',
   group_id: '',
-  platform: '',
   user_id: null as number | null
 })
 
@@ -937,10 +1005,14 @@ const pagination = reactive({
 })
 
 const showAssignModal = ref(false)
+const showBulkSetExpiryModal = ref(false)
+const showBulkRevokeDialog = ref(false)
 const showExtendModal = ref(false)
 const showRevokeDialog = ref(false)
 const showResetQuotaConfirm = ref(false)
 const submitting = ref(false)
+const bulkSettingExpiry = ref(false)
+const bulkRevoking = ref(false)
 const resettingSubscription = ref<UserSubscription | null>(null)
 const resettingQuota = ref(false)
 const extendingSubscription = ref<UserSubscription | null>(null)
@@ -952,22 +1024,20 @@ const assignForm = reactive({
   validity_days: 30
 })
 
+const bulkSetExpiryForm = reactive({
+  expires_at_str: ''
+})
+
 const extendForm = reactive({
   days: 30
 })
 
-// Group options for filter (all groups)
+// Group options for filter (subscription groups only)
 const groupOptions = computed(() => [
   { value: '', label: t('admin.subscriptions.allGroups') },
-  ...groups.value.map((g) => ({ value: g.id.toString(), label: g.name }))
-])
-
-const platformFilterOptions = computed(() => [
-  { value: '', label: t('admin.subscriptions.allPlatforms') },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'gemini', label: 'Gemini' },
-  { value: 'antigravity', label: 'Antigravity' }
+  ...groups.value
+    .filter((g) => g.subscription_type === 'subscription')
+    .map((g) => ({ value: g.id.toString(), label: g.name }))
 ])
 
 // Group options for assign (only subscription type groups)
@@ -983,6 +1053,40 @@ const subscriptionGroupOptions = computed(() =>
       rate: g.rate_multiplier
     }))
 )
+
+const getDefaultBulkExpiryInput = () =>
+  formatDateTimeLocalInput(Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60)
+
+const resetBulkSetExpiryForm = () => {
+  bulkSetExpiryForm.expires_at_str = getDefaultBulkExpiryInput()
+}
+
+const buildBatchFilterPayload = () => ({
+  status: filters.status || undefined,
+  group_id: filters.group_id ? Number.parseInt(filters.group_id, 10) : undefined,
+  user_id: filters.user_id || undefined,
+})
+
+const hasBatchFilters = computed(() => {
+  const payload = buildBatchFilterPayload()
+  return Boolean(payload.status || payload.group_id || payload.user_id)
+})
+
+const canRunBatchActions = computed(() =>
+  hasBatchFilters.value && pagination.total > 0 && !loading.value
+)
+
+const ensureBatchActionAvailable = () => {
+  if (!hasBatchFilters.value) {
+    appStore.showError(t('admin.subscriptions.batchFilterRequired'))
+    return false
+  }
+  if (pagination.total === 0) {
+    appStore.showError(t('admin.subscriptions.batchNoResults'))
+    return false
+  }
+  return true
+}
 
 const applyFilters = () => {
   pagination.page = 1
@@ -1003,10 +1107,7 @@ const loadSubscriptions = async () => {
       pagination.page,
       pagination.page_size,
       {
-        status: (filters.status as any) || undefined,
-        group_id: filters.group_id ? parseInt(filters.group_id) : undefined,
-        platform: filters.platform || undefined,
-        user_id: filters.user_id || undefined,
+        ...buildBatchFilterPayload(),
         sort_by: sortState.sort_by,
         sort_order: sortState.sort_order
       },
@@ -1156,6 +1257,22 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
   loadSubscriptions()
 }
 
+const openBulkSetExpiryModal = () => {
+  if (!ensureBatchActionAvailable()) return
+  resetBulkSetExpiryForm()
+  showBulkSetExpiryModal.value = true
+}
+
+const openBulkRevokeDialog = () => {
+  if (!ensureBatchActionAvailable()) return
+  showBulkRevokeDialog.value = true
+}
+
+const closeBulkSetExpiryModal = () => {
+  showBulkSetExpiryModal.value = false
+  resetBulkSetExpiryForm()
+}
+
 const closeAssignModal = () => {
   showAssignModal.value = false
   assignForm.user_id = null
@@ -1166,6 +1283,58 @@ const closeAssignModal = () => {
   userSearchKeyword.value = ''
   userSearchResults.value = []
   showUserDropdown.value = false
+}
+
+const handleBulkSetExpiry = async () => {
+  if (!ensureBatchActionAvailable()) return
+
+  const expiresAt = parseDateTimeLocalInput(bulkSetExpiryForm.expires_at_str)
+  if (!expiresAt) {
+    appStore.showError(t('admin.subscriptions.bulkSetExpiryDateRequired'))
+    return
+  }
+
+  bulkSettingExpiry.value = true
+  try {
+    const result = await adminAPI.subscriptions.bulkSetExpiry({
+      ...buildBatchFilterPayload(),
+      expires_at: expiresAt
+    })
+    appStore.showSuccess(
+      t('admin.subscriptions.bulkSetExpirySuccess', { count: result.updated_count })
+    )
+    closeBulkSetExpiryModal()
+    await loadSubscriptions()
+  } catch (error: any) {
+    appStore.showError(
+      error.response?.data?.detail || t('admin.subscriptions.failedToBulkSetExpiry')
+    )
+    console.error('Error bulk setting subscription expiry:', error)
+  } finally {
+    bulkSettingExpiry.value = false
+  }
+}
+
+const confirmBulkRevoke = async () => {
+  if (!ensureBatchActionAvailable()) return
+  if (bulkRevoking.value) return
+
+  bulkRevoking.value = true
+  try {
+    const result = await adminAPI.subscriptions.bulkRevoke(buildBatchFilterPayload())
+    appStore.showSuccess(
+      t('admin.subscriptions.bulkRevokeSuccess', { count: result.deleted_count })
+    )
+    showBulkRevokeDialog.value = false
+    await loadSubscriptions()
+  } catch (error: any) {
+    appStore.showError(
+      error.response?.data?.detail || t('admin.subscriptions.failedToBulkRevoke')
+    )
+    console.error('Error revoking filtered subscriptions:', error)
+  } finally {
+    bulkRevoking.value = false
+  }
 }
 
 const handleAssignSubscription = async () => {

@@ -454,10 +454,74 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *accountRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Account, *pagination.PaginationResult, error) {
-	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "")
+	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "", "", nil, nil, "id", "desc")
 }
 
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
+func buildAccountOrderOptions(sortBy, sortOrder string) []dbaccount.OrderOption {
+	fieldMap := map[string]string{
+		"id":              dbaccount.FieldID,
+		"name":            dbaccount.FieldName,
+		"status":          dbaccount.FieldStatus,
+		"schedulable":     dbaccount.FieldSchedulable,
+		"priority":        dbaccount.FieldPriority,
+		"rate_multiplier": dbaccount.FieldRateMultiplier,
+		"last_used_at":    dbaccount.FieldLastUsedAt,
+		"expires_at":      dbaccount.FieldExpiresAt,
+		"created_at":      dbaccount.FieldCreatedAt,
+	}
+
+	parseList := func(raw string) []string {
+		parts := strings.Split(raw, ",")
+		result := make([]string, 0, len(parts))
+		for _, part := range parts {
+			trimmed := strings.ToLower(strings.TrimSpace(part))
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		return result
+	}
+
+	sortFields := parseList(sortBy)
+	sortOrders := parseList(sortOrder)
+	options := make([]dbaccount.OrderOption, 0, len(sortFields)+1)
+	seen := make(map[string]struct{}, len(sortFields))
+	idIncluded := false
+
+	for index, sortField := range sortFields {
+		field, ok := fieldMap[sortField]
+		if !ok {
+			continue
+		}
+		if _, exists := seen[sortField]; exists {
+			continue
+		}
+		seen[sortField] = struct{}{}
+		if sortField == "id" {
+			idIncluded = true
+		}
+
+		order := "asc"
+		if index < len(sortOrders) && sortOrders[index] == "desc" {
+			order = "desc"
+		}
+		if order == "desc" {
+			options = append(options, dbent.Desc(field))
+		} else {
+			options = append(options, dbent.Asc(field))
+		}
+	}
+
+	if len(options) == 0 {
+		return []dbaccount.OrderOption{dbent.Desc(dbaccount.FieldID)}
+	}
+	if !idIncluded {
+		options = append(options, dbent.Desc(dbaccount.FieldID))
+	}
+	return options
+}
+
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.client.Account.Query()
 
 	if platform != "" {
@@ -467,35 +531,19 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		q = q.Where(dbaccount.TypeEQ(accountType))
 	}
 	if status != "" {
+		now := time.Now()
 		switch status {
 		case service.StatusActive:
 			q = q.Where(
-				dbaccount.StatusEQ(status),
+				dbaccount.StatusEQ(service.StatusActive),
 				dbaccount.SchedulableEQ(true),
-				dbaccount.Or(
-					dbaccount.RateLimitResetAtIsNil(),
-					dbaccount.RateLimitResetAtLTE(time.Now()),
-				),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.Or(
-						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
-					))
-				}),
+				tempUnschedulablePredicate(),
+				notExpiredPredicate(now),
+				dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+				dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
 			)
 		case "rate_limited":
-			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
-				dbaccount.RateLimitResetAtGT(time.Now()),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.Or(
-						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
-					))
-				}),
-			)
+			q = q.Where(dbaccount.RateLimitResetAtGT(now))
 		case "temp_unschedulable":
 			q = q.Where(
 				dbaccount.StatusEQ(service.StatusActive),
@@ -549,20 +597,32 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			}
 		}))
 	}
+	if lastUsedFilter != "" {
+		switch lastUsedFilter {
+		case "unused":
+			q = q.Where(dbaccount.LastUsedAtIsNil())
+		case "range":
+			predicates := []dbpredicate.Account{dbaccount.LastUsedAtNotNil()}
+			if lastUsedStart != nil {
+				predicates = append(predicates, dbaccount.LastUsedAtGTE(*lastUsedStart))
+			}
+			if lastUsedEnd != nil {
+				predicates = append(predicates, dbaccount.LastUsedAtLT(*lastUsedEnd))
+			}
+			q = q.Where(predicates...)
+		}
+	}
 
 	total, err := q.Count(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	accountsQuery := q.
+	accounts, err := q.
 		Offset(params.Offset()).
-		Limit(params.Limit())
-	for _, order := range accountListOrder(params) {
-		accountsQuery = accountsQuery.Order(order)
-	}
-
-	accounts, err := accountsQuery.All(ctx)
+		Limit(params.Limit()).
+		Order(buildAccountOrderOptions(sortBy, sortOrder)...).
+		All(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -574,6 +634,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	return outAccounts, paginationResultFromTotal(int64(total), params), nil
 }
 
+//nolint:unused // 保留旧排序构造逻辑，避免本次提交引入更大结构性改动
 func accountListOrder(params pagination.PaginationParams) []func(*entsql.Selector) {
 	sortBy := strings.ToLower(strings.TrimSpace(params.SortBy))
 	sortOrder := params.NormalizedSortOrder(pagination.SortOrderAsc)

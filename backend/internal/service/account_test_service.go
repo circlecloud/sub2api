@@ -59,6 +59,7 @@ type AccountTestService struct {
 	accountRepo               AccountRepository
 	geminiTokenProvider       *GeminiTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
+	rateLimitService          *RateLimitService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	tlsFPProfileService       *TLSFingerprintProfileService
@@ -69,6 +70,7 @@ func NewAccountTestService(
 	accountRepo AccountRepository,
 	geminiTokenProvider *GeminiTokenProvider,
 	antigravityGatewayService *AntigravityGatewayService,
+	rateLimitService *RateLimitService,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
@@ -77,10 +79,42 @@ func NewAccountTestService(
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
+		rateLimitService:          rateLimitService,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,
 	}
+}
+
+//nolint:unused // 预留给后续测试链路复用，先保持本提交最小差异
+func (s *AccountTestService) handleOpenAITestFailure(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) {
+	if account == nil {
+		return
+	}
+
+	if s.rateLimitService != nil {
+		s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, responseBody)
+		if statusCode == http.StatusTooManyRequests {
+			if resetAt := s.rateLimitService.calculateOpenAI429ResetTime(headers); resetAt != nil {
+				account.RateLimitResetAt = resetAt
+			}
+		}
+		return
+	}
+
+	if statusCode == http.StatusTooManyRequests && s.accountRepo != nil {
+		if resetAt := (&RateLimitService{}).calculateOpenAI429ResetTime(headers); resetAt != nil {
+			_ = s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt)
+			account.RateLimitResetAt = resetAt
+		}
+	}
+}
+
+func (s *AccountTestService) TouchLastUsed(ctx context.Context, accountID int64) error {
+	if s == nil || s.accountRepo == nil || accountID <= 0 {
+		return nil
+	}
+	return s.accountRepo.UpdateLastUsed(ctx, accountID)
 }
 
 func (s *AccountTestService) validateUpstreamBaseURL(raw string) (string, error) {

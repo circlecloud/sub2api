@@ -9,8 +9,13 @@ import type {
   SubscriptionProgress,
   AssignSubscriptionRequest,
   BulkAssignSubscriptionRequest,
-  ExtendSubscriptionRequest,
-  PaginatedResponse
+  BulkSetSubscriptionExpiryRequest,
+  BulkSetSubscriptionExpiryResponse,
+  BulkRevokeSubscriptionsRequest,
+  BulkRevokeSubscriptionsResponse,
+  SubscriptionStatus,
+  PaginatedResponse,
+  ExtendSubscriptionRequest
 } from '@/types'
 
 /**
@@ -24,7 +29,7 @@ export async function list(
   page: number = 1,
   pageSize: number = 20,
   filters?: {
-    status?: 'active' | 'expired' | 'revoked'
+    status?: SubscriptionStatus
     user_id?: number
     group_id?: number
     platform?: string
@@ -89,6 +94,36 @@ export async function bulkAssign(
 ): Promise<UserSubscription[]> {
   const { data } = await apiClient.post<UserSubscription[]>(
     '/admin/subscriptions/bulk-assign',
+    request
+  )
+  return data
+}
+
+/**
+ * Set a unified expiry time for all subscriptions in a group
+ * @param request - Target group and new expiry timestamp
+ * @returns Updated count and target expiry metadata
+ */
+export async function bulkSetExpiry(
+  request: BulkSetSubscriptionExpiryRequest
+): Promise<BulkSetSubscriptionExpiryResponse> {
+  const { data } = await apiClient.post<BulkSetSubscriptionExpiryResponse>(
+    '/admin/subscriptions/bulk-set-expiry',
+    request
+  )
+  return data
+}
+
+/**
+ * Revoke all filtered subscriptions
+ * @param request - Current filter payload
+ * @returns Number of deleted subscriptions
+ */
+export async function bulkRevoke(
+  request: BulkRevokeSubscriptionsRequest
+): Promise<BulkRevokeSubscriptionsResponse> {
+  const { data } = await apiClient.post<BulkRevokeSubscriptionsResponse>(
+    '/admin/subscriptions/bulk-revoke',
     request
   )
   return data
@@ -186,6 +221,8 @@ export const subscriptionsAPI = {
   getProgress,
   assign,
   bulkAssign,
+  bulkSetExpiry,
+  bulkRevoke,
   extend,
   revoke,
   resetQuota,

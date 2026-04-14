@@ -127,6 +127,9 @@
           color="emerald"
         />
       </div>
+      <div v-else-if="usageInfo?.error" class="text-xs text-amber-600 dark:text-amber-400 truncate max-w-[200px]" :title="usageInfo.error">
+        {{ usageInfo.error }}
+      </div>
       <div v-else-if="loading" class="space-y-1.5">
         <div class="flex items-center gap-1">
           <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
@@ -1035,7 +1038,7 @@ const attachVisibilityObserver = () => {
 const loadActiveUsage = async () => {
   activeQueryLoading.value = true
   try {
-    usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active')
+    usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active', { force: true })
   } catch (e: any) {
     console.error('Failed to load active usage:', e)
   } finally {

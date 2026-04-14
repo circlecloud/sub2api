@@ -39,7 +39,10 @@ export async function list(
     privacy_mode?: string
     lite?: string
     sort_by?: string
-    sort_order?: 'asc' | 'desc'
+    sort_order?: string
+    last_used_filter?: string
+    last_used_start_date?: string
+    last_used_end_date?: string
   },
   options?: {
     signal?: AbortSignal
@@ -74,7 +77,10 @@ export async function listWithEtag(
     privacy_mode?: string
     lite?: string
     sort_by?: string
-    sort_order?: 'asc' | 'desc'
+    sort_order?: string
+    last_used_filter?: string
+    last_used_start_date?: string
+    last_used_end_date?: string
   },
   options?: {
     signal?: AbortSignal
@@ -230,9 +236,23 @@ export async function clearError(id: number): Promise<Account> {
  * @param id - Account ID
  * @returns Account usage info
  */
-export async function getUsage(id: number, source?: 'passive' | 'active'): Promise<AccountUsageInfo> {
+export async function getUsage(
+  id: number,
+  source?: 'passive' | 'active',
+  options?: {
+    force?: boolean
+  }
+): Promise<AccountUsageInfo> {
+  const params: Record<string, string | boolean> = {}
+  if (source) {
+    params.source = source
+  }
+  if (options?.force) {
+    params.force = true
+  }
+
   const { data } = await apiClient.get<AccountUsageInfo>(`/admin/accounts/${id}/usage`, {
-    params: source ? { source } : undefined
+    params: Object.keys(params).length > 0 ? params : undefined
   })
   return data
 }
@@ -508,7 +528,7 @@ export async function exportData(options?: {
     privacy_mode?: string
     search?: string
     sort_by?: string
-    sort_order?: 'asc' | 'desc'
+    sort_order?: string
   }
   includeProxies?: boolean
 }): Promise<AdminDataPayload> {
@@ -627,6 +647,61 @@ export async function setPrivacy(id: number): Promise<Account> {
   return data
 }
 
+export interface OpenAIPublicAddLinkAccountDefaults {
+  proxy_id?: number | null
+  concurrency?: number
+  load_factor?: number | null
+  priority?: number
+  rate_multiplier?: number
+  expires_at?: number | null
+  auto_pause_on_expired?: boolean
+  credentials?: Record<string, unknown>
+  extra?: Record<string, unknown>
+}
+
+export interface OpenAIPublicAddLink {
+  token: string
+  name: string
+  group_ids: number[]
+  account_defaults?: OpenAIPublicAddLinkAccountDefaults | null
+  url: string
+  created_at: string
+  updated_at: string
+}
+
+export async function listOpenAIPublicAddLinks(): Promise<OpenAIPublicAddLink[]> {
+  const { data } = await apiClient.get<OpenAIPublicAddLink[]>('/admin/openai/public-links')
+  return data
+}
+
+export async function createOpenAIPublicAddLink(payload: {
+  name?: string
+  group_ids: number[]
+  account_defaults?: OpenAIPublicAddLinkAccountDefaults
+}): Promise<OpenAIPublicAddLink> {
+  const { data } = await apiClient.post<OpenAIPublicAddLink>('/admin/openai/public-links', payload)
+  return data
+}
+
+export async function updateOpenAIPublicAddLink(token: string, payload: {
+  name?: string
+  group_ids: number[]
+  account_defaults?: OpenAIPublicAddLinkAccountDefaults
+}): Promise<OpenAIPublicAddLink> {
+  const { data } = await apiClient.put<OpenAIPublicAddLink>(`/admin/openai/public-links/${token}`, payload)
+  return data
+}
+
+export async function rotateOpenAIPublicAddLink(token: string): Promise<OpenAIPublicAddLink> {
+  const { data } = await apiClient.post<OpenAIPublicAddLink>(`/admin/openai/public-links/${token}/rotate`)
+  return data
+}
+
+export async function deleteOpenAIPublicAddLink(token: string): Promise<{ message: string }> {
+  const { data } = await apiClient.delete<{ message: string }>(`/admin/openai/public-links/${token}`)
+  return data
+}
+
 export const accountsAPI = {
   list,
   listWithEtag,
@@ -663,7 +738,12 @@ export const accountsAPI = {
   getAntigravityDefaultModelMapping,
   batchClearError,
   batchRefresh,
-  setPrivacy
+  setPrivacy,
+  listOpenAIPublicAddLinks,
+  createOpenAIPublicAddLink,
+  updateOpenAIPublicAddLink,
+  rotateOpenAIPublicAddLink,
+  deleteOpenAIPublicAddLink
 }
 
 export default accountsAPI

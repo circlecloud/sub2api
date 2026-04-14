@@ -86,6 +86,17 @@ func RegisterAuthRoutes(
 		settings.GET("/public", h.Setting.GetPublicSettings)
 	}
 
+	if h.Admin != nil && h.Admin.OpenAIOAuth != nil {
+		openaiPublic := v1.Group("/openai/public-links")
+		{
+			openaiPublic.GET("/:token/groups", h.Admin.OpenAIOAuth.GetPublicAddLinkGroups)
+			openaiPublic.POST("/:token/generate-auth-url", h.Admin.OpenAIOAuth.GeneratePublicAddLinkAuthURL)
+			openaiPublic.POST("/:token/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromPublicAddLink)
+			openaiPublic.POST("/:token/create-from-refresh-token", h.Admin.OpenAIOAuth.CreateAccountFromPublicRefreshToken)
+			openaiPublic.POST("/:token/create-from-credentials", h.Admin.OpenAIOAuth.CreateAccountFromPublicCredentials)
+		}
+	}
+
 	// 需要认证的当前用户信息
 	authenticated := v1.Group("")
 	authenticated.Use(gin.HandlerFunc(jwtAuth))

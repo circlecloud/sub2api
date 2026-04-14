@@ -118,8 +118,55 @@
               </div>
             </template>
             <template #beforeCreate>
+              <div class="relative" ref="bulkActionDropdownRef">
+                <button
+                  @click="toggleBulkActionDropdown"
+                  :disabled="bulkActionMenuDisabled"
+                  class="btn btn-secondary"
+                >
+                  <span>{{ bulkActionMenuLabel }}</span>
+                  <Icon name="chevronDown" size="sm" class="ml-1.5" />
+                </button>
+                <transition name="dropdown">
+                  <div
+                    v-if="showBulkActionDropdown"
+                    class="dropdown right-0 mt-2 w-48"
+                  >
+                    <button
+                      @click="handleBulkActionMenuEdit"
+                      class="dropdown-item w-full justify-between text-left"
+                    >
+                      <span class="flex items-center gap-2">
+                        <Icon name="edit" size="sm" />
+                        {{ t('admin.accounts.bulkActions.editAccount') }}
+                      </span>
+                    </button>
+                    <button
+                      @click="handleBulkActionMenuTest"
+                      class="dropdown-item w-full justify-between text-left"
+                    >
+                      <span class="flex items-center gap-2">
+                        <Icon name="play" size="sm" />
+                        {{ t('admin.accounts.bulkActions.testAccount') }}
+                      </span>
+                    </button>
+                    <button
+                      @click="handleBulkActionMenuRefreshUsage"
+                      class="dropdown-item w-full justify-between text-left"
+                    >
+                      <span class="flex items-center gap-2">
+                        <Icon name="refresh" size="sm" />
+                        {{ t('admin.accounts.bulkActions.refreshUsage') }}
+                      </span>
+                    </button>
+                  </div>
+                </transition>
+              </div>
               <button @click="showImportData = true" class="btn btn-secondary">
                 {{ t('admin.accounts.dataImport') }}
+              </button>
+              <button @click="showOpenAIPublicLinks = true" class="btn btn-secondary">
+                {{ t('admin.accounts.publicAddLinks.title') }}
               </button>
               <button @click="openExportDataDialog" class="btn btn-secondary">
                 {{ selIds.length ? t('admin.accounts.dataExportSelected') : t('admin.accounts.dataExport') }}
@@ -139,9 +186,144 @@
             {{ t('admin.accounts.listPendingSyncAction') }}
           </button>
         </div>
+        <div
+          v-if="preparingFilteredBulkEdit"
+          class="mt-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-3 dark:border-primary-700/40 dark:bg-primary-900/20"
+        >
+          <div class="mb-2 flex items-center justify-between gap-3 text-sm text-primary-800 dark:text-primary-200">
+            <span>{{ bulkEditPreparationStatusText }}</span>
+            <span class="font-medium">{{ bulkEditPreparationProgressPercent }}%</span>
+          </div>
+          <div
+            class="h-2 overflow-hidden rounded-full bg-primary-100 dark:bg-primary-900/40"
+            role="progressbar"
+            :aria-valuenow="bulkEditPreparationProgressPercent"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="bulkEditPreparationStatusText"
+          >
+            <div
+              class="h-full rounded-full bg-primary-500 transition-all duration-300 ease-out dark:bg-primary-400"
+              :style="{ width: `${bulkEditPreparationProgressPercent}%` }"
+            />
+          </div>
+        </div>
+        <div
+          v-if="preparingFilteredBatchTest"
+          class="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 dark:border-emerald-700/40 dark:bg-emerald-900/20"
+        >
+          <div class="mb-2 flex items-center justify-between gap-3 text-sm text-emerald-800 dark:text-emerald-200">
+            <span>{{ filteredBatchTestPreparationStatusText }}</span>
+            <span class="font-medium">{{ filteredBatchTestPreparationProgressPercent }}%</span>
+          </div>
+          <div
+            class="h-2 overflow-hidden rounded-full bg-emerald-100 dark:bg-emerald-900/40"
+            role="progressbar"
+            :aria-valuenow="filteredBatchTestPreparationProgressPercent"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="filteredBatchTestPreparationStatusText"
+          >
+            <div
+              class="h-full rounded-full bg-emerald-500 transition-all duration-300 ease-out dark:bg-emerald-400"
+              :style="{ width: `${filteredBatchTestPreparationProgressPercent}%` }"
+            />
+          </div>
+        </div>
+        <div
+          v-if="preparingFilteredUsageRefresh"
+          class="mt-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-3 dark:border-cyan-700/40 dark:bg-cyan-900/20"
+        >
+          <div class="mb-2 flex items-center justify-between gap-3 text-sm text-cyan-800 dark:text-cyan-200">
+            <span>{{ filteredUsageRefreshPreparationStatusText }}</span>
+            <span class="font-medium">{{ filteredUsageRefreshPreparationProgressPercent }}%</span>
+          </div>
+          <div
+            class="h-2 overflow-hidden rounded-full bg-cyan-100 dark:bg-cyan-900/40"
+            role="progressbar"
+            :aria-valuenow="filteredUsageRefreshPreparationProgressPercent"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="filteredUsageRefreshPreparationStatusText"
+          >
+            <div
+              class="h-full rounded-full bg-cyan-500 transition-all duration-300 ease-out dark:bg-cyan-400"
+              :style="{ width: `${filteredUsageRefreshPreparationProgressPercent}%` }"
+            />
+          </div>
+        </div>
+        <div
+          v-if="bulkRefreshingTokens"
+          class="mt-2 rounded-lg border border-purple-200 bg-purple-50 px-3 py-3 dark:border-purple-700/40 dark:bg-purple-900/20"
+        >
+          <div class="mb-2 flex items-center justify-between gap-3 text-sm text-purple-800 dark:text-purple-200">
+            <span>{{ bulkRefreshTokenStatusText }}</span>
+            <span class="font-medium">{{ bulkRefreshTokenProgressPercent }}%</span>
+          </div>
+          <div
+            class="h-2 overflow-hidden rounded-full bg-purple-100 dark:bg-purple-900/40"
+            role="progressbar"
+            :aria-valuenow="bulkRefreshTokenProgressPercent"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="bulkRefreshTokenStatusText"
+          >
+            <div
+              class="h-full rounded-full bg-purple-500 transition-all duration-300 ease-out dark:bg-purple-400"
+              :style="{ width: `${bulkRefreshTokenProgressPercent}%` }"
+            />
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-purple-700 dark:text-purple-300">
+            <span>{{ t('admin.accounts.bulkActions.progressSuccess', { count: bulkRefreshSuccessCount }) }}</span>
+            <span>{{ t('admin.accounts.bulkActions.progressFailed', { count: bulkRefreshFailedCount }) }}</span>
+          </div>
+        </div>
+        <div
+          v-if="bulkRefreshingUsageWindows"
+          class="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-3 dark:border-sky-700/40 dark:bg-sky-900/20"
+        >
+          <div class="mb-2 flex items-center justify-between gap-3 text-sm text-sky-800 dark:text-sky-200">
+            <span>{{ bulkRefreshUsageWindowStatusText }}</span>
+            <span class="font-medium">{{ bulkRefreshUsageWindowProgressPercent }}%</span>
+          </div>
+          <div
+            class="h-2 overflow-hidden rounded-full bg-sky-100 dark:bg-sky-900/40"
+            role="progressbar"
+            :aria-valuenow="bulkRefreshUsageWindowProgressPercent"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="bulkRefreshUsageWindowStatusText"
+          >
+            <div
+              class="h-full rounded-full bg-sky-500 transition-all duration-300 ease-out dark:bg-sky-400"
+              :style="{ width: `${bulkRefreshUsageWindowProgressPercent}%` }"
+            />
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-sky-700 dark:text-sky-300">
+            <span>{{ t('admin.accounts.bulkActions.progressSuccess', { count: bulkRefreshUsageWindowSuccessCount }) }}</span>
+            <span>{{ t('admin.accounts.bulkActions.progressFailed', { count: bulkRefreshUsageWindowFailedCount }) }}</span>
+          </div>
+        </div>
       </template>
       <template #table>
-        <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
+        <AccountBulkActionsBar
+          :selected-ids="selIds"
+          :refreshing-token="bulkRefreshingTokens"
+          :testing-accounts="batchTestingAccounts"
+          :refreshing-usage-window="bulkRefreshingUsageWindows"
+          :refresh-usage-window-label="bulkRefreshUsageWindowActionLabel"
+          :preparing-edit="preparingFilteredBulkEdit && bulkEditPreparationMode === 'selected'"
+          :edit-label="bulkEditSelectedActionLabel"
+          @delete="handleBulkDelete"
+          @reset-status="handleBulkResetStatus"
+          @refresh-token="handleBulkRefreshToken"
+          @refresh-usage-window="handleBulkRefreshUsageWindow"
+          @test="openBatchTestModal"
+          @edit="openSelectedBulkEdit"
+          @clear="clearSelection"
+          @select-page="selectPage"
+          @toggle-schedulable="handleBulkToggleSchedulable"
+        />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
           ref="dataTableRef"
@@ -149,13 +331,11 @@
           :data="accounts"
           :loading="loading"
           row-key="id"
-          :server-side-sort="true"
-          @sort="handleSort"
-          default-sort-key="name"
-          default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
-          :estimate-row-height="72"
-          :overscan="5"
+          :default-sorts="ACCOUNT_DEFAULT_SORTS"
+          server-side-sort
+          multi-sort
+          @sort-state-change="handleSortStateChange"
         >
           <template #header-select>
             <input
@@ -168,6 +348,9 @@
           </template>
           <template #cell-select="{ row }">
             <input type="checkbox" :checked="isSelected(row.id)" @change="toggleSel(row.id)" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+          </template>
+          <template #cell-id="{ value }">
+            <span class="font-mono text-sm text-gray-500 dark:text-dark-400">#{{ value }}</span>
           </template>
           <template #cell-name="{ row, value }">
             <div class="flex flex-col">
@@ -291,12 +474,14 @@
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
+    <AccountBatchTestModal :show="showBatchTest" :account-ids="batchTestAccountIds" :scope="batchTestScope" @close="closeBatchTestModal" @running-change="handleBatchTestRunningChange" @completed="handleBatchTestCompleted" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" :refreshing-account-id="refreshingAccountId" :refreshing-usage-window-account-id="refreshingUsageWindowAccountId" :bulk-refreshing-token="bulkRefreshingTokens" :bulk-refreshing-usage-window="bulkRefreshingUsageWindows" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @refresh-usage-window="handleRefreshUsageWindow" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
-    <BulkEditAccountModal :show="showBulkEdit" :account-ids="selIds" :selected-platforms="selPlatforms" :selected-types="selTypes" :proxies="proxies" :groups="groups" @close="showBulkEdit = false" @updated="handleBulkUpdated" />
+    <OpenAIPublicLinksModal :show="showOpenAIPublicLinks" :groups="groups" :proxies="proxies" @close="showOpenAIPublicLinks = false" />
+    <BulkEditAccountModal :show="showBulkEdit" :account-ids="bulkEditAccountIds" :selected-platforms="bulkEditPlatforms" :selected-types="bulkEditTypes" :proxies="proxies" :groups="groups" :batch-size="pagination.page_size" @close="closeBulkEditModal" @updated="handleBulkUpdated" />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
     <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" @confirm="handleExportData" @cancel="showExportDataDialog = false">
@@ -331,8 +516,10 @@ import AccountTableFilters from '@/components/admin/account/AccountTableFilters.
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
+import OpenAIPublicLinksModal from '@/components/admin/account/OpenAIPublicLinksModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
+import AccountBatchTestModal from '@/components/admin/account/AccountBatchTestModal.vue'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
 import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
 import type { SelectOption } from '@/components/common/Select.vue'
@@ -347,6 +534,8 @@ import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRules
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
+import type { SortDescriptor } from '@/components/common/types'
+import type { BulkAccountFilters } from '@/api/admin/accounts'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -357,33 +546,28 @@ const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
 const accountTableRef = ref<HTMLElement | null>(null)
 const dataTableRef = ref<InstanceType<typeof DataTable> | null>(null)
-const selPlatforms = computed<AccountPlatform[]>(() => {
-  const platforms = new Set(
-    accounts.value
-      .filter(a => isSelected(a.id))
-      .map(a => a.platform)
-  )
-  return [...platforms]
-})
-const selTypes = computed<AccountType[]>(() => {
-  const types = new Set(
-    accounts.value
-      .filter(a => isSelected(a.id))
-      .map(a => a.type)
-  )
-  return [...types]
-})
 const showCreate = ref(false)
 const showEdit = ref(false)
 const showSync = ref(false)
 const showImportData = ref(false)
+const showOpenAIPublicLinks = ref(false)
 const showExportDataDialog = ref(false)
 const includeProxyOnExport = ref(true)
+const showBulkActionDropdown = ref(false)
+const bulkActionDropdownRef = ref<HTMLElement | null>(null)
 const showBulkEdit = ref(false)
+const preparingFilteredBulkEdit = ref(false)
+const bulkEditPreparationMode = ref<'filtered' | 'selected' | null>(null)
+const bulkEditPreparationLoaded = ref(0)
+const bulkEditPreparationTotal = ref(0)
+const bulkEditAccountIds = ref<number[]>([])
+const bulkEditPlatforms = ref<AccountPlatform[]>([])
+const bulkEditTypes = ref<AccountType[]>([])
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
+const showBatchTest = ref(false)
 const showStats = ref(false)
 const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
@@ -392,11 +576,34 @@ const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
 const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
+const batchTestAccountIds = ref<number[]>([])
+const batchTestScope = ref<'selected' | 'filtered' | 'all'>('selected')
 const statsAcc = ref<Account | null>(null)
 const showSchedulePanel = ref(false)
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
+const refreshingAccountId = ref<number | null>(null)
+const refreshingUsageWindowAccountId = ref<number | null>(null)
+const bulkRefreshingTokens = ref(false)
+const bulkRefreshingUsageWindows = ref(false)
+const batchTestingAccounts = ref(false)
+const preparingFilteredBatchTest = ref(false)
+const preparingFilteredUsageRefresh = ref(false)
+const filteredBatchTestPreparationLoaded = ref(0)
+const filteredBatchTestPreparationTotal = ref(0)
+const filteredUsageRefreshPreparationLoaded = ref(0)
+const filteredUsageRefreshPreparationTotal = ref(0)
+const bulkRefreshProcessed = ref(0)
+const bulkRefreshTotal = ref(0)
+const bulkRefreshSuccessCount = ref(0)
+const bulkRefreshFailedCount = ref(0)
+const bulkRefreshUsageWindowProcessed = ref(0)
+const bulkRefreshUsageWindowTotal = ref(0)
+const bulkRefreshUsageWindowSuccessCount = ref(0)
+const bulkRefreshUsageWindowFailedCount = ref(0)
+const BULK_REFRESH_TOKEN_CONCURRENCY = 5
+const BULK_REFRESH_USAGE_WINDOW_CONCURRENCY = 3
 const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:number}|null}>({ show: false, acc: null, pos: null })
 const exportingData = ref(false)
 
@@ -408,38 +615,68 @@ const DEFAULT_HIDDEN_COLUMNS = ['today_stats', 'proxy', 'notes', 'priority', 'ra
 const HIDDEN_COLUMNS_KEY = 'account-hidden-columns'
 
 // Sorting settings
-const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort'
-type AccountSortOrder = 'asc' | 'desc'
-type AccountSortState = {
-  sort_by: string
-  sort_order: AccountSortOrder
-}
-const ACCOUNT_SORTABLE_KEYS = new Set([
-  'name',
-  'status',
-  'schedulable',
-  'priority',
-  'rate_multiplier',
-  'last_used_at',
-  'expires_at'
-])
-const loadInitialAccountSortState = (): AccountSortState => {
-  const fallback: AccountSortState = { sort_by: 'name', sort_order: 'asc' }
+const ACCOUNT_SORT_STORAGE_KEY = 'account-table-sort-v3'
+const ACCOUNT_DEFAULT_SORTS: SortDescriptor[] = [{ key: 'id', order: 'desc' }]
+const ACCOUNT_SORTABLE_KEYS = new Set(['id', 'name', 'status', 'schedulable', 'priority', 'rate_multiplier', 'last_used_at', 'expires_at'])
+
+const resolveInitialAccountSorts = (): SortDescriptor[] => {
+  if (typeof window === 'undefined') return ACCOUNT_DEFAULT_SORTS
   try {
     const raw = localStorage.getItem(ACCOUNT_SORT_STORAGE_KEY)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw) as { key?: string; order?: string }
-    const key = typeof parsed.key === 'string' ? parsed.key : ''
-    if (!ACCOUNT_SORTABLE_KEYS.has(key)) return fallback
-    return {
-      sort_by: key,
-      sort_order: parsed.order === 'desc' ? 'desc' : 'asc'
-    }
-  } catch {
-    return fallback
+    if (!raw) return ACCOUNT_DEFAULT_SORTS
+    const parsed = JSON.parse(raw) as { key?: string; order?: 'asc' | 'desc'; sorts?: SortDescriptor[] } | SortDescriptor[]
+    const source = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.sorts)
+        ? parsed.sorts
+        : parsed?.key
+          ? [{ key: parsed.key, order: parsed.order === 'desc' ? 'desc' : 'asc' }]
+          : []
+    const normalized = source
+      .map((item) => ({
+        key: typeof item?.key === 'string' ? item.key : '',
+        order: item?.order === 'desc' ? 'desc' as const : 'asc' as const
+      }))
+      .filter((item, index, array) => item.key && ACCOUNT_SORTABLE_KEYS.has(item.key) && array.findIndex((entry) => entry.key === item.key) === index)
+    return normalized.length > 0 ? normalized : ACCOUNT_DEFAULT_SORTS
+  } catch (error) {
+    console.error('Failed to load account sort state:', error)
+    return ACCOUNT_DEFAULT_SORTS
   }
 }
-const sortState = reactive<AccountSortState>(loadInitialAccountSortState())
+
+const accountInitialSorts = resolveInitialAccountSorts()
+
+type AccountTableParams = {
+  platform: string
+  type: string
+  status: string
+  privacy_mode: string
+  group: string
+  group_exclude: string
+  group_match: string
+  search: string
+  last_used_filter: string
+  last_used_start_date: string
+  last_used_end_date: string
+  sort_by: string
+  sort_order: string
+  lite?: string
+}
+
+const ACCOUNT_FILTER_PARAM_KEYS = [
+  'platform',
+  'type',
+  'status',
+  'privacy_mode',
+  'group',
+  'group_exclude',
+  'group_match',
+  'search',
+  'last_used_filter',
+  'last_used_start_date',
+  'last_used_end_date'
+] as const
 
 // Auto refresh settings
 const showAutoRefreshDropdown = ref(false)
@@ -468,6 +705,13 @@ const buildDefaultTodayStats = (): WindowStats => ({
   standard_cost: 0,
   user_cost: 0
 })
+
+const getRequestErrorMessage = (error: any, fallback: string) => {
+  return error?.response?.data?.message
+    || error?.response?.data?.detail
+    || error?.message
+    || fallback
+}
 
 const refreshTodayStatsBatch = async () => {
   // Why this checks both columns:
@@ -640,9 +884,59 @@ const {
     privacy_mode: '',
     group: '',
     search: '',
-    sort_by: sortState.sort_by,
-    sort_order: sortState.sort_order
+    last_used_filter: '',
+    last_used_start_date: '',
+    last_used_end_date: '',
+    sort_by: accountInitialSorts.map((item) => item.key).join(','),
+    sort_order: accountInitialSorts.map((item) => item.order).join(',')
   }
+})
+
+const handleSortStateChange = (sorts: SortDescriptor[]) => {
+  const nextSorts = Array.isArray(sorts) && sorts.length > 0 ? sorts : ACCOUNT_DEFAULT_SORTS
+  params.sort_by = nextSorts.map((item) => item.key).join(',')
+  params.sort_order = nextSorts.map((item) => item.order).join(',')
+  pagination.page = 1
+  hasPendingListSync.value = false
+  resetAutoRefreshCache()
+  pendingTodayStatsRefresh.value = true
+  reload()
+}
+
+const buildActiveAccountFilters = (source?: Partial<AccountTableParams>): BulkAccountFilters => {
+  const currentParams = (source ?? (params as AccountTableParams)) as Record<string, string | undefined>
+  const filters: BulkAccountFilters = {}
+
+  ACCOUNT_FILTER_PARAM_KEYS.forEach((key) => {
+    const value = currentParams[key]
+    if (typeof value === 'string' && value.trim() !== '') {
+      filters[key] = value.trim()
+    }
+  })
+
+  return filters
+}
+
+const bulkEditFetchPageSize = computed(() => {
+  const raw = Number(pagination.page_size)
+  if (!Number.isFinite(raw) || raw <= 0) return 20
+  return Math.min(1000, Math.max(1, Math.trunc(raw)))
+})
+
+const hasActiveAccountFilters = computed(() => {
+  return Object.keys(buildActiveAccountFilters()).length > 0
+})
+
+const bulkActionMenuDisabled = computed(() => {
+  return loading.value
+    || preparingFilteredBulkEdit.value
+    || preparingFilteredBatchTest.value
+    || preparingFilteredUsageRefresh.value
+    || batchTestingAccounts.value
+    || bulkRefreshingTokens.value
+    || bulkRefreshingUsageWindows.value
+    || refreshingAccountId.value !== null
+    || refreshingUsageWindowAccountId.value !== null
 })
 
 const {
@@ -675,6 +969,263 @@ useSwipeSelect(accountTableRef, {
   deselect,
   batchUpdate
 }, swipeVirtualContext)
+
+const resetBulkEditPreparationProgress = () => {
+  bulkEditPreparationMode.value = null
+  bulkEditPreparationLoaded.value = 0
+  bulkEditPreparationTotal.value = 0
+}
+
+const resetFilteredBatchTestPreparation = () => {
+  filteredBatchTestPreparationLoaded.value = 0
+  filteredBatchTestPreparationTotal.value = 0
+}
+
+const resetFilteredUsageRefreshPreparation = () => {
+  filteredUsageRefreshPreparationLoaded.value = 0
+  filteredUsageRefreshPreparationTotal.value = 0
+}
+
+const resetBulkEditState = () => {
+  bulkEditAccountIds.value = []
+  bulkEditPlatforms.value = []
+  bulkEditTypes.value = []
+  resetBulkEditPreparationProgress()
+}
+
+const openBulkEditModal = (
+  accountIds: number[],
+  targets: Array<Pick<Account, 'id' | 'platform' | 'type'>> = []
+) => {
+  const ids = new Set<number>(accountIds)
+  const platforms = new Set<AccountPlatform>()
+  const types = new Set<AccountType>()
+
+  targets.forEach((target) => {
+    platforms.add(target.platform)
+    types.add(target.type)
+  })
+
+  bulkEditAccountIds.value = [...ids]
+  bulkEditPlatforms.value = [...platforms]
+  bulkEditTypes.value = [...types]
+  showBulkEdit.value = true
+}
+
+const buildFilteredBulkEditParams = () => {
+  const currentParams = params as Record<string, string | undefined>
+  const filters: Record<string, string> = { lite: '1' }
+  ;['platform', 'type', 'status', 'privacy_mode', 'group', 'search', 'last_used_filter', 'last_used_start_date', 'last_used_end_date'].forEach((key) => {
+    const value = currentParams[key]
+    if (typeof value === 'string' && value.trim() !== '') {
+      filters[key] = value.trim()
+    }
+  })
+  return filters
+}
+
+type FilteredAccountTarget = Pick<Account, 'id' | 'platform' | 'type'>
+
+const fetchAllFilteredAccountTargets = async (
+  onProgress?: (progress: { loaded: number; total: number }) => void
+): Promise<FilteredAccountTarget[]> => {
+  const filters = buildFilteredBulkEditParams()
+  const targets: FilteredAccountTarget[] = []
+  let page = 1
+  let pages = 1
+  let total = 0
+
+  while (page <= pages) {
+    const result = await adminAPI.accounts.list(page, bulkEditFetchPageSize.value, filters)
+    total = result.total || total
+    result.items.forEach((account) => {
+      targets.push({
+        id: account.id,
+        platform: account.platform,
+        type: account.type
+      })
+    })
+    pages = Math.max(result.pages || 0, Math.ceil((result.total || 0) / bulkEditFetchPageSize.value), 1)
+    onProgress?.({
+      loaded: Math.min(targets.length, total || targets.length),
+      total: total || targets.length
+    })
+    page += 1
+  }
+
+  return targets
+}
+
+const fetchAllFilteredAccountIds = async (
+  onProgress?: (progress: { loaded: number; total: number }) => void
+): Promise<number[]> => {
+  const targets = await fetchAllFilteredAccountTargets(onProgress)
+  return targets.map((target) => target.id)
+}
+
+const openSelectedBulkEdit = async () => {
+  if (preparingFilteredBulkEdit.value || preparingFilteredBatchTest.value || preparingFilteredUsageRefresh.value) return
+  if (selIds.value.length === 0) {
+    appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
+    return
+  }
+
+  const selectedIds = [...selIds.value]
+  let selectedTargets = accounts.value
+    .filter(account => isSelected(account.id))
+    .map(account => ({
+      id: account.id,
+      platform: account.platform,
+      type: account.type
+    }))
+
+  if (selectedTargets.length < selectedIds.length) {
+    preparingFilteredBulkEdit.value = true
+    bulkEditPreparationMode.value = 'selected'
+    bulkEditPreparationLoaded.value = 0
+    bulkEditPreparationTotal.value = pagination.total || 0
+    try {
+      const allTargets = await fetchAllFilteredAccountTargets(({ loaded, total }) => {
+        bulkEditPreparationLoaded.value = loaded
+        bulkEditPreparationTotal.value = total
+      })
+      const selectedIdSet = new Set(selectedIds)
+      selectedTargets = allTargets.filter(target => selectedIdSet.has(target.id))
+    } catch (error: any) {
+      console.error('Failed to hydrate selected bulk edit targets:', error)
+      appStore.showError(
+        error?.response?.data?.message
+          || error?.response?.data?.detail
+          || error?.message
+          || t('admin.accounts.bulkEdit.prepareSelectedFailed')
+      )
+      return
+    } finally {
+      preparingFilteredBulkEdit.value = false
+      resetBulkEditPreparationProgress()
+    }
+  }
+
+  openBulkEditModal(selectedIds, selectedTargets)
+}
+
+const handleOpenFilteredBulkEdit = async () => {
+  if (preparingFilteredBulkEdit.value || preparingFilteredBatchTest.value || preparingFilteredUsageRefresh.value) return
+  if (batchTestingAccounts.value || bulkRefreshingTokens.value || bulkRefreshingUsageWindows.value || refreshingAccountId.value !== null || refreshingUsageWindowAccountId.value !== null) return
+  if (pagination.total === 0) {
+    appStore.showError(t('admin.accounts.bulkEdit.noMatches'))
+    return
+  }
+
+  preparingFilteredBulkEdit.value = true
+  bulkEditPreparationMode.value = 'filtered'
+  bulkEditPreparationLoaded.value = 0
+  bulkEditPreparationTotal.value = pagination.total || 0
+  try {
+    const targets = await fetchAllFilteredAccountTargets(({ loaded, total }) => {
+      bulkEditPreparationLoaded.value = loaded
+      bulkEditPreparationTotal.value = total
+    })
+    if (targets.length === 0) {
+      appStore.showError(t('admin.accounts.bulkEdit.noMatches'))
+      return
+    }
+    openBulkEditModal(targets.map(target => target.id), targets)
+  } catch (error: any) {
+    console.error('Failed to prepare bulk edit targets:', error)
+    appStore.showError(
+      error?.response?.data?.message
+        || error?.response?.data?.detail
+        || error?.message
+        || t('admin.accounts.bulkEdit.prepareFailed')
+    )
+  } finally {
+    preparingFilteredBulkEdit.value = false
+    resetBulkEditPreparationProgress()
+  }
+}
+
+const closeBulkEditModal = () => {
+  showBulkEdit.value = false
+  resetBulkEditState()
+}
+
+const getFilteredBatchScope = (): 'filtered' | 'all' => {
+  return hasActiveAccountFilters.value ? 'filtered' : 'all'
+}
+
+const getUsageWindowScopeLabel = (
+  scope: 'selected' | 'filtered' | 'all',
+  count: number
+) => {
+  if (scope === 'filtered') {
+    return t('admin.accounts.bulkActions.filteredScopeLabel', { count })
+  }
+  if (scope === 'all') {
+    return t('admin.accounts.bulkActions.allScopeLabel', { count })
+  }
+  return t('admin.accounts.bulkActions.selectedScopeLabel', { count })
+}
+
+const closeBulkActionDropdown = () => {
+  showBulkActionDropdown.value = false
+}
+
+const toggleBulkActionDropdown = () => {
+  if (bulkActionMenuDisabled.value) return
+  showBulkActionDropdown.value = !showBulkActionDropdown.value
+  if (showBulkActionDropdown.value) {
+    showColumnDropdown.value = false
+    showAutoRefreshDropdown.value = false
+  }
+}
+
+const handleBulkActionMenuEdit = () => {
+  closeBulkActionDropdown()
+  void handleOpenFilteredBulkEdit()
+}
+
+const handleBulkActionMenuTest = () => {
+  closeBulkActionDropdown()
+  void openFilteredBatchTestModal()
+}
+
+const handleBulkActionMenuRefreshUsage = () => {
+  closeBulkActionDropdown()
+  void handleFilteredRefreshUsageWindow()
+}
+
+const openFilteredBatchTestModal = async () => {
+  if (preparingFilteredBatchTest.value || preparingFilteredUsageRefresh.value) return
+  if (batchTestingAccounts.value || bulkRefreshingTokens.value || bulkRefreshingUsageWindows.value || refreshingAccountId.value !== null || refreshingUsageWindowAccountId.value !== null) return
+  if (pagination.total === 0) {
+    appStore.showError(t('admin.accounts.bulkTest.noMatches'))
+    return
+  }
+
+  preparingFilteredBatchTest.value = true
+  filteredBatchTestPreparationLoaded.value = 0
+  filteredBatchTestPreparationTotal.value = pagination.total || 0
+  try {
+    const accountIds = await fetchAllFilteredAccountIds(({ loaded, total }) => {
+      filteredBatchTestPreparationLoaded.value = loaded
+      filteredBatchTestPreparationTotal.value = total
+    })
+    if (accountIds.length === 0) {
+      appStore.showError(t('admin.accounts.bulkTest.noMatches'))
+      return
+    }
+    batchTestScope.value = getFilteredBatchScope()
+    batchTestAccountIds.value = accountIds
+    showBatchTest.value = true
+  } catch (error: any) {
+    console.error('Failed to prepare accounts for filtered batch test:', error)
+    appStore.showError(getRequestErrorMessage(error, t('admin.accounts.bulkTest.prepareFailed')))
+  } finally {
+    preparingFilteredBatchTest.value = false
+    resetFilteredBatchTestPreparation()
+  }
+}
 
 const resetAutoRefreshCache = () => {
   autoRefreshETag.value = null
@@ -727,19 +1278,6 @@ const handlePageSizeChange = (size: number) => {
   baseHandlePageSizeChange(size)
 }
 
-const handleSort = (key: string, order: AccountSortOrder) => {
-  sortState.sort_by = key
-  sortState.sort_order = order
-  const requestParams = params as any
-  requestParams.sort_by = key
-  requestParams.sort_order = order
-  pagination.page = 1
-  hasPendingListSync.value = false
-  resetAutoRefreshCache()
-  pendingTodayStatsRefresh.value = true
-  load()
-}
-
 watch(loading, (isLoading, wasLoading) => {
   if (wasLoading && !isLoading && pendingTodayStatsRefresh.value) {
     pendingTodayStatsRefresh.value = false
@@ -755,12 +1293,14 @@ const isAnyModalOpen = computed(() => {
     showEdit.value ||
     showSync.value ||
     showImportData.value ||
+    showOpenAIPublicLinks.value ||
     showExportDataDialog.value ||
     showBulkEdit.value ||
     showTempUnsched.value ||
     showDeleteDialog.value ||
     showReAuth.value ||
     showTest.value ||
+    showBatchTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
     showErrorPassthrough.value
@@ -844,8 +1384,10 @@ const refreshAccountsIncrementally = async () => {
         group?: string
         search?: string
         sort_by?: string
-        sort_order?: AccountSortOrder
-
+        sort_order?: string
+        last_used_filter?: string
+        last_used_start_date?: string
+        last_used_end_date?: string
       },
       { etag: autoRefreshETag.value }
     )
@@ -946,6 +1488,7 @@ function getAntigravityTierClass(row: any): string {
 const allColumns = computed(() => {
   const c = [
     { key: 'select', label: '', sortable: false },
+    { key: 'id', label: t('admin.accounts.columns.id'), sortable: true },
     { key: 'name', label: t('admin.accounts.columns.name'), sortable: true },
     { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false },
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
@@ -969,15 +1512,15 @@ const allColumns = computed(() => {
   return c
 })
 
-// Columns that can be toggled (exclude select, name, and actions)
+// Columns that can be toggled (exclude select, id, name, and actions)
 const toggleableColumns = computed(() =>
-  allColumns.value.filter(col => col.key !== 'select' && col.key !== 'name' && col.key !== 'actions')
+  allColumns.value.filter(col => col.key !== 'select' && col.key !== 'id' && col.key !== 'name' && col.key !== 'actions')
 )
 
 // Filtered columns based on visibility
 const cols = computed(() =>
   allColumns.value.filter(col =>
-    col.key === 'select' || col.key === 'name' || col.key === 'actions' || !hiddenColumns.has(col.key)
+    col.key === 'select' || col.key === 'id' || col.key === 'name' || col.key === 'actions' || !hiddenColumns.has(col.key)
   )
 )
 
@@ -1055,19 +1598,193 @@ const handleBulkResetStatus = async () => {
   }
 }
 const handleBulkRefreshToken = async () => {
+  if (bulkRefreshingTokens.value || bulkRefreshingUsageWindows.value || batchTestingAccounts.value || refreshingAccountId.value !== null || refreshingUsageWindowAccountId.value !== null) return
+
+  const accountIds = [...selIds.value]
+  if (accountIds.length === 0) return
   if (!confirm(t('common.confirm'))) return
+
+  bulkRefreshingTokens.value = true
+  bulkRefreshProcessed.value = 0
+  bulkRefreshTotal.value = accountIds.length
+  bulkRefreshSuccessCount.value = 0
+  bulkRefreshFailedCount.value = 0
+
+  const failedIds: number[] = []
+  let index = 0
+
+  const worker = async () => {
+    while (index < accountIds.length) {
+      const currentId = accountIds[index]
+      index += 1
+
+      try {
+        const updated = await adminAPI.accounts.refreshCredentials(currentId)
+        if (updated && typeof updated.id === 'number') {
+          patchAccountInList(updated)
+        }
+        bulkRefreshSuccessCount.value += 1
+      } catch (error) {
+        console.error(`Failed to refresh token for account ${currentId}:`, error)
+        failedIds.push(currentId)
+        bulkRefreshFailedCount.value += 1
+      } finally {
+        bulkRefreshProcessed.value += 1
+      }
+    }
+  }
+
   try {
-    const result = await adminAPI.accounts.batchRefresh(selIds.value)
-    if (result.failed > 0) {
-      appStore.showError(t('admin.accounts.bulkActions.partialSuccess', { success: result.success, failed: result.failed }))
+    const workers = Array.from(
+      { length: Math.min(BULK_REFRESH_TOKEN_CONCURRENCY, accountIds.length) },
+      () => worker()
+    )
+    await Promise.all(workers)
+
+    enterAutoRefreshSilentWindow()
+
+    if (bulkRefreshFailedCount.value > 0) {
+      appStore.showError(t('admin.accounts.bulkActions.partialSuccess', {
+        success: bulkRefreshSuccessCount.value,
+        failed: bulkRefreshFailedCount.value
+      }))
+      setSelectedIds(failedIds.length > 0 ? failedIds : accountIds)
     } else {
-      appStore.showSuccess(t('admin.accounts.bulkActions.refreshTokenSuccess', { count: result.success }))
+      appStore.showSuccess(t('admin.accounts.bulkActions.refreshTokenSuccess', {
+        count: bulkRefreshSuccessCount.value
+      }))
       clearSelection()
     }
-    reload()
   } catch (error) {
     console.error('Failed to bulk refresh token:', error)
-    appStore.showError(String(error))
+    appStore.showError(getRequestErrorMessage(error, t('admin.accounts.failedToRefresh')))
+  } finally {
+    try {
+      await reload()
+    } catch (error) {
+      console.error('Failed to reload accounts after bulk refresh:', error)
+    }
+    bulkRefreshingTokens.value = false
+  }
+}
+
+const runBulkRefreshUsageWindow = async (
+  accountIds: number[],
+  scope: 'selected' | 'filtered' | 'all'
+) => {
+  if (accountIds.length === 0) return
+  if (!confirm(t('admin.accounts.bulkActions.refreshUsageWindowConfirm', {
+    scope: getUsageWindowScopeLabel(scope, accountIds.length)
+  }))) return
+
+  bulkRefreshingUsageWindows.value = true
+  bulkRefreshUsageWindowProcessed.value = 0
+  bulkRefreshUsageWindowTotal.value = accountIds.length
+  bulkRefreshUsageWindowSuccessCount.value = 0
+  bulkRefreshUsageWindowFailedCount.value = 0
+
+  const failedIds: number[] = []
+  let index = 0
+
+  const worker = async () => {
+    while (index < accountIds.length) {
+      const currentId = accountIds[index]
+      index += 1
+
+      try {
+        const usage = await adminAPI.accounts.getUsage(currentId, 'active', { force: true })
+        if (usage?.error) {
+          console.error(`Failed to refresh usage window for account ${currentId}:`, usage.error)
+          failedIds.push(currentId)
+          bulkRefreshUsageWindowFailedCount.value += 1
+        } else {
+          bulkRefreshUsageWindowSuccessCount.value += 1
+        }
+      } catch (error) {
+        console.error(`Failed to refresh usage window for account ${currentId}:`, error)
+        failedIds.push(currentId)
+        bulkRefreshUsageWindowFailedCount.value += 1
+      } finally {
+        bulkRefreshUsageWindowProcessed.value += 1
+      }
+    }
+  }
+
+  try {
+    const workers = Array.from(
+      { length: Math.min(BULK_REFRESH_USAGE_WINDOW_CONCURRENCY, accountIds.length) },
+      () => worker()
+    )
+    await Promise.all(workers)
+
+    enterAutoRefreshSilentWindow()
+
+    if (bulkRefreshUsageWindowSuccessCount.value > 0 && bulkRefreshUsageWindowFailedCount.value === 0) {
+      appStore.showSuccess(t('admin.accounts.bulkActions.refreshUsageWindowSuccess', {
+        count: bulkRefreshUsageWindowSuccessCount.value
+      }))
+      if (scope === 'selected') {
+        clearSelection()
+      }
+    } else if (bulkRefreshUsageWindowSuccessCount.value > 0) {
+      appStore.showError(t('admin.accounts.bulkActions.partialSuccess', {
+        success: bulkRefreshUsageWindowSuccessCount.value,
+        failed: bulkRefreshUsageWindowFailedCount.value
+      }))
+      setSelectedIds(failedIds.length > 0 ? failedIds : accountIds)
+    } else {
+      appStore.showError(t('admin.accounts.bulkActions.refreshUsageWindowFailed'))
+      setSelectedIds(failedIds.length > 0 ? failedIds : accountIds)
+    }
+  } catch (error) {
+    console.error('Failed to bulk refresh usage windows:', error)
+    appStore.showError(getRequestErrorMessage(error, t('admin.accounts.bulkActions.refreshUsageWindowFailed')))
+  } finally {
+    try {
+      await reload()
+      usageManualRefreshToken.value += 1
+    } catch (error) {
+      console.error('Failed to reload accounts after bulk usage refresh:', error)
+    }
+    bulkRefreshingUsageWindows.value = false
+  }
+}
+
+const handleBulkRefreshUsageWindow = async () => {
+  if (bulkRefreshingUsageWindows.value || bulkRefreshingTokens.value || batchTestingAccounts.value || refreshingAccountId.value !== null || refreshingUsageWindowAccountId.value !== null) return
+
+  const accountIds = [...selIds.value]
+  if (accountIds.length === 0) return
+  await runBulkRefreshUsageWindow(accountIds, 'selected')
+}
+
+const handleFilteredRefreshUsageWindow = async () => {
+  if (preparingFilteredUsageRefresh.value || preparingFilteredBatchTest.value) return
+  if (bulkRefreshingUsageWindows.value || bulkRefreshingTokens.value || batchTestingAccounts.value || refreshingAccountId.value !== null || refreshingUsageWindowAccountId.value !== null) return
+  if (pagination.total === 0) {
+    appStore.showError(t('admin.accounts.bulkActions.refreshUsageWindowNoMatches'))
+    return
+  }
+
+  preparingFilteredUsageRefresh.value = true
+  filteredUsageRefreshPreparationLoaded.value = 0
+  filteredUsageRefreshPreparationTotal.value = pagination.total || 0
+  try {
+    const accountIds = await fetchAllFilteredAccountIds(({ loaded, total }) => {
+      filteredUsageRefreshPreparationLoaded.value = loaded
+      filteredUsageRefreshPreparationTotal.value = total
+    })
+    if (accountIds.length === 0) {
+      appStore.showError(t('admin.accounts.bulkActions.refreshUsageWindowNoMatches'))
+      return
+    }
+    await runBulkRefreshUsageWindow(accountIds, getFilteredBatchScope())
+  } catch (error: any) {
+    console.error('Failed to prepare accounts for filtered usage refresh:', error)
+    appStore.showError(getRequestErrorMessage(error, t('admin.accounts.bulkActions.refreshUsageWindowPrepareFailed')))
+  } finally {
+    preparingFilteredUsageRefresh.value = false
+    resetFilteredUsageRefreshPreparation()
   }
 }
 const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => {
@@ -1172,7 +1889,11 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
     appStore.showError(t('common.error'))
   }
 }
-const handleBulkUpdated = () => { showBulkEdit.value = false; clearSelection(); reload() }
+const handleBulkUpdated = () => {
+  closeBulkEditModal()
+  clearSelection()
+  reload()
+}
 const handleDataImported = () => { showImportData.value = false; reload() }
 const ACCOUNT_UNGROUPED_GROUP_QUERY_VALUE = 'ungrouped'
 const ACCOUNT_PRIVACY_MODE_UNSET_QUERY_VALUE = '__unset__'
@@ -1183,49 +1904,80 @@ const buildAccountQueryFilters = () => ({
   group: params.group || '',
   privacy_mode: params.privacy_mode || '',
   search: params.search || '',
-  sort_by: sortState.sort_by,
-  sort_order: sortState.sort_order
+  sort_by: params.sort_by || '',
+  sort_order: params.sort_order || ''
 })
-const accountMatchesCurrentFilters = (account: Account) => {
-  const filters = buildAccountQueryFilters()
-  if (filters.platform && account.platform !== filters.platform) return false
-  if (filters.type && account.type !== filters.type) return false
-  if (filters.status) {
-    const now = Date.now()
-    const rateLimitResetAt = account.rate_limit_reset_at ? new Date(account.rate_limit_reset_at).getTime() : Number.NaN
-    const isRateLimited = Number.isFinite(rateLimitResetAt) && rateLimitResetAt > now
-    const tempUnschedUntil = account.temp_unschedulable_until ? new Date(account.temp_unschedulable_until).getTime() : Number.NaN
-    const isTempUnschedulable = Number.isFinite(tempUnschedUntil) && tempUnschedUntil > now
+const accountMatchesLastUsedFilter = (account: Account) => {
+  if (params.last_used_filter === 'unused') {
+    return !account.last_used_at
+  }
+  if (params.last_used_filter === 'range') {
+    if (!account.last_used_at || !params.last_used_start_date || !params.last_used_end_date) return false
+    const lastUsedAt = new Date(account.last_used_at).getTime()
+    const startAt = new Date(`${params.last_used_start_date}T00:00:00`).getTime()
+    const endExclusive = new Date(`${params.last_used_end_date}T00:00:00`)
+    endExclusive.setDate(endExclusive.getDate() + 1)
+    const endAt = endExclusive.getTime()
+    if (!Number.isFinite(lastUsedAt) || !Number.isFinite(startAt) || !Number.isFinite(endAt)) return false
+    return lastUsedAt >= startAt && lastUsedAt < endAt
+  }
+  return true
+}
 
-    if (filters.status === 'active') {
-      if (account.status !== 'active' || isRateLimited || isTempUnschedulable || !account.schedulable) return false
-    } else if (filters.status === 'rate_limited') {
-      if (account.status !== 'active' || !isRateLimited || isTempUnschedulable) return false
-    } else if (filters.status === 'temp_unschedulable') {
-      if (account.status !== 'active' || !isTempUnschedulable) return false
-    } else if (filters.status === 'unschedulable') {
-      if (account.status !== 'active' || account.schedulable || isRateLimited || isTempUnschedulable) return false
-    } else if (account.status !== filters.status) {
+const hasFutureTimestamp = (value: string | null | undefined) => {
+  if (!value) return false
+  const ts = new Date(value).getTime()
+  return Number.isFinite(ts) && ts > Date.now()
+}
+
+const isAutoPausedExpiredAccount = (account: Account) => {
+  if (!account.auto_pause_on_expired || !account.expires_at) return false
+  return account.expires_at * 1000 <= Date.now()
+}
+
+const isNormallyActiveAccount = (account: Account) => {
+  return account.status === 'active'
+    && account.schedulable
+    && !hasFutureTimestamp(account.rate_limit_reset_at)
+    && !hasFutureTimestamp(account.overload_until)
+    && !hasFutureTimestamp(account.temp_unschedulable_until)
+    && !isAutoPausedExpiredAccount(account)
+}
+
+const accountMatchesCurrentFilters = (account: Account) => {
+  if (params.platform && account.platform !== params.platform) return false
+  if (params.type && account.type !== params.type) return false
+  if (params.status) {
+    if (params.status === 'rate_limited') {
+      if (!hasFutureTimestamp(account.rate_limit_reset_at)) return false
+    } else if (params.status === 'active') {
+      if (!isNormallyActiveAccount(account)) return false
+    } else if (params.status === 'temp_unschedulable') {
+      if (!hasFutureTimestamp(account.temp_unschedulable_until)) return false
+    } else if (params.status === 'unschedulable') {
+      if (account.status !== 'active' || account.schedulable || hasFutureTimestamp(account.rate_limit_reset_at) || hasFutureTimestamp(account.temp_unschedulable_until)) return false
+    } else if (account.status !== params.status) {
       return false
     }
   }
-  if (filters.group) {
+  if (params.group) {
     const groupIds = account.group_ids ?? account.groups?.map((group) => group.id) ?? []
-    if (filters.group === ACCOUNT_UNGROUPED_GROUP_QUERY_VALUE) {
+    if (params.group === ACCOUNT_UNGROUPED_GROUP_QUERY_VALUE) {
       if (groupIds.length > 0) return false
-    } else if (!groupIds.includes(Number(filters.group))) {
+    } else if (!groupIds.includes(Number(params.group))) {
       return false
     }
   }
   const privacyMode = typeof account.extra?.privacy_mode === 'string' ? account.extra.privacy_mode : ''
-  if (filters.privacy_mode) {
-    if (filters.privacy_mode === ACCOUNT_PRIVACY_MODE_UNSET_QUERY_VALUE) {
+  if (params.privacy_mode) {
+    if (params.privacy_mode === ACCOUNT_PRIVACY_MODE_UNSET_QUERY_VALUE) {
       if (privacyMode.trim() !== '') return false
-    } else if (privacyMode !== filters.privacy_mode) {
+    } else if (privacyMode !== params.privacy_mode) {
       return false
     }
   }
-  const search = String(filters.search || '').trim().toLowerCase()
+  if (!accountMatchesLastUsedFilter(account)) return false
+  const search = String(params.search || '').trim().toLowerCase()
   if (search && !account.name.toLowerCase().includes(search)) return false
   return true
 }
@@ -1312,9 +2064,55 @@ const handleExportData = async () => {
   }
 }
 const closeTestModal = () => { showTest.value = false; testingAcc.value = null }
+const openBatchTestModal = (accountIds: number[] = [...selIds.value], scope: 'selected' | 'filtered' | 'all' = 'selected') => {
+  if (batchTestingAccounts.value || bulkRefreshingTokens.value || bulkRefreshingUsageWindows.value || refreshingAccountId.value !== null || refreshingUsageWindowAccountId.value !== null || accountIds.length === 0) return
+  batchTestAccountIds.value = [...accountIds]
+  batchTestScope.value = scope
+  showBatchTest.value = true
+}
+const closeBatchTestModal = () => {
+  if (batchTestingAccounts.value) return
+  showBatchTest.value = false
+  batchTestAccountIds.value = []
+  batchTestScope.value = 'selected'
+}
+const handleBatchTestRunningChange = (running: boolean) => {
+  batchTestingAccounts.value = running
+}
+const handleBatchTestCompleted = async (summary: {
+  total: number
+  success: number
+  failed: number
+  failedIds: number[]
+}) => {
+  if (summary.failed > 0) {
+    appStore.showError(t('admin.accounts.bulkTest.partialSuccess', {
+      success: summary.success,
+      failed: summary.failed
+    }))
+    setSelectedIds(summary.failedIds.length > 0 ? summary.failedIds : batchTestAccountIds.value)
+  } else {
+    appStore.showSuccess(t('admin.accounts.bulkTest.success', { count: summary.success }))
+    if (batchTestScope.value === 'selected') {
+      clearSelection()
+    }
+  }
+
+  enterAutoRefreshSilentWindow()
+
+  try {
+    await reload()
+  } catch (error) {
+    console.error('Failed to reload accounts after batch test:', error)
+  }
+}
 const closeStatsModal = () => { showStats.value = false; statsAcc.value = null }
 const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = null }
-const handleTest = (a: Account) => { testingAcc.value = a; showTest.value = true }
+const handleTest = (a: Account) => {
+  if (batchTestingAccounts.value) return
+  testingAcc.value = a
+  showTest.value = true
+}
 const handleViewStats = (a: Account) => { statsAcc.value = a; showStats.value = true }
 const handleSchedule = async (a: Account) => {
   scheduleAcc.value = a
@@ -1330,12 +2128,61 @@ const handleSchedule = async (a: Account) => {
 const closeSchedulePanel = () => { showSchedulePanel.value = false; scheduleAcc.value = null; scheduleModelOptions.value = [] }
 const handleReAuth = (a: Account) => { reAuthAcc.value = a; showReAuth.value = true }
 const handleRefresh = async (a: Account) => {
+  if (refreshingAccountId.value !== null || refreshingUsageWindowAccountId.value !== null || bulkRefreshingTokens.value || bulkRefreshingUsageWindows.value || batchTestingAccounts.value) return
+
+  refreshingAccountId.value = a.id
   try {
-    const updated = await adminAPI.accounts.refreshCredentials(a.id)
-    patchAccountInList(updated)
+    const updated = await appStore.withLoading(() => adminAPI.accounts.refreshCredentials(a.id))
+    if (updated && typeof updated.id === 'number') {
+      patchAccountInList(updated)
+    } else {
+      await reload()
+    }
     enterAutoRefreshSilentWindow()
-  } catch (error) {
+    appStore.showSuccess(t('admin.accounts.tokenRefreshed'))
+  } catch (error: any) {
     console.error('Failed to refresh credentials:', error)
+    appStore.showError(
+      error?.response?.data?.message
+        || error?.response?.data?.detail
+        || error?.message
+        || t('admin.accounts.failedToRefresh')
+    )
+  } finally {
+    refreshingAccountId.value = null
+    if (menu.acc?.id === a.id) {
+      menu.show = false
+      menu.acc = null
+    }
+  }
+}
+const handleRefreshUsageWindow = async (a: Account) => {
+  if (refreshingUsageWindowAccountId.value !== null || refreshingAccountId.value !== null || bulkRefreshingTokens.value || bulkRefreshingUsageWindows.value || batchTestingAccounts.value) return
+  if (!confirm(t('admin.accounts.refreshUsageWindowConfirm', { name: a.name }))) return
+
+  refreshingUsageWindowAccountId.value = a.id
+  try {
+    const usage = await adminAPI.accounts.getUsage(a.id, 'active', { force: true })
+    if (usage?.error) {
+      throw new Error(usage.error)
+    }
+    enterAutoRefreshSilentWindow()
+    try {
+      await reload()
+    } catch (error) {
+      console.error('Failed to reload accounts after single usage refresh:', error)
+    }
+    usageManualRefreshToken.value += 1
+    appStore.showSuccess(t('admin.accounts.refreshUsageWindowSuccessSingle', { name: a.name }))
+  } catch (error: any) {
+    console.error('Failed to refresh usage window:', error)
+    appStore.showError(getRequestErrorMessage(error, t('admin.accounts.refreshUsageWindowFailedSingle')))
+  } finally {
+    refreshingUsageWindowAccountId.value = null
+    if (menu.acc?.id === a.id) {
+      menu.show = false
+      menu.acc = null
+    }
   }
 }
 const handleRecoverState = async (a: Account) => {
@@ -1413,12 +2260,13 @@ const isExpired = (value: number | null) => {
   return value * 1000 <= Date.now()
 }
 
-// 滚动时关闭操作菜单（不关闭列设置下拉菜单）
+// 滚动时关闭操作菜单和顶部下拉菜单
 const handleScroll = () => {
   menu.show = false
+  showBulkActionDropdown.value = false
 }
 
-// 点击外部关闭列设置下拉菜单
+// 点击外部关闭顶部下拉菜单
 const handleClickOutside = (event: MouseEvent) => {
   const target = event.target as HTMLElement
   if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) {
@@ -1426,6 +2274,9 @@ const handleClickOutside = (event: MouseEvent) => {
   }
   if (autoRefreshDropdownRef.value && !autoRefreshDropdownRef.value.contains(target)) {
     showAutoRefreshDropdown.value = false
+  }
+  if (bulkActionDropdownRef.value && !bulkActionDropdownRef.value.contains(target)) {
+    showBulkActionDropdown.value = false
   }
 }
 

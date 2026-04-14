@@ -83,21 +83,29 @@
               getStickyColumnClass(column, index),
               column.class
             ]"
-            @click="column.sortable && handleSort(column.key)"
+            @click="column.sortable && handleSort(column.key, $event)"
           >
             <slot
               :name="`header-${column.key}`"
               :column="column"
               :sort-key="sortKey"
               :sort-order="sortOrder"
+              :sort-state="sortDescriptors"
+              :sort-priority="getSortPriority(column.key)"
             >
               <div class="flex items-center space-x-1">
                 <span>{{ column.label }}</span>
+                <span
+                  v-if="column.sortable && props.multiSort && getSortPriority(column.key) > 0"
+                  class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary-100 px-1 text-[10px] font-semibold text-primary-700 dark:bg-primary-900/40 dark:text-primary-200"
+                >
+                  {{ getSortPriority(column.key) }}
+                </span>
                 <span v-if="column.sortable" class="text-gray-400 dark:text-dark-500">
                   <svg
-                    v-if="sortKey === column.key"
+                    v-if="getSortPriority(column.key) > 0"
                     class="h-4 w-4"
-                    :class="{ 'rotate-180 transform': sortOrder === 'desc' }"
+                    :class="{ 'rotate-180 transform': getSortDescriptor(column.key)?.order === 'desc' }"
                     fill="currentColor"
                     viewBox="0 0 20 20"
                   >
@@ -199,7 +207,7 @@
 import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useI18n } from 'vue-i18n'
-import type { Column } from './types'
+import type { Column, SortDescriptor } from './types'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
@@ -211,6 +219,7 @@ const isDesktopViewport = ref(
 
 const emit = defineEmits<{
   sort: [key: string, order: 'asc' | 'desc']
+  'sort-state-change': [sorts: SortDescriptor[]]
 }>()
 
 // 表格容器引用
@@ -353,6 +362,14 @@ interface Props {
    */
   sortStorageKey?: string
   /**
+   * Enable multi-column sorting. Shift + click appends or toggles secondary fields.
+   */
+  multiSort?: boolean
+  /**
+   * Default multi-sort configuration. Applied only when there is no persisted sort state.
+   */
+  defaultSorts?: SortDescriptor[]
+  /**
    * Enable server-side sorting mode. When true, clicking sort headers
    * will emit 'sort' events instead of performing client-side sorting.
    */
@@ -369,16 +386,22 @@ const props = withDefaults(defineProps<Props>(), {
   stickyActionsColumn: true,
   expandableActions: true,
   defaultSortOrder: 'asc',
+  multiSort: false,
   serverSideSort: false
 })
 
-const sortKey = ref<string>('')
-const sortOrder = ref<'asc' | 'desc'>('asc')
+const sortDescriptors = ref<SortDescriptor[]>([])
+const sortKey = computed(() => sortDescriptors.value[0]?.key || '')
+const sortOrder = computed<'asc' | 'desc'>(() => sortDescriptors.value[0]?.order || 'asc')
 const actionsExpanded = ref(false)
 
 type PersistedSortState = {
   key: string
   order: 'asc' | 'desc'
+}
+
+type PersistedMultiSortState = {
+  sorts: SortDescriptor[]
 }
 
 const collator = new Intl.Collator(undefined, {
@@ -404,43 +427,77 @@ const normalizeSortOrder = (candidate: any): 'asc' | 'desc' => {
   return candidate === 'desc' ? 'desc' : 'asc'
 }
 
-const readPersistedSortState = (): PersistedSortState | null => {
-  if (!props.sortStorageKey) return null
+const normalizeSortDescriptor = (candidate: Partial<SortDescriptor> | null | undefined): SortDescriptor | null => {
+  if (!candidate) return null
+  const key = normalizeSortKey(typeof candidate.key === 'string' ? candidate.key : '')
+  if (!key) return null
+  return { key, order: normalizeSortOrder(candidate.order) }
+}
+
+const normalizeSortDescriptors = (candidates: Array<Partial<SortDescriptor> | null | undefined>): SortDescriptor[] => {
+  const result: SortDescriptor[] = []
+  const seen = new Set<string>()
+  for (const candidate of candidates) {
+    const normalized = normalizeSortDescriptor(candidate)
+    if (!normalized || seen.has(normalized.key)) continue
+    seen.add(normalized.key)
+    result.push(normalized)
+  }
+  return result
+}
+
+const readPersistedSortState = (): SortDescriptor[] => {
+  if (!props.sortStorageKey) return []
   try {
     const raw = localStorage.getItem(props.sortStorageKey)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<PersistedSortState>
-    const key = normalizeSortKey(typeof parsed.key === 'string' ? parsed.key : '')
-    if (!key) return null
-    return { key, order: normalizeSortOrder(parsed.order) }
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as Partial<PersistedSortState & PersistedMultiSortState> | Array<Partial<SortDescriptor>>
+    if (Array.isArray(parsed)) {
+      return normalizeSortDescriptors(parsed)
+    }
+    if (Array.isArray(parsed.sorts)) {
+      return normalizeSortDescriptors(parsed.sorts)
+    }
+    const single = normalizeSortDescriptor(parsed)
+    return single ? [single] : []
   } catch (e) {
     console.error('[DataTable] Failed to read persisted sort state:', e)
-    return null
+    return []
   }
 }
 
-const writePersistedSortState = (state: PersistedSortState) => {
+const writePersistedSortState = (state: SortDescriptor[]) => {
   if (!props.sortStorageKey) return
   try {
-    localStorage.setItem(props.sortStorageKey, JSON.stringify(state))
+    if (props.multiSort) {
+      localStorage.setItem(props.sortStorageKey, JSON.stringify({ sorts: state }))
+      return
+    }
+    const primary = state[0]
+    if (!primary) return
+    localStorage.setItem(props.sortStorageKey, JSON.stringify(primary))
   } catch (e) {
     console.error('[DataTable] Failed to persist sort state:', e)
   }
 }
 
-const resolveInitialSortState = (): PersistedSortState | null => {
+const resolveInitialSortState = (): SortDescriptor[] => {
   const persisted = readPersistedSortState()
-  if (persisted) return persisted
+  if (persisted.length > 0) return persisted
 
-  const key = normalizeSortKey(props.defaultSortKey || '')
-  if (!key) return null
-  return { key, order: normalizeSortOrder(props.defaultSortOrder) }
+  if (props.multiSort && Array.isArray(props.defaultSorts) && props.defaultSorts.length > 0) {
+    return normalizeSortDescriptors(props.defaultSorts)
+  }
+
+  const single = normalizeSortDescriptor({
+    key: props.defaultSortKey || '',
+    order: props.defaultSortOrder
+  })
+  return single ? [single] : []
 }
 
-const applySortState = (state: PersistedSortState | null) => {
-  if (!state) return
-  sortKey.value = state.key
-  sortOrder.value = state.order
+const applySortState = (state: SortDescriptor[]) => {
+  sortDescriptors.value = [...state]
 }
 
 const isNullishOrEmpty = (value: any) => value === null || value === undefined || value === ''
@@ -536,37 +593,54 @@ watch(actionsExpanded, async () => {
   checkScrollable()
 })
 
-const handleSort = (key: string) => {
-  let newOrder: 'asc' | 'desc' = 'asc'
-  if (sortKey.value === key) {
-    newOrder = sortOrder.value === 'asc' ? 'desc' : 'asc'
+const getSortDescriptor = (key: string) => sortDescriptors.value.find((item) => item.key === key)
+const getSortPriority = (key: string) => {
+  const index = sortDescriptors.value.findIndex((item) => item.key === key)
+  return index >= 0 ? index + 1 : 0
+}
+
+const handleSort = (key: string, event?: MouseEvent) => {
+  const current = getSortDescriptor(key)
+  const currentOrder = current?.order
+  const nextOrder: 'asc' | 'desc' = currentOrder === 'asc' ? 'desc' : 'asc'
+
+  let nextState: SortDescriptor[]
+  if (props.multiSort && event?.shiftKey) {
+    if (current) {
+      nextState = sortDescriptors.value.map((item) =>
+        item.key === key ? { ...item, order: nextOrder } : item
+      )
+    } else {
+      nextState = [...sortDescriptors.value, { key, order: 'asc' }]
+    }
+  } else {
+    nextState = [{ key, order: nextOrder }]
   }
 
+  applySortState(nextState)
+
   if (props.serverSideSort) {
-    // Server-side sort mode: emit event and update internal state for UI feedback
-    sortKey.value = key
-    sortOrder.value = newOrder
-    emit('sort', key, newOrder)
-  } else {
-    // Client-side sort mode: just update internal state
-    sortKey.value = key
-    sortOrder.value = newOrder
+    if (props.multiSort) {
+      emit('sort-state-change', [...sortDescriptors.value])
+    } else {
+      const primary = sortDescriptors.value[0]
+      if (primary) emit('sort', primary.key, primary.order)
+    }
   }
 }
 
 const sortedData = computed(() => {
   // Server-side sort mode: return data as-is (server handles sorting)
-  if (props.serverSideSort || !sortKey.value || !props.data) return props.data
-
-  const key = sortKey.value
-  const order = sortOrder.value
+  if (props.serverSideSort || sortDescriptors.value.length === 0 || !props.data) return props.data
 
   // Stable sort (tie-break with original index) to avoid jitter when values are equal.
   return props.data
     .map((row, index) => ({ row, index }))
     .sort((a, b) => {
-      const cmp = compareSortValues(a.row?.[key], b.row?.[key])
-      if (cmp !== 0) return order === 'asc' ? cmp : -cmp
+      for (const descriptor of sortDescriptors.value) {
+        const cmp = compareSortValues(a.row?.[descriptor.key], b.row?.[descriptor.key])
+        if (cmp !== 0) return descriptor.order === 'asc' ? cmp : -cmp
+      }
       return a.index - b.index
     })
     .map(item => item.row)
@@ -663,37 +737,28 @@ onMounted(() => {
 watch(
   columnsSignature,
   () => {
-    // If current sort key is no longer sortable/visible, fall back to default/persisted.
-    const normalized = normalizeSortKey(sortKey.value)
-    if (!sortKey.value) {
-      const initial = resolveInitialSortState()
-      applySortState(initial)
+    const normalized = normalizeSortDescriptors(sortDescriptors.value)
+    if (normalized.length === 0) {
+      applySortState(resolveInitialSortState())
       return
     }
 
-    if (!normalized) {
-      const fallback = resolveInitialSortState()
-      if (fallback) {
-        applySortState(fallback)
-      } else {
-        sortKey.value = ''
-        sortOrder.value = 'asc'
-      }
+    if (normalized.length !== sortDescriptors.value.length) {
+      applySortState(normalized)
     }
   },
   { flush: 'post' }
 )
 
 watch(
-  [sortKey, sortOrder],
-  ([nextKey, nextOrder]) => {
+  sortDescriptors,
+  (nextState) => {
     if (!didInitSort.value) return
     if (!props.sortStorageKey) return
-    const key = normalizeSortKey(nextKey)
-    if (!key) return
-    writePersistedSortState({ key, order: normalizeSortOrder(nextOrder) })
+    if (nextState.length === 0) return
+    writePersistedSortState(nextState)
   },
-  { flush: 'post' }
+  { flush: 'post', deep: true }
 )
 
 defineExpose({

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math/rand/v2"
@@ -295,14 +296,14 @@ func NewAccountUsageService(
 // OAuth账号: 调用Anthropic API获取真实数据（需要profile scope），API响应缓存10分钟，窗口统计缓存1分钟
 // Setup Token账号: 根据session_window推算5h窗口，7d数据不可用（没有profile scope）
 // API Key账号: 不支持usage查询
-func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64) (*UsageInfo, error) {
+func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, forceRefresh bool) (*UsageInfo, error) {
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account failed: %w", err)
 	}
 
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
-		usage, err := s.getOpenAIUsage(ctx, account)
+		usage, err := s.getOpenAIUsage(ctx, account, forceRefresh)
 		if err == nil {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
@@ -492,7 +493,7 @@ func (s *AccountUsageService) syncActiveToPassive(ctx context.Context, accountID
 	}
 }
 
-func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Account, forceRefresh bool) (*UsageInfo, error) {
 	now := time.Now()
 	usage := &UsageInfo{UpdatedAt: &now}
 
@@ -507,18 +508,44 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.SevenDay = progress
 	}
 
-	if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
-		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
-			mergeAccountExtra(account, updates)
-			if usage.UpdatedAt == nil {
-				usage.UpdatedAt = &now
+	applySnapshot := func(updates map[string]any, resetAt *time.Time) {
+		mergeAccountExtra(account, updates)
+		if resetAt != nil {
+			account.RateLimitResetAt = resetAt
+		}
+		if usage.UpdatedAt == nil {
+			usage.UpdatedAt = &now
+		}
+		if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
+			usage.FiveHour = progress
+		}
+		if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
+			usage.SevenDay = progress
+		}
+	}
+
+	if forceRefresh {
+		updates, resetAt, err := s.probeOpenAICodexSnapshot(ctx, account)
+		if err != nil {
+			usage.ErrorCode = "network_error"
+			usage.Error = err.Error()
+			return usage, nil
+		}
+		if len(updates) > 0 || resetAt != nil {
+			if err := s.applyOpenAICodexProbeSnapshot(ctx, account.ID, updates, resetAt); err != nil {
+				usage.ErrorCode = "network_error"
+				usage.Error = err.Error()
+				return usage, nil
 			}
-			if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
-				usage.FiveHour = progress
+			if s != nil && s.cache != nil {
+				s.cache.openAIProbeCache.Store(account.ID, now)
 			}
-			if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
-				usage.SevenDay = progress
-			}
+			applySnapshot(updates, resetAt)
+		}
+	} else if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
+		if updates, resetAt, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && (len(updates) > 0 || resetAt != nil) {
+			s.persistOpenAICodexProbeSnapshot(account.ID, updates, resetAt)
+			applySnapshot(updates, resetAt)
 		}
 	}
 
@@ -590,26 +617,26 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 	return true
 }
 
-func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
+func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, *time.Time, error) {
 	if account == nil || !account.IsOAuth() {
-		return nil, nil
+		return nil, nil, nil
 	}
 	accessToken := account.GetOpenAIAccessToken()
 	if accessToken == "" {
-		return nil, fmt.Errorf("no access token available")
+		return nil, nil, fmt.Errorf("no access token available")
 	}
 	modelID := openaipkg.DefaultTestModel
 	payload := createOpenAITestPayload(modelID, true)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal openai probe payload: %w", err)
+		return nil, nil, fmt.Errorf("marshal openai probe payload: %w", err)
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, chatgptCodexURL, bytes.NewReader(payloadBytes))
 	if err != nil {
-		return nil, fmt.Errorf("create openai probe request: %w", err)
+		return nil, nil, fmt.Errorf("create openai probe request: %w", err)
 	}
 	req.Host = "chatgpt.com"
 	req.Header.Set("Content-Type", "application/json")
@@ -638,51 +665,173 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 		ResponseHeaderTimeout: 10 * time.Second,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("build openai probe client: %w", err)
+		return nil, nil, fmt.Errorf("build openai probe client: %w", err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("openai codex probe request failed: %w", err)
+		return nil, nil, fmt.Errorf("openai codex probe request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		probeErr := buildOpenAIUsageProbeUnauthorizedError(body)
+		s.handleOpenAIUsageProbeUnauthorized(reqCtx, account, body, probeErr)
+		return nil, nil, probeErr
+	}
 
-	updates, err := extractOpenAICodexProbeUpdates(resp)
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(resp)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if len(updates) > 0 {
-		s.persistOpenAICodexProbeSnapshot(account.ID, updates)
-		return updates, nil
+	if len(updates) > 0 || resetAt != nil {
+		return updates, resetAt, nil
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
-func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any) {
+func buildOpenAIUsageProbeUnauthorizedError(body []byte) error {
+	msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	if msg != "" {
+		msg = truncateForLog([]byte(msg), 512)
+		return fmt.Errorf("openai codex probe returned status 401: %s", msg)
+	}
+	return fmt.Errorf("openai codex probe returned status 401")
+}
+
+func isOpenAIUsageProbeUnauthorizedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "openai codex probe returned status 401")
+}
+
+func (s *AccountUsageService) handleOpenAIUsageProbeUnauthorized(ctx context.Context, account *Account, body []byte, fallbackErr error) {
+	if s == nil || s.accountRepo == nil || account == nil || account.ID <= 0 {
+		return
+	}
+	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	if upstreamMsg != "" {
+		upstreamMsg = truncateForLog([]byte(upstreamMsg), 512)
+	}
+	upstreamCode := strings.TrimSpace(extractUpstreamErrorCode(body))
+	message := "OpenAI usage probe unauthorized (401)"
+	switch upstreamCode {
+	case "token_invalidated", "token_revoked":
+		message = "Token revoked (401): account authentication permanently revoked"
+	case "account_deactivated":
+		message = "Account deactivated (401): account has been deactivated"
+	}
+	if upstreamMsg != "" {
+		switch upstreamCode {
+		case "token_invalidated", "token_revoked":
+			message = "Token revoked (401): " + upstreamMsg
+		case "account_deactivated":
+			message = "Account deactivated (401): " + upstreamMsg
+		default:
+			message = "OpenAI usage probe unauthorized (401): " + upstreamMsg
+		}
+	} else if fallbackErr != nil && strings.TrimSpace(fallbackErr.Error()) != "" {
+		message = strings.TrimSpace(fallbackErr.Error())
+	}
+	if err := s.accountRepo.SetError(ctx, account.ID, message); err != nil {
+		slog.Warn("openai_usage_probe_set_error_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	account.Status = StatusError
+	account.ErrorMessage = message
+	slog.Warn("openai_usage_probe_account_marked_error", "account_id", account.ID, "message", message)
+}
+
+func (s *AccountUsageService) applyOpenAICodexProbeSnapshot(ctx context.Context, accountID int64, updates map[string]any, resetAt *time.Time) error {
+	if s == nil || s.accountRepo == nil || accountID <= 0 {
+		return nil
+	}
+	if len(updates) == 0 && resetAt == nil {
+		return nil
+	}
+	if len(updates) > 0 {
+		if err := s.accountRepo.UpdateExtra(ctx, accountID, updates); err != nil {
+			return err
+		}
+	}
+	if resetAt != nil {
+		if err := s.accountRepo.SetRateLimited(ctx, accountID, *resetAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any, resetAt *time.Time) {
 	if s == nil || s.accountRepo == nil || accountID <= 0 {
 		return
 	}
-	if len(updates) == 0 {
+	if len(updates) == 0 && resetAt == nil {
 		return
 	}
 
 	go func() {
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer updateCancel()
-		_ = s.accountRepo.UpdateExtra(updateCtx, accountID, updates)
+		if err := s.applyOpenAICodexProbeSnapshot(updateCtx, accountID, updates, resetAt); err != nil {
+			slog.Warn("openai_codex_probe_snapshot_persist_failed", "account_id", accountID, "error", err)
+		}
 	}()
 }
 
-func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error) {
+func codexUsagePercentExhausted(value *float64) bool {
+	return value != nil && *value >= 100-1e-9
+}
+
+func codexRateLimitResetAtFromSnapshot(snapshot *OpenAICodexUsageSnapshot, fallbackNow time.Time) *time.Time {
+	if snapshot == nil {
+		return nil
+	}
+	normalized := snapshot.Normalize()
+	if normalized == nil {
+		return nil
+	}
+	baseTime := codexSnapshotBaseTime(snapshot, fallbackNow)
+	if codexUsagePercentExhausted(normalized.Used7dPercent) && normalized.Reset7dSeconds != nil {
+		resetAt := baseTime.Add(time.Duration(*normalized.Reset7dSeconds) * time.Second)
+		return &resetAt
+	}
+	if codexUsagePercentExhausted(normalized.Used5hPercent) && normalized.Reset5hSeconds != nil {
+		resetAt := baseTime.Add(time.Duration(*normalized.Reset5hSeconds) * time.Second)
+		return &resetAt
+	}
+	return nil
+}
+
+func extractOpenAICodexProbeSnapshot(resp *http.Response) (map[string]any, *time.Time, error) {
 	if resp == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-		return buildCodexUsageExtraUpdates(snapshot, time.Now()), nil
+		baseTime := time.Now()
+		updates := buildCodexUsageExtraUpdates(snapshot, baseTime)
+		resetAt := codexRateLimitResetAtFromSnapshot(snapshot, baseTime)
+		if len(updates) > 0 {
+			return updates, resetAt, nil
+		}
+		return nil, resetAt, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai codex probe returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		if msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body))); msg != "" {
+			return nil, nil, fmt.Errorf("openai codex probe returned status %d: %s", resp.StatusCode, truncateForLog([]byte(msg), 512))
+		}
+		if raw := sanitizeUpstreamErrorMessage(strings.TrimSpace(string(body))); raw != "" {
+			return nil, nil, fmt.Errorf("openai codex probe returned status %d: %s", resp.StatusCode, truncateForLog([]byte(raw), 512))
+		}
+		return nil, nil, fmt.Errorf("openai codex probe returned status %d", resp.StatusCode)
 	}
-	return nil, nil
+	return nil, nil, nil
+}
+
+func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error) {
+	updates, _, err := extractOpenAICodexProbeSnapshot(resp)
+	return updates, err
 }
 
 func mergeAccountExtra(account *Account, updates map[string]any) {

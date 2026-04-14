@@ -311,6 +311,11 @@ func registerAnnouncementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	openai := admin.Group("/openai")
 	{
+		openai.GET("/public-links", h.Admin.OpenAIOAuth.ListPublicAddLinks)
+		openai.POST("/public-links", h.Admin.OpenAIOAuth.CreatePublicAddLink)
+		openai.PUT("/public-links/:token", h.Admin.OpenAIOAuth.UpdatePublicAddLink)
+		openai.POST("/public-links/:token/rotate", h.Admin.OpenAIOAuth.RotatePublicAddLink)
+		openai.DELETE("/public-links/:token", h.Admin.OpenAIOAuth.DeletePublicAddLink)
 		openai.POST("/generate-auth-url", h.Admin.OpenAIOAuth.GenerateAuthURL)
 		openai.POST("/exchange-code", h.Admin.OpenAIOAuth.ExchangeCode)
 		openai.POST("/refresh-token", h.Admin.OpenAIOAuth.RefreshToken)
@@ -481,6 +486,8 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		subscriptions.GET("/:id/progress", h.Admin.Subscription.GetProgress)
 		subscriptions.POST("/assign", h.Admin.Subscription.Assign)
 		subscriptions.POST("/bulk-assign", h.Admin.Subscription.BulkAssign)
+		subscriptions.POST("/bulk-set-expiry", h.Admin.Subscription.BulkSetExpiry)
+		subscriptions.POST("/bulk-revoke", h.Admin.Subscription.BulkRevoke)
 		subscriptions.POST("/:id/extend", h.Admin.Subscription.Extend)
 		subscriptions.POST("/:id/reset-quota", h.Admin.Subscription.ResetQuota)
 		subscriptions.DELETE("/:id", h.Admin.Subscription.Revoke)

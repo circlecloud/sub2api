@@ -59,6 +59,17 @@
                 t('admin.accounts.oauth.openai.mobileRefreshTokenAuth', '手动输入 Mobile RT')
               }}</span>
             </label>
+            <label v-if="showTokenFileOption" class="flex cursor-pointer items-center gap-2">
+              <input
+                v-model="inputMethod"
+                type="radio"
+                value="token_file"
+                class="text-blue-600 focus:ring-blue-500"
+              />
+              <span class="text-sm text-blue-900 dark:text-blue-200">{{
+                t('admin.accounts.publicAddPage.importOptionLabel')
+              }}</span>
+            </label>
             <label v-if="showSessionTokenOption" class="flex cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
@@ -300,6 +311,222 @@
           </div>
         </div>
 
+        <!-- Token File Import (OpenAI) -->
+        <div v-if="inputMethod === 'token_file'" class="space-y-4">
+          <div
+            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
+          >
+            <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
+              {{ t('admin.accounts.publicAddPage.importDesc') }}
+            </p>
+
+            <input
+              ref="tokenFileInputRef"
+              type="file"
+              class="hidden"
+              accept=".json,.txt,application/json,text/plain"
+              multiple
+              @change="handleTokenFileInputChange"
+            />
+
+            <div
+              class="mb-4 rounded-xl border-2 border-dashed p-5 transition"
+              :class="tokenFileDropzoneClass"
+              @dragenter.prevent="handleTokenFileDragEnter"
+              @dragover.prevent="handleTokenFileDragOver"
+              @dragleave.prevent="handleTokenFileDragLeave"
+              @drop.prevent="handleTokenFileDrop"
+            >
+              <div class="flex flex-col items-center justify-center gap-3 text-center">
+                <Icon name="upload" size="lg" class="text-primary-500" />
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">
+                    {{ t('admin.accounts.publicAddPage.dropzoneTitle') }}
+                  </p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.accounts.publicAddPage.dropzoneHint') }}
+                  </p>
+                </div>
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  :disabled="isTokenFileProcessing"
+                  @click="openTokenFilePicker"
+                >
+                  {{ t('admin.accounts.publicAddPage.importChooseFile') }}
+                </button>
+              </div>
+            </div>
+
+            <div v-if="tokenFilePreviewItems.length > 0 || tokenFileProgressVisible" class="mb-4 space-y-3">
+              <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800">
+                <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div class="min-w-0 flex-1 space-y-3">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
+                        {{ t('admin.accounts.publicAddPage.previewTitle') }}
+                      </h5>
+                      <span
+                        v-if="tokenFilePreviewItems.length > 0"
+                        class="rounded-full bg-white px-2 py-0.5 text-xs text-gray-600 shadow-sm dark:bg-dark-700 dark:text-gray-300"
+                      >
+                        {{ tokenFilePreviewItems.length }}
+                      </span>
+                    </div>
+
+                    <p
+                      v-if="tokenFilePreviewItems.length > 0"
+                      class="text-sm text-gray-600 dark:text-gray-300"
+                    >
+                      {{
+                        t('admin.accounts.publicAddPage.importSummary', {
+                          total: tokenFilePreviewItems.length,
+                          ready: tokenFileReadyCount,
+                          invalid: tokenFileInvalidCount,
+                          created: tokenFileCreatedCount
+                        })
+                      }}
+                    </p>
+
+                    <div
+                      v-if="tokenFileProgressVisible && tokenFileProgressTotal > 0"
+                      class="space-y-2 rounded-lg border border-primary-100 bg-white/80 p-3 dark:border-primary-800/50 dark:bg-dark-700/70"
+                    >
+                      <div class="flex items-center justify-between gap-3 text-xs text-gray-600 dark:text-gray-300">
+                        <span>{{ tokenFileProgressText }}</span>
+                        <span>{{ tokenFileProgressPercent }}%</span>
+                      </div>
+                      <div class="h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-600">
+                        <div
+                          class="h-full rounded-full bg-primary-500 transition-all duration-300"
+                          :style="{ width: `${tokenFileProgressPercent}%` }"
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex flex-wrap gap-2 lg:max-w-sm lg:justify-end">
+                    <button
+                      v-if="tokenFilePreviewItems.length > 0"
+                      class="btn btn-secondary px-3 py-2 text-xs"
+                      type="button"
+                      :disabled="isTokenFileProcessing"
+                      @click="tokenFilePreviewExpanded = !tokenFilePreviewExpanded"
+                    >
+                      <Icon
+                        :name="tokenFilePreviewExpanded ? 'chevronUp' : 'chevronDown'"
+                        size="sm"
+                        class="mr-1"
+                      />
+                      {{ t(tokenFilePreviewExpanded ? 'common.collapse' : 'common.expand') }}
+                    </button>
+                    <button
+                      class="btn btn-secondary px-3 py-2 text-xs"
+                      type="button"
+                      :disabled="isTokenFileProcessing || tokenFilePreviewItems.length === 0"
+                      @click="emit('clear-token-file-items')"
+                    >
+                      {{ t('admin.accounts.publicAddPage.clearImports') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-primary px-4 py-2 text-xs"
+                      :disabled="isTokenFileProcessing || tokenFileReadyCount === 0"
+                      @click="emit('confirm-token-file-create')"
+                    >
+                      <svg
+                        v-if="isTokenFileProcessing && tokenFileProgressPhase === 'creating'"
+                        class="-ml-1 mr-2 h-4 w-4 animate-spin"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          class="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          stroke-width="4"
+                        ></circle>
+                        <path
+                          class="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        ></path>
+                      </svg>
+                      <Icon v-else name="sparkles" size="sm" class="mr-2" />
+                      {{
+                        isTokenFileProcessing && tokenFileProgressPhase === 'creating'
+                          ? t('common.processing')
+                          : t('admin.accounts.publicAddPage.confirmCreate', { count: tokenFileReadyCount })
+                      }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="tokenFilePreviewItems.length > 0 && tokenFilePreviewExpanded" class="max-h-[28rem] overflow-y-auto pr-1">
+                <div class="space-y-2">
+                  <div
+                    v-for="item in tokenFilePreviewItems"
+                    :key="item.id"
+                    class="rounded-xl border p-3"
+                    :class="tokenFilePreviewCardClass(item.status)"
+                  >
+                    <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div class="min-w-0 flex-1 space-y-2">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span class="truncate text-sm font-semibold text-gray-900 dark:text-white">
+                            {{ item.fileName }}
+                          </span>
+                          <span
+                            class="rounded-full px-2 py-0.5 text-xs font-medium"
+                            :class="tokenFilePreviewBadgeClass(item.status)"
+                          >
+                            {{ tokenFilePreviewStatusText(item.status) }}
+                          </span>
+                        </div>
+
+                        <div class="grid gap-2 text-xs text-gray-600 dark:text-gray-300 sm:grid-cols-2">
+                          <div v-if="item.modeLabel">
+                            <span class="font-medium">{{ t('admin.accounts.publicAddPage.importDetectedMode') }}</span>
+                            <span class="ml-1">{{ item.modeLabel }}</span>
+                          </div>
+                          <div v-if="item.clientId">
+                            <span class="font-medium">Client ID</span>
+                            <span class="ml-1 break-all">{{ item.clientId }}</span>
+                          </div>
+                          <div v-if="item.email" class="sm:col-span-2">
+                            <span class="font-medium">{{ t('admin.accounts.publicAddPage.importDetectedEmail') }}</span>
+                            <span class="ml-1 break-all">{{ item.email }}</span>
+                          </div>
+                          <div v-if="item.createdAccountName" class="sm:col-span-2">
+                            <span class="font-medium">{{ t('admin.accounts.publicAddPage.createdAccountName') }}</span>
+                            <span class="ml-1 break-all">{{ item.createdAccountName }}</span>
+                          </div>
+                        </div>
+
+                        <p v-if="item.error" class="text-sm text-red-600 dark:text-red-300">
+                          {{ item.error }}
+                        </p>
+                      </div>
+
+                      <button
+                        class="btn btn-secondary px-3 py-2 text-xs"
+                        type="button"
+                        :disabled="isTokenFileProcessing"
+                        @click="emit('remove-token-file-item', item.id)"
+                      >
+                        {{ t('common.delete') }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Manual Authorization Flow -->
         <div v-if="inputMethod === 'manual'" class="space-y-4">
           <p class="mb-4 text-sm text-blue-800 dark:text-blue-300">
@@ -529,6 +756,42 @@
                     {{ error }}
                   </p>
                 </div>
+
+                <div class="mt-4">
+                  <button
+                    type="button"
+                    class="btn btn-primary w-full"
+                    :disabled="loading || !authCodeInput.trim()"
+                    @click="emit('exchange-code', authCodeInput)"
+                  >
+                    <svg
+                      v-if="loading"
+                      class="-ml-1 mr-2 h-4 w-4 animate-spin"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        class="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        stroke-width="4"
+                      ></circle>
+                      <path
+                        class="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    <Icon v-else name="sparkles" size="sm" class="mr-2" />
+                    {{
+                      loading
+                        ? t(getOAuthKey('validating'))
+                        : t(getOAuthKey('validateAndCreate'))
+                    }}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -543,7 +806,11 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
-import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
+import type {
+  AddMethod,
+  AuthInputMethod,
+  OAuthTokenFilePreviewItem
+} from '@/composables/useAccountOAuth'
 import type { AccountPlatform } from '@/types'
 
 interface Props {
@@ -559,8 +826,18 @@ interface Props {
   showCookieOption?: boolean // Whether to show cookie auto-auth option
   showRefreshTokenOption?: boolean // Whether to show refresh token input option (OpenAI only)
   showMobileRefreshTokenOption?: boolean // Whether to show mobile refresh token option (OpenAI only)
-  showSessionTokenOption?: boolean
-  showAccessTokenOption?: boolean
+  showTokenFileOption?: boolean // Whether to show token file import option (OpenAI public page)
+  showSessionTokenOption?: boolean // Whether to show session token input option (Sora only)
+  showAccessTokenOption?: boolean // Whether to show access token input option (Sora only)
+  tokenFilePreviewItems?: OAuthTokenFilePreviewItem[]
+  tokenFileReadyCount?: number
+  tokenFileInvalidCount?: number
+  tokenFileCreatedCount?: number
+  tokenFileBusy?: boolean
+  tokenFileProgressVisible?: boolean
+  tokenFileProgressPhase?: 'parsing' | 'creating'
+  tokenFileProgressCurrent?: number
+  tokenFileProgressTotal?: number
   platform?: AccountPlatform // Platform type for different UI/text
   showProjectId?: boolean // New prop to control project ID visibility
 }
@@ -577,8 +854,18 @@ const props = withDefaults(defineProps<Props>(), {
   showCookieOption: true,
   showRefreshTokenOption: false,
   showMobileRefreshTokenOption: false,
+  showTokenFileOption: false,
   showSessionTokenOption: false,
   showAccessTokenOption: false,
+  tokenFilePreviewItems: () => [],
+  tokenFileReadyCount: 0,
+  tokenFileInvalidCount: 0,
+  tokenFileCreatedCount: 0,
+  tokenFileBusy: false,
+  tokenFileProgressVisible: false,
+  tokenFileProgressPhase: 'parsing',
+  tokenFileProgressCurrent: 0,
+  tokenFileProgressTotal: 0,
   platform: 'anthropic',
   showProjectId: true
 })
@@ -591,6 +878,10 @@ const emit = defineEmits<{
   'validate-mobile-refresh-token': [refreshToken: string]
   'validate-session-token': [sessionToken: string]
   'import-access-token': [accessToken: string]
+  'import-token-files': [files: File[]]
+  'remove-token-file-item': [id: string]
+  'clear-token-file-items': []
+  'confirm-token-file-create': []
   'update:inputMethod': [method: AuthInputMethod]
 }>()
 
@@ -633,9 +924,20 @@ const sessionTokenInput = ref('')
 const showHelpDialog = ref(false)
 const oauthState = ref('')
 const projectId = ref('')
+const tokenFileInputRef = ref<HTMLInputElement | null>(null)
+const isTokenFileDragOver = ref(false)
+const tokenFilePreviewExpanded = ref(true)
 
 // Computed: show method selection when either cookie or refresh token option is enabled
-const showMethodSelection = computed(() => props.showCookieOption || props.showRefreshTokenOption || props.showMobileRefreshTokenOption || props.showSessionTokenOption || props.showAccessTokenOption)
+const showMethodSelection = computed(
+  () =>
+    props.showCookieOption ||
+    props.showRefreshTokenOption ||
+    props.showMobileRefreshTokenOption ||
+    props.showTokenFileOption ||
+    props.showSessionTokenOption ||
+    props.showAccessTokenOption
+)
 
 // Clipboard
 const { copied, copyToClipboard } = useClipboard()
@@ -656,7 +958,71 @@ const parsedRefreshTokenCount = computed(() => {
     .filter((rt) => rt).length
 })
 
+const isTokenFileProcessing = computed(() => props.tokenFileBusy || props.loading)
+
+const tokenFileDropzoneClass = computed(() =>
+  isTokenFileDragOver.value
+    ? 'border-primary-400 bg-primary-50 dark:border-primary-500 dark:bg-primary-900/20'
+    : 'border-gray-300 bg-gray-50 dark:border-dark-600 dark:bg-dark-800/70'
+)
+
+const tokenFileProgressPercent = computed(() => {
+  if (props.tokenFileProgressTotal <= 0) return 0
+  return Math.max(
+    0,
+    Math.min(100, Math.round((props.tokenFileProgressCurrent / props.tokenFileProgressTotal) * 100))
+  )
+})
+
+const tokenFileProgressText = computed(() => {
+  const total = props.tokenFileProgressTotal
+  const current = Math.min(props.tokenFileProgressCurrent, total)
+  if (total <= 0) return ''
+  if (isTokenFileProcessing.value) {
+    return props.tokenFileProgressPhase === 'creating'
+      ? t('admin.accounts.publicAddPage.importProgressCreating', { current, total })
+      : t('admin.accounts.publicAddPage.importProgressParsing', { current, total })
+  }
+  return t('admin.accounts.publicAddPage.importProgressCompleted', { current, total })
+})
+
+const tokenFilePreviewStatusText = (status: OAuthTokenFilePreviewItem['status']) => {
+  if (status === 'created') return t('admin.accounts.publicAddPage.previewStatusCreated')
+  if (status === 'failed') return t('admin.accounts.publicAddPage.previewStatusFailed')
+  if (status === 'invalid') return t('admin.accounts.publicAddPage.previewStatusInvalid')
+  return t('admin.accounts.publicAddPage.previewStatusReady')
+}
+
+const tokenFilePreviewBadgeClass = (status: OAuthTokenFilePreviewItem['status']) => {
+  if (status === 'created') {
+    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+  }
+  if (status === 'failed' || status === 'invalid') {
+    return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+  }
+  return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+}
+
+const tokenFilePreviewCardClass = (status: OAuthTokenFilePreviewItem['status']) => {
+  if (status === 'created') {
+    return 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-800/40 dark:bg-emerald-900/10'
+  }
+  if (status === 'failed' || status === 'invalid') {
+    return 'border-red-200 bg-red-50/60 dark:border-red-800/40 dark:bg-red-900/10'
+  }
+  return 'border-blue-200 bg-blue-50/60 dark:border-blue-800/40 dark:bg-blue-900/10'
+}
+
 // Watchers
+watch(
+  () => props.tokenFilePreviewItems.length,
+  (length) => {
+    if (length === 0) {
+      tokenFilePreviewExpanded.value = true
+    }
+  }
+)
+
 watch(inputMethod, (newVal) => {
   emit('update:inputMethod', newVal)
 })
@@ -727,6 +1093,50 @@ const handleValidateRefreshToken = () => {
   }
 }
 
+const emitTokenFiles = (files: File[]) => {
+  if (isTokenFileProcessing.value) return
+  if (files.length > 0) {
+    emit('import-token-files', files)
+  }
+}
+
+const openTokenFilePicker = () => {
+  if (isTokenFileProcessing.value) return
+  tokenFileInputRef.value?.click()
+}
+
+const handleTokenFileInputChange = (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  emitTokenFiles(files)
+  input.value = ''
+}
+
+const handleTokenFileDragEnter = () => {
+  if (isTokenFileProcessing.value) return
+  isTokenFileDragOver.value = true
+}
+
+const handleTokenFileDragOver = () => {
+  if (isTokenFileProcessing.value) return
+  isTokenFileDragOver.value = true
+}
+
+const handleTokenFileDragLeave = (event: DragEvent) => {
+  if (isTokenFileProcessing.value) return
+  const currentTarget = event.currentTarget as HTMLElement | null
+  const relatedTarget = event.relatedTarget as Node | null
+  if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) {
+    return
+  }
+  isTokenFileDragOver.value = false
+}
+
+const handleTokenFileDrop = (event: DragEvent) => {
+  isTokenFileDragOver.value = false
+  emitTokenFiles(Array.from(event.dataTransfer?.files || []))
+}
+
 // Expose methods and state
 defineExpose({
   authCode: authCodeInput,
@@ -744,6 +1154,11 @@ defineExpose({
     refreshTokenInput.value = ''
     sessionTokenInput.value = ''
     inputMethod.value = 'manual'
+    isTokenFileDragOver.value = false
+    tokenFilePreviewExpanded.value = true
+    if (tokenFileInputRef.value) {
+      tokenFileInputRef.value.value = ''
+    }
     showHelpDialog.value = false
   }
 })

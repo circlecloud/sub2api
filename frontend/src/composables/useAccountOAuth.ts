@@ -3,7 +3,25 @@ import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 
 export type AddMethod = 'oauth' | 'setup-token'
-export type AuthInputMethod = 'manual' | 'cookie' | 'refresh_token' | 'mobile_refresh_token' | 'session_token' | 'access_token'
+export type AuthInputMethod =
+  | 'manual'
+  | 'cookie'
+  | 'refresh_token'
+  | 'mobile_refresh_token'
+  | 'session_token'
+  | 'access_token'
+  | 'token_file'
+
+export interface OAuthTokenFilePreviewItem {
+  id: string
+  fileName: string
+  modeLabel?: string
+  clientId?: string
+  email?: string
+  status: 'ready' | 'created' | 'failed' | 'invalid'
+  error?: string
+  createdAccountName?: string
+}
 
 export interface OAuthState {
   authUrl: string

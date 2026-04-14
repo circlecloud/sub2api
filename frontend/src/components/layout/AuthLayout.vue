@@ -1,5 +1,5 @@
 <template>
-  <div class="relative flex min-h-screen items-center justify-center overflow-hidden p-4">
+  <div class="relative flex min-h-screen justify-center overflow-hidden p-4" :class="layoutClasses">
     <!-- Background -->
     <div
       class="absolute inset-0 bg-gradient-to-br from-gray-50 via-primary-50/30 to-gray-100 dark:from-dark-950 dark:via-dark-900 dark:to-dark-950"
@@ -25,7 +25,7 @@
     </div>
 
     <!-- Content Container -->
-    <div class="relative z-10 w-full max-w-md">
+    <div class="relative z-10 w-full" :class="contentWidthClass">
       <!-- Logo/Brand -->
       <div class="mb-8 text-center">
         <!-- Custom Logo or Default Logo -->
@@ -45,7 +45,7 @@
       </div>
 
       <!-- Card Container -->
-      <div class="card-glass rounded-2xl p-8 shadow-glass">
+      <div class="card-glass rounded-2xl shadow-glass" :class="cardPaddingClass">
         <slot />
       </div>
 
@@ -67,6 +67,22 @@ import { computed, onMounted } from 'vue'
 import { useAppStore } from '@/stores'
 import { sanitizeUrl } from '@/utils/url'
 
+type AuthLayoutWidth = 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '4xl' | '6xl' | '7xl'
+type AuthLayoutVerticalAlign = 'center' | 'top'
+type AuthLayoutCardPadding = 'normal' | 'compact'
+
+interface Props {
+  maxWidth?: AuthLayoutWidth
+  verticalAlign?: AuthLayoutVerticalAlign
+  cardPadding?: AuthLayoutCardPadding
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  maxWidth: 'md',
+  verticalAlign: 'center',
+  cardPadding: 'normal'
+})
+
 const appStore = useAppStore()
 
 const siteName = computed(() => appStore.siteName || 'Sub2API')
@@ -75,6 +91,28 @@ const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
 
 const currentYear = computed(() => new Date().getFullYear())
+
+const layoutClasses = computed(() =>
+  props.verticalAlign === 'top' ? 'items-start py-6 sm:py-10' : 'items-center'
+)
+
+const contentWidthClass = computed(() => {
+  const widthMap: Record<AuthLayoutWidth, string> = {
+    sm: 'max-w-sm',
+    md: 'max-w-md',
+    lg: 'max-w-lg',
+    xl: 'max-w-xl',
+    '2xl': 'max-w-2xl',
+    '4xl': 'max-w-4xl',
+    '6xl': 'max-w-6xl',
+    '7xl': 'max-w-7xl'
+  }
+  return widthMap[props.maxWidth]
+})
+
+const cardPaddingClass = computed(() =>
+  props.cardPadding === 'compact' ? 'p-5 sm:p-6 lg:p-8' : 'p-8'
+)
 
 onMounted(() => {
   appStore.fetchPublicSettings()

@@ -25,18 +25,20 @@ var MaxExpiresAt = time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
 const MaxValidityDays = 36500
 
 var (
-	ErrSubscriptionNotFound       = infraerrors.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found")
-	ErrSubscriptionExpired        = infraerrors.Forbidden("SUBSCRIPTION_EXPIRED", "subscription has expired")
-	ErrSubscriptionSuspended      = infraerrors.Forbidden("SUBSCRIPTION_SUSPENDED", "subscription is suspended")
-	ErrSubscriptionAlreadyExists  = infraerrors.Conflict("SUBSCRIPTION_ALREADY_EXISTS", "subscription already exists for this user and group")
-	ErrSubscriptionAssignConflict = infraerrors.Conflict("SUBSCRIPTION_ASSIGN_CONFLICT", "subscription exists but request conflicts with existing assignment semantics")
-	ErrGroupNotSubscriptionType   = infraerrors.BadRequest("GROUP_NOT_SUBSCRIPTION_TYPE", "group is not a subscription type")
-	ErrInvalidInput               = infraerrors.BadRequest("INVALID_INPUT", "at least one of resetDaily, resetWeekly, or resetMonthly must be true")
-	ErrDailyLimitExceeded         = infraerrors.TooManyRequests("DAILY_LIMIT_EXCEEDED", "daily usage limit exceeded")
-	ErrWeeklyLimitExceeded        = infraerrors.TooManyRequests("WEEKLY_LIMIT_EXCEEDED", "weekly usage limit exceeded")
-	ErrMonthlyLimitExceeded       = infraerrors.TooManyRequests("MONTHLY_LIMIT_EXCEEDED", "monthly usage limit exceeded")
-	ErrSubscriptionNilInput       = infraerrors.BadRequest("SUBSCRIPTION_NIL_INPUT", "subscription input cannot be nil")
-	ErrAdjustWouldExpire          = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
+	ErrSubscriptionNotFound          = infraerrors.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found")
+	ErrSubscriptionExpired           = infraerrors.Forbidden("SUBSCRIPTION_EXPIRED", "subscription has expired")
+	ErrSubscriptionSuspended         = infraerrors.Forbidden("SUBSCRIPTION_SUSPENDED", "subscription is suspended")
+	ErrSubscriptionAlreadyExists     = infraerrors.Conflict("SUBSCRIPTION_ALREADY_EXISTS", "subscription already exists for this user and group")
+	ErrSubscriptionAssignConflict    = infraerrors.Conflict("SUBSCRIPTION_ASSIGN_CONFLICT", "subscription exists but request conflicts with existing assignment semantics")
+	ErrGroupNotSubscriptionType      = infraerrors.BadRequest("GROUP_NOT_SUBSCRIPTION_TYPE", "group is not a subscription type")
+	ErrInvalidInput                  = infraerrors.BadRequest("INVALID_INPUT", "at least one of resetDaily, resetWeekly, or resetMonthly must be true")
+	ErrDailyLimitExceeded            = infraerrors.TooManyRequests("DAILY_LIMIT_EXCEEDED", "daily usage limit exceeded")
+	ErrWeeklyLimitExceeded           = infraerrors.TooManyRequests("WEEKLY_LIMIT_EXCEEDED", "weekly usage limit exceeded")
+	ErrMonthlyLimitExceeded          = infraerrors.TooManyRequests("MONTHLY_LIMIT_EXCEEDED", "monthly usage limit exceeded")
+	ErrSubscriptionNilInput          = infraerrors.BadRequest("SUBSCRIPTION_NIL_INPUT", "subscription input cannot be nil")
+	ErrAdjustWouldExpire             = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
+	ErrInvalidSubscriptionExpiry     = infraerrors.BadRequest("INVALID_SUBSCRIPTION_EXPIRES_AT", "subscription expires_at must be a valid timestamp not later than 2099-12-31T23:59:59Z")
+	ErrSubscriptionBatchFilterNeeded = infraerrors.BadRequest("SUBSCRIPTION_BATCH_FILTER_REQUIRED", "at least one batch filter must be provided")
 )
 
 // SubscriptionService 订阅服务
@@ -553,6 +555,211 @@ func (s *SubscriptionService) ExtendSubscription(ctx context.Context, subscripti
 	}
 
 	return s.userSubRepo.GetByID(ctx, subscriptionID)
+}
+
+// SubscriptionBatchFilter describes the current list filter selection for batch operations.
+type SubscriptionBatchFilter struct {
+	UserID   *int64
+	GroupID  *int64
+	Status   string
+	Platform string
+}
+
+func (f SubscriptionBatchFilter) normalized() SubscriptionBatchFilter {
+	f.Status = strings.TrimSpace(strings.ToLower(f.Status))
+	f.Platform = strings.TrimSpace(strings.ToLower(f.Platform))
+	return f
+}
+
+func (f SubscriptionBatchFilter) HasCriteria() bool {
+	return f.UserID != nil || f.GroupID != nil || strings.TrimSpace(f.Status) != "" || strings.TrimSpace(f.Platform) != ""
+}
+
+// BulkSetSubscriptionExpiryResult 表示按当前筛选结果统一设置订阅到期时间的结果。
+type BulkSetSubscriptionExpiryResult struct {
+	ExpiresAt    time.Time
+	Status       string
+	UpdatedCount int
+}
+
+// BulkRevokeSubscriptionsResult 表示按当前筛选结果批量删除订阅的结果。
+type BulkRevokeSubscriptionsResult struct {
+	DeletedCount int
+}
+
+type subscriptionCacheTarget struct {
+	UserID  int64
+	GroupID int64
+}
+
+func (s *SubscriptionService) listAllFilteredSubscriptions(ctx context.Context, filter SubscriptionBatchFilter) ([]UserSubscription, error) {
+	filter = filter.normalized()
+	if !filter.HasCriteria() {
+		return nil, ErrSubscriptionBatchFilterNeeded
+	}
+
+	const pageSize = 100
+	page := 1
+	allSubs := make([]UserSubscription, 0)
+	for {
+		subs, pag, err := s.List(ctx, page, pageSize, filter.UserID, filter.GroupID, filter.Status, filter.Platform, "created_at", "desc")
+		if err != nil {
+			return nil, err
+		}
+		allSubs = append(allSubs, subs...)
+		if pag == nil || page >= pag.Pages {
+			break
+		}
+		page++
+	}
+	return allSubs, nil
+}
+
+func desiredSubscriptionStatusAfterExpiryUpdate(currentStatus, targetStatus string) string {
+	if currentStatus == SubscriptionStatusSuspended {
+		return SubscriptionStatusSuspended
+	}
+	return targetStatus
+}
+
+func (s *SubscriptionService) invalidateSubscriptionTargets(targets map[subscriptionCacheTarget]struct{}) {
+	if len(targets) == 0 {
+		return
+	}
+
+	pairs := make([]subscriptionCacheTarget, 0, len(targets))
+	for target := range targets {
+		pairs = append(pairs, target)
+		s.InvalidateSubCache(target.UserID, target.GroupID)
+	}
+	if s.subCacheL1 != nil {
+		s.subCacheL1.Wait()
+	}
+	if s.billingCacheService != nil {
+		go func(cacheTargets []subscriptionCacheTarget) {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			for _, target := range cacheTargets {
+				_ = s.billingCacheService.InvalidateSubscription(cacheCtx, target.UserID, target.GroupID)
+			}
+		}(append([]subscriptionCacheTarget(nil), pairs...))
+	}
+}
+
+// SetFilteredSubscriptionsExpiry 将当前筛选结果中的所有订阅统一设置为相同到期时间。
+func (s *SubscriptionService) SetFilteredSubscriptionsExpiry(ctx context.Context, filter SubscriptionBatchFilter, expiresAt time.Time) (*BulkSetSubscriptionExpiryResult, error) {
+	if expiresAt.IsZero() || expiresAt.After(MaxExpiresAt) {
+		return nil, ErrInvalidSubscriptionExpiry
+	}
+
+	allSubs, err := s.listAllFilteredSubscriptions(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	targetStatus := SubscriptionStatusExpired
+	if expiresAt.After(time.Now()) {
+		targetStatus = SubscriptionStatusActive
+	}
+	result := &BulkSetSubscriptionExpiryResult{
+		ExpiresAt:    expiresAt,
+		Status:       targetStatus,
+		UpdatedCount: 0,
+	}
+	if len(allSubs) == 0 {
+		return result, nil
+	}
+
+	execCtx := ctx
+	var tx *dbent.Tx
+	if s.entClient != nil {
+		tx, err = s.entClient.Tx(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin transaction: %w", err)
+		}
+		execCtx = dbent.NewTxContext(ctx, tx)
+	}
+	committed := false
+	defer func() {
+		if tx != nil && !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	targets := make(map[subscriptionCacheTarget]struct{}, len(allSubs))
+	for i := range allSubs {
+		sub := allSubs[i]
+		if err := s.userSubRepo.ExtendExpiry(execCtx, sub.ID, expiresAt); err != nil {
+			return nil, err
+		}
+		desiredStatus := desiredSubscriptionStatusAfterExpiryUpdate(sub.Status, targetStatus)
+		if sub.Status != desiredStatus {
+			if err := s.userSubRepo.UpdateStatus(execCtx, sub.ID, desiredStatus); err != nil {
+				return nil, err
+			}
+		}
+		targets[subscriptionCacheTarget{UserID: sub.UserID, GroupID: sub.GroupID}] = struct{}{}
+		result.UpdatedCount++
+	}
+
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit transaction: %w", err)
+		}
+		committed = true
+	}
+
+	s.invalidateSubscriptionTargets(targets)
+	return result, nil
+}
+
+// RevokeFilteredSubscriptions 删除当前筛选结果中的所有订阅。
+func (s *SubscriptionService) RevokeFilteredSubscriptions(ctx context.Context, filter SubscriptionBatchFilter) (*BulkRevokeSubscriptionsResult, error) {
+	allSubs, err := s.listAllFilteredSubscriptions(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &BulkRevokeSubscriptionsResult{DeletedCount: 0}
+	if len(allSubs) == 0 {
+		return result, nil
+	}
+
+	execCtx := ctx
+	var tx *dbent.Tx
+	if s.entClient != nil {
+		tx, err = s.entClient.Tx(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin transaction: %w", err)
+		}
+		execCtx = dbent.NewTxContext(ctx, tx)
+	}
+	committed := false
+	defer func() {
+		if tx != nil && !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	targets := make(map[subscriptionCacheTarget]struct{}, len(allSubs))
+	for i := range allSubs {
+		sub := allSubs[i]
+		if err := s.userSubRepo.Delete(execCtx, sub.ID); err != nil {
+			return nil, err
+		}
+		targets[subscriptionCacheTarget{UserID: sub.UserID, GroupID: sub.GroupID}] = struct{}{}
+		result.DeletedCount++
+	}
+
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit transaction: %w", err)
+		}
+		committed = true
+	}
+
+	s.invalidateSubscriptionTargets(targets)
+	return result, nil
 }
 
 // GetByID 根据ID获取订阅

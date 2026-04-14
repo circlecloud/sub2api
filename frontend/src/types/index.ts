@@ -1314,11 +1314,13 @@ export interface ChangePasswordRequest {
 
 // ==================== User Subscription Types ====================
 
+export type SubscriptionStatus = 'active' | 'expired' | 'suspended'
+
 export interface UserSubscription {
   id: number
   user_id: number
   group_id: number
-  status: 'active' | 'expired' | 'revoked'
+  status: SubscriptionStatus
   daily_usage_usd: number
   weekly_usage_usd: number
   monthly_usage_usd: number
@@ -1366,6 +1368,29 @@ export interface BulkAssignSubscriptionRequest {
   user_ids: number[]
   group_id: number
   validity_days?: number
+}
+
+export interface SubscriptionBatchFilterRequest {
+  user_id?: number
+  group_id?: number
+  status?: SubscriptionStatus
+  platform?: string
+}
+
+export interface BulkSetSubscriptionExpiryRequest extends SubscriptionBatchFilterRequest {
+  expires_at: number
+}
+
+export interface BulkSetSubscriptionExpiryResponse {
+  expires_at: string
+  status: 'active' | 'expired'
+  updated_count: number
+}
+
+export interface BulkRevokeSubscriptionsRequest extends SubscriptionBatchFilterRequest {}
+
+export interface BulkRevokeSubscriptionsResponse {
+  deleted_count: number
 }
 
 export interface ExtendSubscriptionRequest {

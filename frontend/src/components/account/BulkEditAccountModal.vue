@@ -883,9 +883,7 @@
               d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
             />
           </svg>
-          {{
-            submitting ? t('admin.accounts.bulkEdit.updating') : t('admin.accounts.bulkEdit.submit')
-          }}
+          {{ submitButtonLabel }}
         </button>
       </div>
     </template>
@@ -935,6 +933,7 @@ interface Props {
   selectedTypes: AccountType[]
   proxies: ProxyConfig[]
   groups: AdminGroup[]
+  batchSize?: number
 }
 
 const props = defineProps<Props>()
@@ -992,6 +991,24 @@ const filteredPresets = computed(() => {
   return Array.from(dedupedPresets.values())
 })
 
+const effectiveBatchSize = computed(() => {
+  const raw = Number(props.batchSize)
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return Math.max(1, props.accountIds.length)
+  }
+  return Math.min(1000, Math.max(1, Math.trunc(raw)))
+})
+
+const submitButtonLabel = computed(() => {
+  if (submitting.value && submitTotalCount.value > 0) {
+    return t('admin.accounts.bulkEdit.updatingProgress', {
+      processed: submitProcessedCount.value,
+      total: submitTotalCount.value
+    })
+  }
+  return submitting.value ? t('admin.accounts.bulkEdit.updating') : t('admin.accounts.bulkEdit.submit')
+})
+
 // Model mapping type
 interface ModelMapping {
   from: string
@@ -1015,7 +1032,11 @@ const enableOpenAIWSMode = ref(false)
 const enableRpmLimit = ref(false)
 
 // State - field values
+const BULK_UPDATE_MAX_RETRIES = 1
+
 const submitting = ref(false)
+const submitProcessedCount = ref(0)
+const submitTotalCount = ref(0)
 const showMixedChannelWarning = ref(false)
 const mixedChannelWarningMessage = ref('')
 const pendingUpdatesForConfirm = ref<Record<string, unknown> | null>(null)
@@ -1284,6 +1305,116 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   return Object.keys(updates).length > 0 ? updates : null
 }
 
+const chunkAccountIds = (ids: number[], chunkSize: number): number[][] => {
+  const normalizedChunkSize = Math.max(1, chunkSize)
+  const chunks: number[][] = []
+  for (let index = 0; index < ids.length; index += normalizedChunkSize) {
+    chunks.push(ids.slice(index, index + normalizedChunkSize))
+  }
+  return chunks
+}
+
+const extractChunkFailures = (
+  accountIds: number[],
+  result: Awaited<ReturnType<typeof adminAPI.accounts.bulkUpdate>>
+) => {
+  const failedIds = new Set<number>()
+  if (Array.isArray(result.failed_ids)) {
+    result.failed_ids.forEach((id) => failedIds.add(id))
+  }
+  result.results?.forEach((item) => {
+    if (item.success === false) {
+      failedIds.add(item.account_id)
+    }
+  })
+  if (failedIds.size === 0 && typeof result.success === 'number' && result.success < accountIds.length) {
+    const successIds = new Set<number>(result.success_ids ?? result.results?.filter((item) => item.success).map((item) => item.account_id) ?? [])
+    accountIds.forEach((id) => {
+      if (!successIds.has(id)) {
+        failedIds.add(id)
+      }
+    })
+  }
+  return [...failedIds]
+}
+
+const submitBulkUpdateInChunks = async (updates: Record<string, unknown>) => {
+  const chunks = chunkAccountIds(props.accountIds, effectiveBatchSize.value)
+  const finalResults = new Map<number, { success: boolean; error?: string }>()
+
+  submitProcessedCount.value = 0
+  submitTotalCount.value = props.accountIds.length
+
+  for (const chunk of chunks) {
+    let pendingIds = [...chunk]
+    let attempt = 0
+
+    while (pendingIds.length > 0) {
+      try {
+        const res = await adminAPI.accounts.bulkUpdate(pendingIds, updates)
+        const failedIds = extractChunkFailures(pendingIds, res)
+        const failedSet = new Set(failedIds)
+
+        pendingIds.forEach((accountId) => {
+          if (failedSet.has(accountId)) {
+            return
+          }
+          finalResults.set(accountId, { success: true })
+        })
+
+        const reachedRetryLimit = attempt >= BULK_UPDATE_MAX_RETRIES
+        if (failedIds.length === 0) {
+          break
+        }
+
+        if (reachedRetryLimit) {
+          const fallbackError = res.results?.find((item) => item.success === false)?.error || t('admin.accounts.bulkEdit.failed')
+          failedIds.forEach((accountId) => {
+            finalResults.set(accountId, { success: false, error: fallbackError })
+          })
+          break
+        }
+
+        pendingIds = failedIds
+        attempt += 1
+      } catch (error: any) {
+        if (error?.status === 409 && error?.error === 'mixed_channel_warning') {
+          throw error
+        }
+
+        const reachedRetryLimit = attempt >= BULK_UPDATE_MAX_RETRIES
+        if (reachedRetryLimit) {
+          const message = error?.message || t('admin.accounts.bulkEdit.failed')
+          pendingIds.forEach((accountId) => {
+            finalResults.set(accountId, { success: false, error: message })
+          })
+          break
+        }
+
+        attempt += 1
+      }
+    }
+
+    submitProcessedCount.value = Math.min(finalResults.size, submitTotalCount.value)
+  }
+
+  const results = props.accountIds.map((accountId) => ({
+    account_id: accountId,
+    success: finalResults.get(accountId)?.success === true,
+    error: finalResults.get(accountId)?.error
+  }))
+  const successIds = results.filter((item) => item.success).map((item) => item.account_id)
+  const failedEntries = results.filter((item) => !item.success)
+
+  return {
+    success: successIds.length,
+    failed: failedEntries.length,
+    success_ids: successIds,
+    failed_ids: failedEntries.map((item) => item.account_id),
+    results
+  }
+}
+
 const mixedChannelConfirmed = ref(false)
 
 // 是否需要预检查：改了分组 + 全是单一的 antigravity 或 anthropic 平台
@@ -1371,9 +1502,11 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
     : baseUpdates
 
   submitting.value = true
+  submitProcessedCount.value = 0
+  submitTotalCount.value = props.accountIds.length
 
   try {
-    const res = await adminAPI.accounts.bulkUpdate(props.accountIds, updates)
+    const res = await submitBulkUpdateInChunks(updates)
     const success = res.success || 0
     const failed = res.failed || 0
 
@@ -1402,6 +1535,8 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
     }
   } finally {
     submitting.value = false
+    submitProcessedCount.value = 0
+    submitTotalCount.value = 0
   }
 }
 

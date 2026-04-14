@@ -120,6 +120,15 @@ const routes: RouteRecordRaw[] = [
       title: 'Key Usage',
     }
   },
+  {
+    path: '/openai/connect/:token',
+    name: 'OpenAIPublicAdd',
+    component: () => import('@/views/auth/OpenAIPublicAddView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'OpenAI Connect'
+    }
+  },
 
   // ==================== User Routes ====================
   {

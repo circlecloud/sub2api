@@ -363,6 +363,19 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 			},
 		},
 		{
+			name: "filter_by_active_excludes_rate_limited_accounts",
+			setup: func(client *dbent.Client) {
+				futureReset := time.Now().Add(30 * time.Minute)
+				mustCreateAccount(s.T(), client, &service.Account{Name: "normal-active", Status: service.StatusActive, Schedulable: true})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "rate-limited-active", Status: service.StatusActive, Schedulable: true, RateLimitResetAt: &futureReset})
+			},
+			status:    service.StatusActive,
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("normal-active", accounts[0].Name)
+			},
+		},
+		{
 			name: "filter_by_ungrouped",
 			setup: func(client *dbent.Client) {
 				group := mustCreateGroup(s.T(), client, &service.Group{Name: "g-ungrouped"})
@@ -415,7 +428,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 
 			tt.setup(client)
 
-			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, tt.groupID, tt.privacyMode)
+			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, tt.groupID, tt.privacyMode, "", nil, nil, "id", "desc")
 			s.Require().NoError(err)
 			s.Require().Len(accounts, tt.wantCount)
 			if tt.validate != nil {
@@ -426,6 +439,23 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 }
 
 // --- ListByGroup / ListActive / ListByPlatform ---
+
+func (s *AccountRepoSuite) TestListWithFilters_MultiSort() {
+	accA := mustCreateAccount(s.T(), s.client, &service.Account{Name: "sort-a", Status: service.StatusActive})
+	accB := mustCreateAccount(s.T(), s.client, &service.Account{Name: "sort-b", Status: service.StatusActive})
+	accC := mustCreateAccount(s.T(), s.client, &service.Account{Name: "sort-c", Status: service.StatusActive})
+
+	recent := time.Now().Add(-5 * time.Minute)
+	older := recent.Add(-10 * time.Minute)
+	s.Require().NoError(s.client.Account.UpdateOneID(accA.ID).SetLastUsedAt(recent).Exec(s.ctx))
+	s.Require().NoError(s.client.Account.UpdateOneID(accB.ID).SetLastUsedAt(recent).Exec(s.ctx))
+	s.Require().NoError(s.client.Account.UpdateOneID(accC.ID).SetLastUsedAt(older).Exec(s.ctx))
+
+	accounts, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "sort-", 0, "", "", nil, nil, "last_used_at,id", "desc,asc")
+	s.Require().NoError(err)
+	s.Require().Len(accounts, 3)
+	s.Require().Equal([]int64{accA.ID, accB.ID, accC.ID}, []int64{accounts[0].ID, accounts[1].ID, accounts[2].ID})
+}
 
 func (s *AccountRepoSuite) TestListByGroup() {
 	group := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g-list"})
@@ -482,7 +512,7 @@ func (s *AccountRepoSuite) TestPreload_And_VirtualFields() {
 	s.Require().Len(got.Groups, 1, "expected Groups to be populated")
 	s.Require().Equal(group.ID, got.Groups[0].ID)
 
-	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0, "")
+	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0, "", "", nil, nil, "id", "desc")
 	s.Require().NoError(err, "ListWithFilters")
 	s.Require().Equal(int64(1), page.Total)
 	s.Require().Len(accounts, 1)

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"strconv"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -57,6 +58,34 @@ type BulkAssignSubscriptionRequest struct {
 // AdjustSubscriptionRequest represents adjust subscription request (extend or shorten)
 type AdjustSubscriptionRequest struct {
 	Days int `json:"days" binding:"required,min=-36500,max=36500"` // negative to shorten, positive to extend
+}
+
+// SubscriptionBatchFilterRequest represents the current subscription list filters for batch operations.
+type SubscriptionBatchFilterRequest struct {
+	UserID   *int64 `json:"user_id,omitempty" binding:"omitempty,gt=0"`
+	GroupID  *int64 `json:"group_id,omitempty" binding:"omitempty,gt=0"`
+	Status   string `json:"status,omitempty" binding:"omitempty,oneof=active expired suspended"`
+	Platform string `json:"platform,omitempty"`
+}
+
+func (r SubscriptionBatchFilterRequest) toServiceFilter() service.SubscriptionBatchFilter {
+	return service.SubscriptionBatchFilter{
+		UserID:   r.UserID,
+		GroupID:  r.GroupID,
+		Status:   r.Status,
+		Platform: r.Platform,
+	}
+}
+
+// BulkSetSubscriptionExpiryRequest represents bulk setting unified expiry for filtered subscriptions.
+type BulkSetSubscriptionExpiryRequest struct {
+	SubscriptionBatchFilterRequest
+	ExpiresAt int64 `json:"expires_at" binding:"required"`
+}
+
+// BulkRevokeSubscriptionsRequest represents bulk deleting filtered subscriptions.
+type BulkRevokeSubscriptionsRequest struct {
+	SubscriptionBatchFilterRequest
 }
 
 // List handles listing all subscriptions with pagination and filters
@@ -214,6 +243,48 @@ func (h *SubscriptionHandler) Extend(c *gin.Context) {
 			return nil, execErr
 		}
 		return dto.UserSubscriptionFromServiceAdmin(subscription), nil
+	})
+}
+
+// BulkSetExpiry handles setting a unified expiry time for all currently filtered subscriptions.
+// POST /api/v1/admin/subscriptions/bulk-set-expiry
+func (h *SubscriptionHandler) BulkSetExpiry(c *gin.Context) {
+	var req BulkSetSubscriptionExpiryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	executeAdminIdempotentJSON(c, "admin.subscriptions.bulk_set_expiry", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		result, execErr := h.subscriptionService.SetFilteredSubscriptionsExpiry(ctx, req.toServiceFilter(), time.Unix(req.ExpiresAt, 0).UTC())
+		if execErr != nil {
+			return nil, execErr
+		}
+		return gin.H{
+			"expires_at":    result.ExpiresAt,
+			"status":        result.Status,
+			"updated_count": result.UpdatedCount,
+		}, nil
+	})
+}
+
+// BulkRevoke deletes all currently filtered subscriptions.
+// POST /api/v1/admin/subscriptions/bulk-revoke
+func (h *SubscriptionHandler) BulkRevoke(c *gin.Context) {
+	var req BulkRevokeSubscriptionsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	executeAdminIdempotentJSON(c, "admin.subscriptions.bulk_revoke", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		result, execErr := h.subscriptionService.RevokeFilteredSubscriptions(ctx, req.toServiceFilter())
+		if execErr != nil {
+			return nil, execErr
+		}
+		return gin.H{
+			"deleted_count": result.DeletedCount,
+		}, nil
 	})
 }
 

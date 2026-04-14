@@ -27,11 +27,24 @@
                 <Icon name="link" size="sm" />
                 {{ t('admin.accounts.reAuthorize') }}
               </button>
-              <button @click="$emit('refresh-token', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-purple-600 hover:bg-gray-100 dark:hover:bg-dark-700">
-                <Icon name="refresh" size="sm" />
-                {{ t('admin.accounts.refreshToken') }}
+              <button
+                @click="$emit('refresh-token', account)"
+                :disabled="isRefreshTokenDisabled"
+                class="flex w-full items-center gap-2 px-4 py-2 text-sm text-purple-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-dark-700"
+              >
+                <Icon name="refresh" size="sm" :class="isRefreshingToken ? 'animate-spin' : ''" />
+                {{ isRefreshingToken ? t('common.loading') : t('admin.accounts.refreshToken') }}
               </button>
             </template>
+            <button
+              v-if="supportsUsageRefresh"
+              @click="$emit('refresh-usage-window', account)"
+              :disabled="isRefreshUsageWindowDisabled"
+              class="flex w-full items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-dark-700"
+            >
+              <Icon name="refresh" size="sm" :class="isRefreshingUsageWindow ? 'animate-spin' : ''" />
+              {{ isRefreshingUsageWindow ? t('common.loading') : t('admin.accounts.refreshUsageWindow') }}
+            </button>
             <button v-if="supportsPrivacy" @click="$emit('set-privacy', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="shield" size="sm" />
               {{ t('admin.accounts.setPrivacy') }}
@@ -58,8 +71,16 @@ import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
 
-const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy'])
+const props = defineProps<{
+  show: boolean
+  account: Account | null
+  position: { top: number; left: number } | null
+  refreshingAccountId?: number | null
+  refreshingUsageWindowAccountId?: number | null
+  bulkRefreshingToken?: boolean
+  bulkRefreshingUsageWindow?: boolean
+}>()
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'reauth', 'refresh-token', 'refresh-usage-window', 'recover-state', 'reset-quota', 'set-privacy'])
 const { t } = useI18n()
 const isRateLimited = computed(() => {
   if (props.account?.rate_limit_reset_at && new Date(props.account.rate_limit_reset_at) > new Date()) {
@@ -82,6 +103,23 @@ const hasRecoverableState = computed(() => {
 const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')
 const isOpenAIOAuth = computed(() => props.account?.platform === 'openai' && props.account?.type === 'oauth')
 const supportsPrivacy = computed(() => isAntigravityOAuth.value || isOpenAIOAuth.value)
+const supportsUsageRefresh = computed(() => {
+  if (!props.account) return false
+  if (props.account.platform === 'anthropic') {
+    return props.account.type === 'oauth' || props.account.type === 'setup-token'
+  }
+  if (props.account.platform === 'gemini') {
+    return true
+  }
+  if (props.account.platform === 'antigravity' || props.account.platform === 'openai') {
+    return props.account.type === 'oauth'
+  }
+  return false
+})
+const isRefreshingToken = computed(() => props.account != null && props.refreshingAccountId != null && props.account.id === props.refreshingAccountId)
+const isRefreshTokenDisabled = computed(() => isRefreshingToken.value || props.bulkRefreshingToken === true)
+const isRefreshingUsageWindow = computed(() => props.account != null && props.refreshingUsageWindowAccountId != null && props.account.id === props.refreshingUsageWindowAccountId)
+const isRefreshUsageWindowDisabled = computed(() => isRefreshingUsageWindow.value || props.bulkRefreshingUsageWindow === true)
 const hasQuotaLimit = computed(() => {
   return (props.account?.type === 'apikey' || props.account?.type === 'bedrock') && (
     (props.account?.quota_limit ?? 0) > 0 ||

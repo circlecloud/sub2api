@@ -212,6 +212,41 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 	return item
 }
 
+func parseAccountLastUsedFilter(c *gin.Context) (string, *time.Time, *time.Time, error) {
+	filter := strings.TrimSpace(c.Query("last_used_filter"))
+	if filter == "" {
+		return "", nil, nil, nil
+	}
+	if filter == "unused" {
+		return filter, nil, nil, nil
+	}
+	if filter != "range" {
+		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_FILTER", "invalid last used filter")
+	}
+
+	startDate := strings.TrimSpace(c.Query("last_used_start_date"))
+	endDate := strings.TrimSpace(c.Query("last_used_end_date"))
+	if startDate == "" || endDate == "" {
+		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_RANGE", "last used range requires start and end date")
+	}
+
+	userTZ := c.Query("timezone")
+	startTime, err := timezone.ParseInUserLocation("2006-01-02", startDate, userTZ)
+	if err != nil {
+		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_START_DATE", "invalid last used start date")
+	}
+	endTime, err := timezone.ParseInUserLocation("2006-01-02", endDate, userTZ)
+	if err != nil {
+		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_END_DATE", "invalid last used end date")
+	}
+	endExclusive := endTime.Add(24 * time.Hour)
+	if !startTime.Before(endExclusive) {
+		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_RANGE", "invalid last used range")
+	}
+
+	return filter, &startTime, &endExclusive, nil
+}
+
 // List handles listing all accounts with pagination
 // GET /api/v1/admin/accounts
 func (h *AccountHandler) List(c *gin.Context) {
@@ -227,6 +262,11 @@ func (h *AccountHandler) List(c *gin.Context) {
 	search = strings.TrimSpace(search)
 	if len(search) > 100 {
 		search = search[:100]
+	}
+	lastUsedFilter, lastUsedStart, lastUsedEnd, err := parseAccountLastUsedFilter(c)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
 	}
 	lite := parseBoolQueryWithDefault(c.Query("lite"), false)
 
@@ -248,7 +288,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, lastUsedFilter, lastUsedStart, lastUsedEnd, sortBy, sortOrder)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -685,6 +725,12 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt); err != nil {
 		// Error already sent via SSE, just log
 		return
+	}
+
+	if h.accountTestService != nil {
+		if err := h.accountTestService.TouchLastUsed(c.Request.Context(), accountID); err != nil {
+			_ = c.Error(err)
+		}
 	}
 
 	if h.rateLimitService != nil {
@@ -1573,7 +1619,7 @@ func (h *OAuthHandler) SetupTokenCookieAuth(c *gin.Context) {
 }
 
 // GetUsage handles getting account usage information
-// GET /api/v1/admin/accounts/:id/usage?source=passive|active
+// GET /api/v1/admin/accounts/:id/usage?source=passive|active&force=true|false
 func (h *AccountHandler) GetUsage(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -1582,12 +1628,13 @@ func (h *AccountHandler) GetUsage(c *gin.Context) {
 	}
 
 	source := c.DefaultQuery("source", "active")
+	forceRefresh := parseBoolQueryWithDefault(c.Query("force"), false)
 
 	var usage *service.UsageInfo
 	if source == "passive" {
 		usage, err = h.accountUsageService.GetPassiveUsage(c.Request.Context(), accountID)
 	} else {
-		usage, err = h.accountUsageService.GetUsage(c.Request.Context(), accountID)
+		usage, err = h.accountUsageService.GetUsage(c.Request.Context(), accountID, forceRefresh)
 	}
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -2037,7 +2084,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	accounts := make([]*service.Account, 0)
 
 	if len(req.AccountIDs) == 0 {
-		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", 0, "", "name", "asc")
+		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", 0, "", "", nil, nil, "name", "asc")
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
