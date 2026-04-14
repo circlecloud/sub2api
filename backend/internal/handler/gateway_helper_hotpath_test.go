@@ -116,6 +116,10 @@ func (s *helperConcurrencyCacheStub) GetUsersLoadBatch(ctx context.Context, user
 	return out, nil
 }
 
+func (s *helperConcurrencyCacheStub) CleanupExpiredActiveAccountSlots(ctx context.Context) error {
+	return nil
+}
+
 func (s *helperConcurrencyCacheStub) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {
 	return nil
 }

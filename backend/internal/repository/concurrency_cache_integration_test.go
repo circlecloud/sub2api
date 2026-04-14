@@ -435,6 +435,70 @@ func (s *ConcurrencyCacheSuite) TestCleanupExpiredAccountSlots_NoExpired() {
 	require.Equal(s.T(), 2, cur)
 }
 
+func (s *ConcurrencyCacheSuite) TestCleanupExpiredActiveAccountSlots() {
+	activeAccountID := int64(210)
+	expiredOnlyAccountID := int64(211)
+	userID := int64(212)
+
+	activeAccountKey := fmt.Sprintf("%s%d", accountSlotKeyPrefix, activeAccountID)
+	expiredOnlyAccountKey := fmt.Sprintf("%s%d", accountSlotKeyPrefix, expiredOnlyAccountID)
+	userSlotKey := fmt.Sprintf("%s%d", userSlotKeyPrefix, userID)
+
+	now := time.Now().Unix()
+	expiredTime := now - int64(testSlotTTL.Seconds()) - 10
+
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, activeAccountKey,
+		redis.Z{Score: float64(expiredTime), Member: "expired-req"},
+		redis.Z{Score: float64(now), Member: "fresh-req"},
+	).Err())
+	require.NoError(s.T(), s.rdb.Expire(s.ctx, activeAccountKey, testSlotTTL).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, expiredOnlyAccountKey,
+		redis.Z{Score: float64(expiredTime), Member: "expired-only"},
+	).Err())
+	require.NoError(s.T(), s.rdb.Expire(s.ctx, expiredOnlyAccountKey, testSlotTTL).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, userSlotKey,
+		redis.Z{Score: float64(expiredTime), Member: "user-expired"},
+		redis.Z{Score: float64(now), Member: "user-fresh"},
+	).Err())
+	require.NoError(s.T(), s.rdb.Expire(s.ctx, userSlotKey, testSlotTTL).Err())
+
+	require.NoError(s.T(), s.cache.CleanupExpiredActiveAccountSlots(s.ctx))
+
+	members, err := s.rdb.ZRange(s.ctx, activeAccountKey, 0, -1).Result()
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), []string{"fresh-req"}, members)
+
+	exists, err := s.rdb.Exists(s.ctx, expiredOnlyAccountKey).Result()
+	require.NoError(s.T(), err)
+	require.EqualValues(s.T(), 0, exists)
+
+	userMembers, err := s.rdb.ZRange(s.ctx, userSlotKey, 0, -1).Result()
+	require.NoError(s.T(), err)
+	require.ElementsMatch(s.T(), []string{"user-expired", "user-fresh"}, userMembers)
+}
+
+func (s *ConcurrencyCacheSuite) TestCleanupExpiredActiveAccountSlots_BatchedScan() {
+	const baseAccountID = int64(3000)
+	totalKeys := cleanupExpiredSlotScanCount + cleanupExpiredSlotBatchSize + 25
+	now := time.Now().Unix()
+	expiredTime := now - int64(testSlotTTL.Seconds()) - 10
+
+	for i := 0; i < totalKeys; i++ {
+		accountID := baseAccountID + int64(i)
+		slotKey := fmt.Sprintf("%s%d", accountSlotKeyPrefix, accountID)
+		require.NoError(s.T(), s.rdb.ZAdd(s.ctx, slotKey,
+			redis.Z{Score: float64(expiredTime), Member: fmt.Sprintf("expired-%d", accountID)},
+		).Err())
+		require.NoError(s.T(), s.rdb.Expire(s.ctx, slotKey, testSlotTTL).Err())
+	}
+
+	require.NoError(s.T(), s.cache.CleanupExpiredActiveAccountSlots(s.ctx))
+
+	keys, err := s.rdb.Keys(s.ctx, accountSlotKeyPrefix+"*").Result()
+	require.NoError(s.T(), err)
+	require.Empty(s.T(), keys)
+}
+
 func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_RemovesOldPrefixesAndWaitCounters() {
 	accountID := int64(901)
 	userID := int64(902)

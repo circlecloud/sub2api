@@ -38,6 +38,8 @@ export interface SystemSettings {
   doc_url: string
   home_content: string
   hide_ccs_import_button: boolean
+  purchase_subscription_enabled: boolean
+  purchase_subscription_url: string
   table_default_page_size: number
   table_page_size_options: number[]
   backend_mode_enabled: boolean
@@ -120,7 +122,30 @@ export interface SystemSettings {
   enable_fingerprint_unification: boolean
   enable_metadata_passthrough: boolean
   enable_cch_signing: boolean
-  web_search_emulation_enabled?: boolean
+  enable_openai_stream_rectifier: boolean
+  openai_stream_response_header_rectifier_timeouts: number[]
+  openai_stream_first_token_rectifier_timeouts: number[]
+
+  // OpenAI warm pool behavior
+  openai_warm_pool_enabled: boolean
+  openai_warm_pool_bucket_target_size: number
+  openai_warm_pool_bucket_refill_below: number
+  openai_warm_pool_bucket_sync_fill_min: number
+  openai_warm_pool_bucket_entry_ttl_seconds: number
+  openai_warm_pool_bucket_refill_cooldown_seconds: number
+  openai_warm_pool_bucket_refill_interval_seconds: number
+  openai_warm_pool_global_target_size: number
+  openai_warm_pool_global_refill_below: number
+  openai_warm_pool_global_entry_ttl_seconds: number
+  openai_warm_pool_global_refill_cooldown_seconds: number
+  openai_warm_pool_global_refill_interval_seconds: number
+  openai_warm_pool_network_error_pool_size: number
+  openai_warm_pool_network_error_entry_ttl_seconds: number
+  openai_warm_pool_probe_max_candidates: number
+  openai_warm_pool_probe_concurrency: number
+  openai_warm_pool_probe_timeout_seconds: number
+  openai_warm_pool_probe_failure_cooldown_seconds: number
+  openai_warm_pool_startup_group_ids: number[]
 
   // Payment configuration
   payment_enabled: boolean
@@ -172,6 +197,8 @@ export interface UpdateSettingsRequest {
   doc_url?: string
   home_content?: string
   hide_ccs_import_button?: boolean
+  purchase_subscription_enabled?: boolean
+  purchase_subscription_url?: string
   table_default_page_size?: number
   table_page_size_options?: number[]
   backend_mode_enabled?: boolean
@@ -234,6 +261,28 @@ export interface UpdateSettingsRequest {
   enable_fingerprint_unification?: boolean
   enable_metadata_passthrough?: boolean
   enable_cch_signing?: boolean
+  enable_openai_stream_rectifier?: boolean
+  openai_stream_response_header_rectifier_timeouts?: number[]
+  openai_stream_first_token_rectifier_timeouts?: number[]
+  openai_warm_pool_enabled?: boolean
+  openai_warm_pool_bucket_target_size?: number
+  openai_warm_pool_bucket_refill_below?: number
+  openai_warm_pool_bucket_sync_fill_min?: number
+  openai_warm_pool_bucket_entry_ttl_seconds?: number
+  openai_warm_pool_bucket_refill_cooldown_seconds?: number
+  openai_warm_pool_bucket_refill_interval_seconds?: number
+  openai_warm_pool_global_target_size?: number
+  openai_warm_pool_global_refill_below?: number
+  openai_warm_pool_global_entry_ttl_seconds?: number
+  openai_warm_pool_global_refill_cooldown_seconds?: number
+  openai_warm_pool_global_refill_interval_seconds?: number
+  openai_warm_pool_network_error_pool_size?: number
+  openai_warm_pool_network_error_entry_ttl_seconds?: number
+  openai_warm_pool_probe_max_candidates?: number
+  openai_warm_pool_probe_concurrency?: number
+  openai_warm_pool_probe_timeout_seconds?: number
+  openai_warm_pool_probe_failure_cooldown_seconds?: number
+  openai_warm_pool_startup_group_ids?: number[]
   // Payment configuration
   payment_enabled?: boolean
   payment_min_amount?: number

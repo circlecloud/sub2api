@@ -268,6 +268,32 @@ const (
 
 	// Web Search Emulation
 	SettingKeyWebSearchEmulationConfig = "web_search_emulation_config" // JSON 配置
+	// SettingKeyEnableOpenAIStreamRectifier 是否启用 OpenAI 流式整流器（默认 true）
+	SettingKeyEnableOpenAIStreamRectifier = "enable_openai_stream_rectifier"
+	// SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts OpenAI 流式响应头整流超时数组（JSON 数组，单位秒）
+	SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts = "openai_stream_response_header_rectifier_timeouts"
+	// SettingKeyOpenAIStreamFirstTokenRectifierTimeouts OpenAI 流式首 token 整流超时数组（JSON 数组，单位秒）
+	SettingKeyOpenAIStreamFirstTokenRectifierTimeouts = "openai_stream_first_token_rectifier_timeouts"
+	// OpenAI 预热池设置
+	SettingKeyOpenAIWarmPoolEnabled                     = "openai_warm_pool_enabled"
+	SettingKeyOpenAIWarmPoolBucketTargetSize            = "openai_warm_pool_bucket_target_size"
+	SettingKeyOpenAIWarmPoolBucketRefillBelow           = "openai_warm_pool_bucket_refill_below"
+	SettingKeyOpenAIWarmPoolBucketSyncFillMin           = "openai_warm_pool_bucket_sync_fill_min"
+	SettingKeyOpenAIWarmPoolBucketEntryTTLSeconds       = "openai_warm_pool_bucket_entry_ttl_seconds"
+	SettingKeyOpenAIWarmPoolBucketRefillCooldownSeconds = "openai_warm_pool_bucket_refill_cooldown_seconds"
+	SettingKeyOpenAIWarmPoolBucketRefillIntervalSeconds = "openai_warm_pool_bucket_refill_interval_seconds"
+	SettingKeyOpenAIWarmPoolGlobalTargetSize            = "openai_warm_pool_global_target_size"
+	SettingKeyOpenAIWarmPoolGlobalRefillBelow           = "openai_warm_pool_global_refill_below"
+	SettingKeyOpenAIWarmPoolGlobalEntryTTLSeconds       = "openai_warm_pool_global_entry_ttl_seconds"
+	SettingKeyOpenAIWarmPoolGlobalRefillCooldownSeconds = "openai_warm_pool_global_refill_cooldown_seconds"
+	SettingKeyOpenAIWarmPoolGlobalRefillIntervalSeconds = "openai_warm_pool_global_refill_interval_seconds"
+	SettingKeyOpenAIWarmPoolNetworkErrorPoolSize        = "openai_warm_pool_network_error_pool_size"
+	SettingKeyOpenAIWarmPoolNetworkErrorEntryTTLSeconds = "openai_warm_pool_network_error_entry_ttl_seconds"
+	SettingKeyOpenAIWarmPoolProbeMaxCandidates          = "openai_warm_pool_probe_max_candidates"
+	SettingKeyOpenAIWarmPoolProbeConcurrency            = "openai_warm_pool_probe_concurrency"
+	SettingKeyOpenAIWarmPoolProbeTimeoutSeconds         = "openai_warm_pool_probe_timeout_seconds"
+	SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds = "openai_warm_pool_probe_failure_cooldown_seconds"
+	SettingKeyOpenAIWarmPoolStartupGroupIDs             = "openai_warm_pool_startup_group_ids"
 )
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).

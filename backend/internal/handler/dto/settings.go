@@ -124,43 +124,63 @@ type SystemSettings struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
-	EnableFingerprintUnification bool `json:"enable_fingerprint_unification"`
-	EnableMetadataPassthrough    bool `json:"enable_metadata_passthrough"`
-	EnableCCHSigning             bool `json:"enable_cch_signing"`
+	EnableFingerprintUnification                bool  `json:"enable_fingerprint_unification"`
+	EnableMetadataPassthrough                   bool  `json:"enable_metadata_passthrough"`
+	EnableCCHSigning                            bool  `json:"enable_cch_signing"`
+	EnableOpenAIStreamRectifier                 bool  `json:"enable_openai_stream_rectifier"`
+	OpenAIStreamResponseHeaderRectifierTimeouts []int `json:"openai_stream_response_header_rectifier_timeouts"`
+	OpenAIStreamFirstTokenRectifierTimeouts     []int `json:"openai_stream_first_token_rectifier_timeouts"`
+
+	// OpenAI warm pool behavior
+	OpenAIWarmPoolEnabled                     bool    `json:"openai_warm_pool_enabled"`
+	OpenAIWarmPoolBucketTargetSize            int     `json:"openai_warm_pool_bucket_target_size"`
+	OpenAIWarmPoolBucketRefillBelow           int     `json:"openai_warm_pool_bucket_refill_below"`
+	OpenAIWarmPoolBucketSyncFillMin           int     `json:"openai_warm_pool_bucket_sync_fill_min"`
+	OpenAIWarmPoolBucketEntryTTLSeconds       int     `json:"openai_warm_pool_bucket_entry_ttl_seconds"`
+	OpenAIWarmPoolBucketRefillCooldownSeconds int     `json:"openai_warm_pool_bucket_refill_cooldown_seconds"`
+	OpenAIWarmPoolBucketRefillIntervalSeconds int     `json:"openai_warm_pool_bucket_refill_interval_seconds"`
+	OpenAIWarmPoolGlobalTargetSize            int     `json:"openai_warm_pool_global_target_size"`
+	OpenAIWarmPoolGlobalRefillBelow           int     `json:"openai_warm_pool_global_refill_below"`
+	OpenAIWarmPoolGlobalEntryTTLSeconds       int     `json:"openai_warm_pool_global_entry_ttl_seconds"`
+	OpenAIWarmPoolGlobalRefillCooldownSeconds int     `json:"openai_warm_pool_global_refill_cooldown_seconds"`
+	OpenAIWarmPoolGlobalRefillIntervalSeconds int     `json:"openai_warm_pool_global_refill_interval_seconds"`
+	OpenAIWarmPoolNetworkErrorPoolSize        int     `json:"openai_warm_pool_network_error_pool_size"`
+	OpenAIWarmPoolNetworkErrorEntryTTLSeconds int     `json:"openai_warm_pool_network_error_entry_ttl_seconds"`
+	OpenAIWarmPoolProbeMaxCandidates          int     `json:"openai_warm_pool_probe_max_candidates"`
+	OpenAIWarmPoolProbeConcurrency            int     `json:"openai_warm_pool_probe_concurrency"`
+	OpenAIWarmPoolProbeTimeoutSeconds         int     `json:"openai_warm_pool_probe_timeout_seconds"`
+	OpenAIWarmPoolProbeFailureCooldownSeconds int     `json:"openai_warm_pool_probe_failure_cooldown_seconds"`
+	OpenAIWarmPoolStartupGroupIDs             []int64 `json:"openai_warm_pool_startup_group_ids"`
 
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool `json:"web_search_emulation_enabled"`
 
 	// Payment configuration
-	PaymentEnabled                   bool     `json:"payment_enabled"`
-	PaymentMinAmount                 float64  `json:"payment_min_amount"`
-	PaymentMaxAmount                 float64  `json:"payment_max_amount"`
-	PaymentDailyLimit                float64  `json:"payment_daily_limit"`
-	PaymentOrderTimeoutMin           int      `json:"payment_order_timeout_minutes"`
-	PaymentMaxPendingOrders          int      `json:"payment_max_pending_orders"`
-	PaymentEnabledTypes              []string `json:"payment_enabled_types"`
-	PaymentBalanceDisabled           bool     `json:"payment_balance_disabled"`
-	PaymentBalanceRechargeMultiplier float64  `json:"payment_balance_recharge_multiplier"`
-	PaymentRechargeFeeRate           float64  `json:"payment_recharge_fee_rate"`
-	PaymentLoadBalanceStrat          string   `json:"payment_load_balance_strategy"`
-	PaymentProductNamePrefix         string   `json:"payment_product_name_prefix"`
-	PaymentProductNameSuffix         string   `json:"payment_product_name_suffix"`
-	PaymentHelpImageURL              string   `json:"payment_help_image_url"`
-	PaymentHelpText                  string   `json:"payment_help_text"`
-
-	// Cancel rate limit
-	PaymentCancelRateLimitEnabled bool   `json:"payment_cancel_rate_limit_enabled"`
-	PaymentCancelRateLimitMax     int    `json:"payment_cancel_rate_limit_max"`
-	PaymentCancelRateLimitWindow  int    `json:"payment_cancel_rate_limit_window"`
-	PaymentCancelRateLimitUnit    string `json:"payment_cancel_rate_limit_unit"`
-	PaymentCancelRateLimitMode    string `json:"payment_cancel_rate_limit_window_mode"`
-
-	// Balance low notification
-	BalanceLowNotifyEnabled     bool               `json:"balance_low_notify_enabled"`
-	BalanceLowNotifyThreshold   float64            `json:"balance_low_notify_threshold"`
-	BalanceLowNotifyRechargeURL string             `json:"balance_low_notify_recharge_url"`
-	AccountQuotaNotifyEnabled   bool               `json:"account_quota_notify_enabled"`
-	AccountQuotaNotifyEmails    []NotifyEmailEntry `json:"account_quota_notify_emails"`
+	PaymentEnabled                   bool               `json:"payment_enabled"`
+	PaymentMinAmount                 float64            `json:"payment_min_amount"`
+	PaymentMaxAmount                 float64            `json:"payment_max_amount"`
+	PaymentDailyLimit                float64            `json:"payment_daily_limit"`
+	PaymentOrderTimeoutMin           int                `json:"payment_order_timeout_minutes"`
+	PaymentMaxPendingOrders          int                `json:"payment_max_pending_orders"`
+	PaymentEnabledTypes              []string           `json:"payment_enabled_types"`
+	PaymentBalanceDisabled           bool               `json:"payment_balance_disabled"`
+	PaymentBalanceRechargeMultiplier float64            `json:"payment_balance_recharge_multiplier"`
+	PaymentRechargeFeeRate           float64            `json:"payment_recharge_fee_rate"`
+	PaymentLoadBalanceStrat          string             `json:"payment_load_balance_strategy"`
+	PaymentProductNamePrefix         string             `json:"payment_product_name_prefix"`
+	PaymentProductNameSuffix         string             `json:"payment_product_name_suffix"`
+	PaymentHelpImageURL              string             `json:"payment_help_image_url"`
+	PaymentHelpText                  string             `json:"payment_help_text"`
+	PaymentCancelRateLimitEnabled    bool               `json:"payment_cancel_rate_limit_enabled"`
+	PaymentCancelRateLimitMax        int                `json:"payment_cancel_rate_limit_max"`
+	PaymentCancelRateLimitWindow     int                `json:"payment_cancel_rate_limit_window"`
+	PaymentCancelRateLimitUnit       string             `json:"payment_cancel_rate_limit_unit"`
+	PaymentCancelRateLimitMode       string             `json:"payment_cancel_rate_limit_window_mode"`
+	BalanceLowNotifyEnabled          bool               `json:"balance_low_notify_enabled"`
+	AccountQuotaNotifyEnabled        bool               `json:"account_quota_notify_enabled"`
+	BalanceLowNotifyThreshold        float64            `json:"balance_low_notify_threshold"`
+	BalanceLowNotifyRechargeURL      string             `json:"balance_low_notify_recharge_url"`
+	AccountQuotaNotifyEmails         []NotifyEmailEntry `json:"account_quota_notify_emails"`
 }
 
 type DefaultSubscriptionSetting struct {

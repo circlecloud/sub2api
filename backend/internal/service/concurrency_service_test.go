@@ -8,26 +8,29 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
 // stubConcurrencyCacheForTest 用于并发服务单元测试的缓存桩
 type stubConcurrencyCacheForTest struct {
-	acquireResult  bool
-	acquireErr     error
-	releaseErr     error
-	concurrency    int
-	concurrencyErr error
-	waitAllowed    bool
-	waitErr        error
-	waitCount      int
-	waitCountErr   error
-	loadBatch      map[int64]*AccountLoadInfo
-	loadBatchErr   error
-	usersLoadBatch map[int64]*UserLoadInfo
-	usersLoadErr   error
-	cleanupErr     error
+	acquireResult      bool
+	acquireErr         error
+	releaseErr         error
+	concurrency        int
+	concurrencyErr     error
+	waitAllowed        bool
+	waitErr            error
+	waitCount          int
+	waitCountErr       error
+	loadBatch          map[int64]*AccountLoadInfo
+	loadBatchErr       error
+	usersLoadBatch     map[int64]*UserLoadInfo
+	usersLoadErr       error
+	cleanupErr         error
+	cleanupActiveErr   error
+	cleanupActiveCalls chan struct{}
 
 	// 记录调用
 	releasedAccountIDs []int64
@@ -91,6 +94,19 @@ func (c *stubConcurrencyCacheForTest) CleanupExpiredAccountSlots(_ context.Conte
 	return c.cleanupErr
 }
 
+func (c *stubConcurrencyCacheForTest) CleanupExpiredActiveAccountSlots(_ context.Context) error {
+	if c.cleanupActiveCalls != nil {
+		select {
+		case c.cleanupActiveCalls <- struct{}{}:
+		default:
+		}
+	}
+	if c.cleanupActiveErr != nil {
+		return c.cleanupActiveErr
+	}
+	return c.cleanupErr
+}
+
 func (c *stubConcurrencyCacheForTest) CleanupStaleProcessSlots(_ context.Context, _ string) error {
 	return c.cleanupErr
 }
@@ -105,6 +121,21 @@ func (c *trackingConcurrencyCache) CleanupStaleProcessSlots(_ context.Context, p
 	return c.cleanupErr
 }
 
+type trackingSlotCleanupAccountRepo struct {
+	stubOpenAIAccountRepo
+	listSchedulableCalls chan struct{}
+}
+
+func (r *trackingSlotCleanupAccountRepo) ListSchedulable(context.Context) ([]Account, error) {
+	if r.listSchedulableCalls != nil {
+		select {
+		case r.listSchedulableCalls <- struct{}{}:
+		default:
+		}
+	}
+	return nil, nil
+}
+
 func TestCleanupStaleProcessSlots_NilCache(t *testing.T) {
 	svc := &ConcurrencyService{cache: nil}
 	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
@@ -115,6 +146,51 @@ func TestCleanupStaleProcessSlots_DelegatesPrefix(t *testing.T) {
 	svc := NewConcurrencyService(cache)
 	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
 	require.Equal(t, RequestIDPrefix(), cache.cleanupPrefix)
+}
+
+func TestStartSlotCleanupWorker_UsesCacheCleanupWithoutListingAccounts(t *testing.T) {
+	cache := &stubConcurrencyCacheForTest{cleanupActiveCalls: make(chan struct{}, 1)}
+	repo := &trackingSlotCleanupAccountRepo{listSchedulableCalls: make(chan struct{}, 1)}
+	svc := NewConcurrencyService(cache)
+
+	svc.StartSlotCleanupWorker(repo, time.Hour)
+
+	select {
+	case <-cache.cleanupActiveCalls:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected CleanupExpiredActiveAccountSlots to be called")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-repo.listSchedulableCalls:
+		t.Fatal("ListSchedulable should not be called by slot cleanup worker")
+	default:
+	}
+}
+
+func TestStartSlotCleanupWorker_DoesNotStartWhenIntervalNonPositive(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		t.Run(interval.String(), func(t *testing.T) {
+			cache := &stubConcurrencyCacheForTest{cleanupActiveCalls: make(chan struct{}, 1)}
+			repo := &trackingSlotCleanupAccountRepo{listSchedulableCalls: make(chan struct{}, 1)}
+			svc := NewConcurrencyService(cache)
+
+			svc.StartSlotCleanupWorker(repo, interval)
+
+			select {
+			case <-cache.cleanupActiveCalls:
+				t.Fatalf("worker should not start when interval=%s", interval)
+			case <-time.After(50 * time.Millisecond):
+			}
+
+			select {
+			case <-repo.listSchedulableCalls:
+				t.Fatalf("ListSchedulable should not be called when interval=%s", interval)
+			default:
+			}
+		})
+	}
 }
 
 func TestAcquireAccountSlot_Success(t *testing.T) {

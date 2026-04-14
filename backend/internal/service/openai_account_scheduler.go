@@ -32,15 +32,71 @@ type OpenAIAccountScheduleRequest struct {
 }
 
 type OpenAIAccountScheduleDecision struct {
-	Layer               string
-	StickyPreviousHit   bool
-	StickySessionHit    bool
-	CandidateCount      int
-	TopK                int
-	LatencyMs           int64
-	LoadSkew            float64
-	SelectedAccountID   int64
-	SelectedAccountType string
+	Layer                  string
+	StickyPreviousHit      bool
+	StickySessionHit       bool
+	CandidateCount         int
+	TopK                   int
+	LatencyMs              int64
+	LoadSkew               float64
+	SelectedAccountID      int64
+	SelectedAccountType    string
+	WarmPoolTried          bool
+	WarmPoolCandidateCount int
+	FailureReason          string
+	FailureDetail          string
+}
+
+func (d *OpenAIAccountScheduleDecision) setFailure(reason string, detail string) {
+	if d == nil {
+		return
+	}
+	if strings.TrimSpace(reason) != "" {
+		d.FailureReason = strings.TrimSpace(reason)
+	}
+	if strings.TrimSpace(detail) != "" {
+		d.FailureDetail = strings.TrimSpace(detail)
+	}
+}
+
+func classifyOpenAIAccountSelectFailure(err error) (reason string, detail string) {
+	if err == nil {
+		return "", ""
+	}
+	detail = strings.TrimSpace(err.Error())
+	switch {
+	case errors.Is(err, ErrSchedulerCacheNotReady):
+		return "scheduler_cache_not_ready", detail
+	case errors.Is(err, ErrSchedulerFallbackLimited):
+		return "scheduler_db_fallback_limited", detail
+	case errors.Is(err, errOpenAISelectedAccountInvalidAfterHydration):
+		return "post_hydration_invalid", detail
+	case errors.Is(err, context.Canceled):
+		return "request_canceled", detail
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request_timeout", detail
+	case errors.Is(err, ErrNoAvailableAccounts):
+		return "no_available_accounts", detail
+	default:
+		return "concurrency_backend_error", detail
+	}
+}
+
+type openAISelectFailureInfo struct {
+	Reason                 string
+	Detail                 string
+	WarmPoolTried          bool
+	WarmPoolCandidateCount int
+}
+
+type openAISelectionFilterStats struct {
+	Total                 int
+	Excluded              int
+	Unschedulable         int
+	NotOpenAI             int
+	PrivacyRequired       int
+	ModelUnsupported      int
+	TransportIncompatible int
 }
 
 type OpenAIAccountSchedulerMetricsSnapshot struct {
@@ -274,12 +330,21 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		return selection, decision, nil
 	}
 
-	selection, candidateCount, topK, loadSkew, err := s.selectByLoadBalance(ctx, req)
+	selection, candidateCount, topK, loadSkew, failureInfo, err := s.selectByLoadBalance(ctx, req)
 	decision.Layer = openAIAccountScheduleLayerLoadBalance
 	decision.CandidateCount = candidateCount
 	decision.TopK = topK
 	decision.LoadSkew = loadSkew
+	decision.WarmPoolTried = failureInfo.WarmPoolTried
+	decision.WarmPoolCandidateCount = failureInfo.WarmPoolCandidateCount
+	if failureInfo.Reason != "" {
+		decision.setFailure(failureInfo.Reason, failureInfo.Detail)
+	}
 	if err != nil {
+		if decision.FailureReason == "" {
+			reason, detail := classifyOpenAIAccountSelectFailure(err)
+			decision.setFailure(reason, detail)
+		}
 		return nil, decision, err
 	}
 	if selection != nil && selection.Account != nil {
@@ -567,13 +632,141 @@ func buildOpenAIWeightedSelectionOrder(
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
-) (*AccountSelectionResult, int, int, float64, error) {
+) (*AccountSelectionResult, int, int, float64, openAISelectFailureInfo, error) {
 	accounts, err := s.service.listSchedulableAccounts(ctx, req.GroupID)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		reason, detail := classifyOpenAIAccountSelectFailure(err)
+		return nil, 0, 0, 0, openAISelectFailureInfo{Reason: reason, Detail: detail}, err
 	}
 	if len(accounts) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		err = errors.New("no available OpenAI accounts")
+		return nil, 0, 0, 0, openAISelectFailureInfo{Reason: "warm_pool_empty", Detail: "schedulable_accounts=0", WarmPoolTried: s.service.getOpenAIWarmPool() != nil}, err
+	}
+
+	if warmPool := s.service.getOpenAIWarmPool(); warmPool != nil {
+		warmCandidates := warmPool.WarmCandidates(ctx, req.GroupID, accounts, req.RequestedModel, req.ExcludedIDs)
+		if len(warmCandidates) > 0 {
+			selection, candidateCount, topK, loadSkew, warmFailure, warmErr := s.selectByLoadBalanceCandidates(ctx, req, warmCandidates, true)
+			if warmErr != nil && !errors.Is(warmErr, ErrNoAvailableAccounts) {
+				if warmFailure.Reason == "" {
+					warmFailure = openAISelectFailureInfo{Reason: "concurrency_backend_error", Detail: strings.TrimSpace(warmErr.Error())}
+				}
+				return nil, candidateCount, topK, loadSkew, warmFailure, warmErr
+			}
+			if selection != nil && selection.Account != nil {
+				if selection.Acquired {
+					warmPool.recordTake(req.GroupID)
+				}
+				return selection, candidateCount, topK, loadSkew, openAISelectFailureInfo{}, nil
+			}
+		}
+	}
+
+	filtered := make([]*Account, 0, len(accounts))
+	for i := range accounts {
+		filtered = append(filtered, &accounts[i])
+	}
+	selection, candidateCount, topK, loadSkew, failureInfo, selectErr := s.selectByLoadBalanceCandidates(ctx, req, filtered, true)
+	if warmPool := s.service.getOpenAIWarmPool(); warmPool != nil {
+		failureInfo.WarmPoolTried = true
+		failureInfo.WarmPoolCandidateCount = len(warmPool.WarmCandidates(ctx, req.GroupID, accounts, req.RequestedModel, req.ExcludedIDs))
+	}
+	if selectErr != nil && shouldRetryOpenAISelectionWithDBFallback(failureInfo, selectErr) {
+		freshSelection, freshCandidateCount, freshTopK, freshLoadSkew, freshFailureInfo, freshErr := s.retrySelectByLoadBalanceWithDBFallback(ctx, req, failureInfo)
+		if freshErr == nil && freshSelection != nil {
+			return freshSelection, freshCandidateCount, freshTopK, freshLoadSkew, freshFailureInfo, nil
+		}
+		if freshErr != nil {
+			selectErr = freshErr
+			candidateCount = freshCandidateCount
+			topK = freshTopK
+			loadSkew = freshLoadSkew
+			failureInfo = freshFailureInfo
+		}
+	}
+	if selectErr != nil && failureInfo.Reason == "" {
+		failureInfo = openAISelectFailureInfo{Reason: "no_available_accounts", Detail: strings.TrimSpace(selectErr.Error()), WarmPoolTried: failureInfo.WarmPoolTried, WarmPoolCandidateCount: failureInfo.WarmPoolCandidateCount}
+	}
+	return selection, candidateCount, topK, loadSkew, failureInfo, selectErr
+}
+
+func shouldRetryOpenAISelectionWithDBFallback(failureInfo openAISelectFailureInfo, err error) bool {
+	if err == nil || !errors.Is(err, ErrNoAvailableAccounts) {
+		return false
+	}
+	switch strings.TrimSpace(failureInfo.Reason) {
+	case "", "warm_pool_empty", "all_candidates_filtered", "unschedulable", "model_unsupported", "transport_incompatible", "all_candidates_became_unschedulable":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *defaultOpenAIAccountScheduler) retrySelectByLoadBalanceWithDBFallback(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	previousFailure openAISelectFailureInfo,
+) (*AccountSelectionResult, int, int, float64, openAISelectFailureInfo, error) {
+	freshAccounts, err := s.service.listSchedulableAccountsFromDB(ctx, req.GroupID)
+	if err != nil {
+		failure := previousFailure
+		detail := strings.TrimSpace(previousFailure.Detail)
+		if detail != "" {
+			detail += " "
+		}
+		failure.Detail = strings.TrimSpace(detail + "db_fallback_query_failed=" + err.Error())
+		if failure.Reason == "" {
+			failure.Reason = "db_fallback_query_failed"
+		}
+		return nil, 0, 0, 0, failure, fmt.Errorf("query accounts from db fallback failed: %w", err)
+	}
+	if len(freshAccounts) == 0 {
+		failure := previousFailure
+		detail := strings.TrimSpace(previousFailure.Detail)
+		if detail != "" {
+			detail += " "
+		}
+		failure.Detail = strings.TrimSpace(detail + "db_fallback_accounts=0")
+		return nil, 0, 0, 0, failure, ErrNoAvailableAccounts
+	}
+	freshCandidates := make([]*Account, 0, len(freshAccounts))
+	for i := range freshAccounts {
+		freshCandidates = append(freshCandidates, &freshAccounts[i])
+	}
+	selection, candidateCount, topK, loadSkew, failureInfo, selectErr := s.selectByLoadBalanceCandidates(ctx, req, freshCandidates, true)
+	if warmPool := s.service.getOpenAIWarmPool(); warmPool != nil {
+		failureInfo.WarmPoolTried = true
+		failureInfo.WarmPoolCandidateCount = len(warmPool.WarmCandidates(ctx, req.GroupID, freshAccounts, req.RequestedModel, req.ExcludedIDs))
+	}
+	if selectErr == nil {
+		return selection, candidateCount, topK, loadSkew, failureInfo, nil
+	}
+	if failureInfo.Reason == "" {
+		failureInfo.Reason = previousFailure.Reason
+	}
+	detailParts := make([]string, 0, 4)
+	if failureInfo.Detail != "" {
+		detailParts = append(detailParts, strings.TrimSpace(failureInfo.Detail))
+	}
+	if previousFailure.Reason != "" {
+		detailParts = append(detailParts, "snapshot_failure_reason="+strings.TrimSpace(previousFailure.Reason))
+	}
+	if previousFailure.Detail != "" {
+		detailParts = append(detailParts, "snapshot_failure_detail="+strings.TrimSpace(previousFailure.Detail))
+	}
+	detailParts = append(detailParts, "db_fallback_attempted=true")
+	failureInfo.Detail = strings.Join(detailParts, " ")
+	return nil, candidateCount, topK, loadSkew, failureInfo, selectErr
+}
+
+func (s *defaultOpenAIAccountScheduler) selectByLoadBalanceCandidates(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	candidateBase []*Account,
+	allowWaitPlan bool,
+) (*AccountSelectionResult, int, int, float64, openAISelectFailureInfo, error) {
+	if len(candidateBase) == 0 {
+		return nil, 0, 0, 0, openAISelectFailureInfo{Reason: "warm_pool_empty", Detail: "candidate_base=0"}, ErrNoAvailableAccounts
 	}
 
 	// require_privacy_set: 获取分组信息
@@ -582,10 +775,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
 	}
 
-	filtered := make([]*Account, 0, len(accounts))
-	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
-	for i := range accounts {
-		account := &accounts[i]
+	filtered := make([]*Account, 0, len(candidateBase))
+	loadReq := make([]AccountWithConcurrency, 0, len(candidateBase))
+	for _, account := range candidateBase {
+		if account == nil {
+			continue
+		}
 		if req.ExcludedIDs != nil {
 			if _, excluded := req.ExcludedIDs[account.ID]; excluded {
 				continue
@@ -613,7 +808,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		})
 	}
 	if len(filtered) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		stats := analyzeOpenAISelectionFilters(candidateBase, req, schedGroup, s)
+		return nil, 0, 0, 0, openAISelectFailureInfo{Reason: pickOpenAISelectionFailureReason(stats), Detail: summarizeOpenAISelectionFilterStats(stats, req.RequiredTransport)}, ErrNoAvailableAccounts
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -715,7 +911,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 		if acquireErr != nil {
-			return nil, len(candidates), topK, loadSkew, acquireErr
+			return nil, len(candidates), topK, loadSkew, openAISelectFailureInfo{Reason: "concurrency_backend_error", Detail: strings.TrimSpace(acquireErr.Error())}, acquireErr
 		}
 		if result != nil && result.Acquired {
 			if req.SessionHash != "" {
@@ -725,8 +921,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				Account:     fresh,
 				Acquired:    true,
 				ReleaseFunc: result.ReleaseFunc,
-			}, len(candidates), topK, loadSkew, nil
+			}, len(candidates), topK, loadSkew, openAISelectFailureInfo{}, nil
 		}
+	}
+
+	if !allowWaitPlan {
+		return nil, len(candidates), topK, loadSkew, openAISelectFailureInfo{Reason: "all_candidates_busy", Detail: buildOpenAISelectionFailureDetail(len(candidateBase), len(filtered), len(candidates), 0, req.RequiredTransport)}, ErrNoAvailableAccounts
 	}
 
 	cfg := s.service.schedulingConfig()
@@ -744,10 +944,88 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				Timeout:        cfg.FallbackWaitTimeout,
 				MaxWaiting:     cfg.FallbackMaxWaiting,
 			},
-		}, len(candidates), topK, loadSkew, nil
+		}, len(candidates), topK, loadSkew, openAISelectFailureInfo{}, nil
 	}
 
-	return nil, len(candidates), topK, loadSkew, ErrNoAvailableAccounts
+	return nil, len(candidates), topK, loadSkew, openAISelectFailureInfo{Reason: "all_candidates_became_unschedulable", Detail: buildOpenAISelectionFailureDetail(len(candidateBase), len(filtered), len(candidates), len(selectionOrder), req.RequiredTransport)}, ErrNoAvailableAccounts
+}
+
+func buildOpenAISelectionFailureDetail(candidateBaseCount, filteredCount, scoredCount, selectionOrderCount int, requiredTransport OpenAIUpstreamTransport) string {
+	return fmt.Sprintf(
+		"candidate_base=%d filtered=%d scored=%d selection_order=%d required_transport=%s",
+		candidateBaseCount,
+		filteredCount,
+		scoredCount,
+		selectionOrderCount,
+		strings.TrimSpace(string(requiredTransport)),
+	)
+}
+
+func analyzeOpenAISelectionFilters(candidateBase []*Account, req OpenAIAccountScheduleRequest, schedGroup *Group, scheduler *defaultOpenAIAccountScheduler) openAISelectionFilterStats {
+	stats := openAISelectionFilterStats{Total: len(candidateBase)}
+	for _, account := range candidateBase {
+		if account == nil {
+			continue
+		}
+		if req.ExcludedIDs != nil {
+			if _, excluded := req.ExcludedIDs[account.ID]; excluded {
+				stats.Excluded++
+				continue
+			}
+		}
+		if !account.IsSchedulable() {
+			stats.Unschedulable++
+			continue
+		}
+		if !account.IsOpenAI() {
+			stats.NotOpenAI++
+			continue
+		}
+		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
+			stats.PrivacyRequired++
+			continue
+		}
+		if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+			stats.ModelUnsupported++
+			continue
+		}
+		if scheduler != nil && !scheduler.isAccountTransportCompatible(account, req.RequiredTransport) {
+			stats.TransportIncompatible++
+			continue
+		}
+	}
+	return stats
+}
+
+func pickOpenAISelectionFailureReason(stats openAISelectionFilterStats) string {
+	switch {
+	case stats.TransportIncompatible > 0 && stats.TransportIncompatible == stats.Total:
+		return "transport_incompatible"
+	case stats.ModelUnsupported > 0 && stats.ModelUnsupported == stats.Total:
+		return "model_unsupported"
+	case stats.PrivacyRequired > 0 && stats.PrivacyRequired == stats.Total:
+		return "privacy_required"
+	case stats.Excluded > 0 && stats.Excluded == stats.Total:
+		return "all_excluded"
+	case stats.Unschedulable+stats.NotOpenAI == stats.Total:
+		return "unschedulable"
+	default:
+		return "all_candidates_filtered"
+	}
+}
+
+func summarizeOpenAISelectionFilterStats(stats openAISelectionFilterStats, requiredTransport OpenAIUpstreamTransport) string {
+	return fmt.Sprintf(
+		"total=%d excluded=%d unschedulable=%d not_openai=%d privacy_required=%d model_unsupported=%d transport_incompatible=%d required_transport=%s",
+		stats.Total,
+		stats.Excluded,
+		stats.Unschedulable,
+		stats.NotOpenAI,
+		stats.PrivacyRequired,
+		stats.ModelUnsupported,
+		stats.TransportIncompatible,
+		strings.TrimSpace(string(requiredTransport)),
+	)
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {

@@ -355,20 +355,20 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
 </script>
 
 <template>
-  <div class="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-gray-900/5 dark:bg-dark-800 dark:ring-dark-700">
-    <div class="mb-4 flex items-start justify-between gap-4">
-      <div>
+  <div class="overflow-hidden rounded-3xl bg-white p-6 shadow-sm ring-1 ring-gray-900/5 dark:bg-dark-800 dark:ring-dark-700">
+    <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div class="min-w-0">
         <h3 class="text-sm font-bold text-gray-900 dark:text-white">{{ t('admin.ops.alertEvents.title') }}</h3>
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.alertEvents.description') }}</p>
       </div>
 
-      <div class="flex items-center gap-2">
-        <Select :model-value="timeRange" :options="timeRangeOptions" class="w-[120px]" @change="timeRange = String($event || '24h')" />
-        <Select :model-value="severity" :options="severityOptions" class="w-[88px]" @change="severity = String($event || '')" />
-        <Select :model-value="status" :options="statusOptions" class="w-[110px]" @change="status = String($event || '')" />
-        <Select :model-value="emailSent" :options="emailSentOptions" class="w-[110px]" @change="emailSent = String($event || '')" />
+      <div class="grid w-full min-w-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end">
+        <Select :model-value="timeRange" :options="timeRangeOptions" class="w-full min-w-0 sm:w-[120px]" @change="timeRange = String($event || '24h')" />
+        <Select :model-value="severity" :options="severityOptions" class="w-full min-w-0 sm:w-[88px]" @change="severity = String($event || '')" />
+        <Select :model-value="status" :options="statusOptions" class="w-full min-w-0 sm:w-[110px]" @change="status = String($event || '')" />
+        <Select :model-value="emailSent" :options="emailSentOptions" class="w-full min-w-0 sm:w-[110px]" @change="emailSent = String($event || '')" />
         <button
-          class="flex items-center gap-1.5 rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-700 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600"
+          class="col-span-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-700 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-1 sm:w-auto dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600"
           :disabled="loading"
           @click="loadFirstPage"
         >
@@ -392,8 +392,8 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
       {{ t('admin.ops.alertEvents.empty') }}
     </div>
 
-    <div v-else class="overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
-      <div class="max-h-[600px] overflow-y-auto" @scroll="onScroll">
+    <div v-else class="max-w-full overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
+      <div class="table-wrapper max-h-[600px] overflow-auto" @scroll="onScroll">
         <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
           <thead class="sticky top-0 z-10 bg-gray-50 dark:bg-dark-900">
             <tr>
@@ -535,22 +535,22 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
               </div>
             </div>
 
-            <div class="flex flex-wrap gap-2">
-              <div class="flex items-center gap-2 rounded-lg bg-white px-2 py-1 ring-1 ring-gray-200 dark:bg-dark-800 dark:ring-dark-700">
+            <div class="flex w-full flex-col gap-2 sm:w-auto sm:max-w-full">
+              <div class="flex w-full flex-col gap-2 rounded-lg bg-white px-3 py-2 ring-1 ring-gray-200 sm:w-auto sm:flex-row sm:items-center sm:px-2 sm:py-1 dark:bg-dark-800 dark:ring-dark-700">
                 <span class="text-[11px] font-bold text-gray-600 dark:text-gray-300">{{ t('admin.ops.alertEvents.detail.silence') }}</span>
                 <Select
                   :model-value="silenceDuration"
                   :options="silenceDurationOptions"
-                  class="w-[110px]"
+                  class="w-full min-w-0 sm:w-[110px]"
                   @change="silenceDuration = String($event || '1h')"
                 />
-                <button type="button" class="btn btn-secondary btn-sm" :disabled="detailActionLoading" @click="silenceAlert">
+                <button type="button" class="btn btn-secondary btn-sm w-full justify-center whitespace-nowrap sm:w-auto" :disabled="detailActionLoading" @click="silenceAlert">
                   <Icon name="ban" size="sm" />
                   {{ t('common.apply') }}
                 </button>
               </div>
 
-              <button type="button" class="btn btn-secondary btn-sm" :disabled="detailActionLoading" @click="manualResolve">
+              <button type="button" class="btn btn-secondary btn-sm w-full justify-center whitespace-nowrap sm:w-auto" :disabled="detailActionLoading" @click="manualResolve">
                 <Icon name="checkCircle" size="sm" />
                 {{ t('admin.ops.alertEvents.detail.manualResolve') }}
               </button>
@@ -572,14 +572,14 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
               <div class="mt-1 flex flex-wrap items-center gap-2">
                 <div class="font-mono text-sm font-bold text-gray-900 dark:text-white">#{{ selected.rule_id }}</div>
                 <a
-                  class="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-bold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 dark:bg-dark-800 dark:text-gray-200 dark:ring-dark-700 dark:hover:bg-dark-700"
+                  class="inline-flex w-full items-center justify-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-bold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 sm:w-auto dark:bg-dark-800 dark:text-gray-200 dark:ring-dark-700 dark:hover:bg-dark-700"
                   :href="`/admin/ops?open_alert_rules=1&alert_rule_id=${selected.rule_id}`"
                 >
                   <Icon name="externalLink" size="xs" />
                   {{ t('admin.ops.alertEvents.detail.viewRule') }}
                 </a>
                 <a
-                  class="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-bold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 dark:bg-dark-800 dark:text-gray-200 dark:ring-dark-700 dark:hover:bg-dark-700"
+                  class="inline-flex w-full items-center justify-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-bold text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50 sm:w-auto dark:bg-dark-800 dark:text-gray-200 dark:ring-dark-700 dark:hover:bg-dark-700"
                   :href="`/admin/ops?platform=${encodeURIComponent(getDimensionString(selected,'platform')||'')}&group_id=${selected.dimensions?.group_id || ''}&error_type=request&open_error_details=1`"
                 >
                   <Icon name="externalLink" size="xs" />
@@ -613,7 +613,7 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
           <div v-else-if="history.length === 0" class="py-6 text-center text-xs text-gray-500 dark:text-gray-400">
             {{ t('admin.ops.alertEvents.detail.historyEmpty') }}
           </div>
-          <div v-else class="overflow-hidden rounded-lg border border-gray-100 dark:border-dark-700">
+          <div v-else class="table-wrapper max-w-full overflow-auto rounded-lg border border-gray-100 dark:border-dark-700">
             <table class="min-w-full divide-y divide-gray-100 dark:divide-dark-700">
               <thead class="bg-gray-50 dark:bg-dark-900">
                 <tr>

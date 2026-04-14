@@ -64,6 +64,8 @@ var schedulerNeutralExtraKeys = map[string]struct{}{
 	"session_window_utilization": {},
 }
 
+const accountRepoIDBatchChunkSize = 5000
+
 // NewAccountRepository 创建账户仓储实例。
 // 这是对外暴露的构造函数，返回接口类型以便于依赖注入。
 func NewAccountRepository(client *dbent.Client, sqlDB *sql.DB, schedulerCache service.SchedulerCache) service.AccountRepository {
@@ -182,13 +184,17 @@ func (r *accountRepository) GetByIDs(ctx context.Context, ids []int64) ([]*servi
 		return []*service.Account{}, nil
 	}
 
-	entAccounts, err := r.client.Account.
-		Query().
-		Where(dbaccount.IDIn(uniqueIDs...)).
-		WithProxy().
-		All(ctx)
-	if err != nil {
-		return nil, err
+	entAccounts := make([]*dbent.Account, 0, len(uniqueIDs))
+	for _, chunk := range chunkPositiveInt64s(uniqueIDs, accountRepoIDBatchChunkSize) {
+		chunkAccounts, err := r.client.Account.
+			Query().
+			Where(dbaccount.IDIn(chunk...)).
+			WithProxy().
+			All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		entAccounts = append(entAccounts, chunkAccounts...)
 	}
 	if len(entAccounts) == 0 {
 		return []*service.Account{}, nil
@@ -679,6 +685,53 @@ func accountListOrder(params pagination.PaginationParams) []func(*entsql.Selecto
 	return []func(*entsql.Selector){dbent.Asc(field), dbent.Asc(dbaccount.FieldID)}
 }
 
+// ListOpsRealtimeAccounts returns a lightweight account projection for ops realtime dashboards.
+//
+// It avoids the generic paginated list path so high-cardinality ops panels do not spend time on
+// repeated COUNT/OFFSET queries or loading heavyweight fields like credentials / proxy metadata.
+func (r *accountRepository) ListOpsRealtimeAccounts(ctx context.Context, platformFilter string, groupIDFilter *int64) ([]service.Account, error) {
+	q := r.client.Account.Query().
+		Select(
+			dbaccount.FieldID,
+			dbaccount.FieldName,
+			dbaccount.FieldPlatform,
+			dbaccount.FieldConcurrency,
+			dbaccount.FieldStatus,
+			dbaccount.FieldSchedulable,
+			dbaccount.FieldErrorMessage,
+			dbaccount.FieldRateLimitResetAt,
+			dbaccount.FieldOverloadUntil,
+			dbaccount.FieldTempUnschedulableUntil,
+		).
+		Order(dbent.Desc(dbaccount.FieldID))
+
+	if platformFilter != "" {
+		q = q.Where(dbaccount.PlatformEQ(platformFilter))
+	}
+	if groupIDFilter != nil && *groupIDFilter > 0 {
+		q = q.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(*groupIDFilter)))
+	}
+
+	accounts, err := q.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	accountIDs := make([]int64, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc == nil || acc.ID <= 0 {
+			continue
+		}
+		accountIDs = append(accountIDs, acc.ID)
+	}
+	groupsByAccount, groupIDsByAccount, _, err := r.loadAccountGroups(ctx, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.opsRealtimeAccountsToService(accounts, groupsByAccount, groupIDsByAccount), nil
+}
+
 func (r *accountRepository) ListByGroup(ctx context.Context, groupID int64) ([]service.Account, error) {
 	accounts, err := r.queryAccountsByGroup(ctx, groupID, accountGroupQueryOptions{
 		status: service.StatusActive,
@@ -698,6 +751,28 @@ func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, 
 		return nil, err
 	}
 	return r.accountsToService(ctx, accounts)
+}
+
+// ListActiveForTokenRefresh returns active accounts without loading proxy/group relations.
+// Token refresh only needs account core fields and will resolve proxy details lazily when privacy
+// checks run, so skipping relation hydration avoids huge ID fan-out queries on large account sets.
+func (r *accountRepository) ListActiveForTokenRefresh(ctx context.Context) ([]service.Account, error) {
+	accounts, err := r.client.Account.Query().
+		Where(dbaccount.StatusEQ(service.StatusActive)).
+		Order(dbent.Asc(dbaccount.FieldPriority)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]service.Account, 0, len(accounts))
+	for _, acc := range accounts {
+		mapped := accountEntityToService(acc)
+		if mapped == nil {
+			continue
+		}
+		out = append(out, *mapped)
+	}
+	return out, nil
 }
 
 func (r *accountRepository) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
@@ -1574,33 +1649,42 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 			dbaccountgroup.ByPriority(),
 			dbaccountgroup.ByAccountField(dbaccount.FieldPriority),
 		).
-		WithAccount().
 		All(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if len(groups) == 0 {
+		return []service.Account{}, nil
+	}
 
 	orderedIDs := make([]int64, 0, len(groups))
-	accountMap := make(map[int64]*dbent.Account, len(groups))
+	seen := make(map[int64]struct{}, len(groups))
 	for _, ag := range groups {
-		if ag.Edges.Account == nil {
+		if ag.AccountID <= 0 {
 			continue
 		}
-		if _, exists := accountMap[ag.AccountID]; exists {
+		if _, exists := seen[ag.AccountID]; exists {
 			continue
 		}
-		accountMap[ag.AccountID] = ag.Edges.Account
+		seen[ag.AccountID] = struct{}{}
 		orderedIDs = append(orderedIDs, ag.AccountID)
 	}
-
-	accounts := make([]*dbent.Account, 0, len(orderedIDs))
-	for _, id := range orderedIDs {
-		if acc, ok := accountMap[id]; ok {
-			accounts = append(accounts, acc)
-		}
+	if len(orderedIDs) == 0 {
+		return []service.Account{}, nil
 	}
 
-	return r.accountsToService(ctx, accounts)
+	loaded, err := r.GetByIDs(ctx, orderedIDs)
+	if err != nil {
+		return nil, err
+	}
+	accounts := make([]service.Account, 0, len(loaded))
+	for _, acc := range loaded {
+		if acc == nil {
+			continue
+		}
+		accounts = append(accounts, *acc)
+	}
+	return accounts, nil
 }
 
 func (r *accountRepository) accountsToService(ctx context.Context, accounts []*dbent.Account) ([]service.Account, error) {
@@ -1652,6 +1736,29 @@ func (r *accountRepository) accountsToService(ctx context.Context, accounts []*d
 	return outAccounts, nil
 }
 
+func (r *accountRepository) opsRealtimeAccountsToService(accounts []*dbent.Account, groupsByAccount map[int64][]*service.Group, groupIDsByAccount map[int64][]int64) []service.Account {
+	if len(accounts) == 0 {
+		return []service.Account{}
+	}
+
+	outAccounts := make([]service.Account, 0, len(accounts))
+	for _, acc := range accounts {
+		out := accountEntityToOpsRealtimeService(acc)
+		if out == nil {
+			continue
+		}
+		if groups, ok := groupsByAccount[acc.ID]; ok && len(groups) > 0 {
+			out.Groups = groups
+		}
+		if groupIDs, ok := groupIDsByAccount[acc.ID]; ok && len(groupIDs) > 0 {
+			out.GroupIDs = groupIDs
+		}
+		outAccounts = append(outAccounts, *out)
+	}
+
+	return outAccounts
+}
+
 func tempUnschedulablePredicate() dbpredicate.Account {
 	return dbpredicate.Account(func(s *entsql.Selector) {
 		col := s.C("temp_unschedulable_until")
@@ -1672,17 +1779,19 @@ func notExpiredPredicate(now time.Time) dbpredicate.Account {
 
 func (r *accountRepository) loadProxies(ctx context.Context, proxyIDs []int64) (map[int64]*service.Proxy, error) {
 	proxyMap := make(map[int64]*service.Proxy)
+	proxyIDs = normalizePositiveInt64s(proxyIDs)
 	if len(proxyIDs) == 0 {
 		return proxyMap, nil
 	}
 
-	proxies, err := r.client.Proxy.Query().Where(dbproxy.IDIn(proxyIDs...)).All(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range proxies {
-		proxyMap[p.ID] = proxyEntityToService(p)
+	for _, chunk := range chunkPositiveInt64s(proxyIDs, accountRepoIDBatchChunkSize) {
+		proxies, err := r.client.Proxy.Query().Where(dbproxy.IDIn(chunk...)).All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range proxies {
+			proxyMap[p.ID] = proxyEntityToService(p)
+		}
 	}
 	return proxyMap, nil
 }
@@ -1692,32 +1801,35 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 	groupIDsByAccount := make(map[int64][]int64)
 	accountGroupsByAccount := make(map[int64][]service.AccountGroup)
 
+	accountIDs = normalizePositiveInt64s(accountIDs)
 	if len(accountIDs) == 0 {
 		return groupsByAccount, groupIDsByAccount, accountGroupsByAccount, nil
 	}
 
-	entries, err := r.client.AccountGroup.Query().
-		Where(dbaccountgroup.AccountIDIn(accountIDs...)).
-		WithGroup().
-		Order(dbaccountgroup.ByAccountID(), dbaccountgroup.ByPriority()).
-		All(ctx)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	for _, ag := range entries {
-		groupSvc := groupEntityToService(ag.Edges.Group)
-		agSvc := service.AccountGroup{
-			AccountID: ag.AccountID,
-			GroupID:   ag.GroupID,
-			Priority:  ag.Priority,
-			CreatedAt: ag.CreatedAt,
-			Group:     groupSvc,
+	for _, chunk := range chunkPositiveInt64s(accountIDs, accountRepoIDBatchChunkSize) {
+		entries, err := r.client.AccountGroup.Query().
+			Where(dbaccountgroup.AccountIDIn(chunk...)).
+			WithGroup().
+			Order(dbaccountgroup.ByAccountID(), dbaccountgroup.ByPriority()).
+			All(ctx)
+		if err != nil {
+			return nil, nil, nil, err
 		}
-		accountGroupsByAccount[ag.AccountID] = append(accountGroupsByAccount[ag.AccountID], agSvc)
-		groupIDsByAccount[ag.AccountID] = append(groupIDsByAccount[ag.AccountID], ag.GroupID)
-		if groupSvc != nil {
-			groupsByAccount[ag.AccountID] = append(groupsByAccount[ag.AccountID], groupSvc)
+
+		for _, ag := range entries {
+			groupSvc := groupEntityToService(ag.Edges.Group)
+			agSvc := service.AccountGroup{
+				AccountID: ag.AccountID,
+				GroupID:   ag.GroupID,
+				Priority:  ag.Priority,
+				CreatedAt: ag.CreatedAt,
+				Group:     groupSvc,
+			}
+			accountGroupsByAccount[ag.AccountID] = append(accountGroupsByAccount[ag.AccountID], agSvc)
+			groupIDsByAccount[ag.AccountID] = append(groupIDsByAccount[ag.AccountID], ag.GroupID)
+			if groupSvc != nil {
+				groupsByAccount[ag.AccountID] = append(groupsByAccount[ag.AccountID], groupSvc)
+			}
 		}
 	}
 
@@ -1737,6 +1849,44 @@ func (r *accountRepository) loadAccountGroupIDs(ctx context.Context, accountID i
 		ids = append(ids, entry.GroupID)
 	}
 	return ids, nil
+}
+
+func normalizePositiveInt64s(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func chunkPositiveInt64s(ids []int64, chunkSize int) [][]int64 {
+	ids = normalizePositiveInt64s(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	if chunkSize <= 0 || len(ids) <= chunkSize {
+		return [][]int64{ids}
+	}
+	chunks := make([][]int64, 0, (len(ids)+chunkSize-1)/chunkSize)
+	for start := 0; start < len(ids); start += chunkSize {
+		end := start + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunks = append(chunks, ids[start:end])
+	}
+	return chunks
 }
 
 func mergeGroupIDs(a []int64, b []int64) []int64 {
@@ -1808,6 +1958,24 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		SessionWindowStart:      m.SessionWindowStart,
 		SessionWindowEnd:        m.SessionWindowEnd,
 		SessionWindowStatus:     derefString(m.SessionWindowStatus),
+	}
+}
+
+func accountEntityToOpsRealtimeService(m *dbent.Account) *service.Account {
+	if m == nil {
+		return nil
+	}
+	return &service.Account{
+		ID:                     m.ID,
+		Name:                   m.Name,
+		Platform:               m.Platform,
+		Concurrency:            m.Concurrency,
+		Status:                 m.Status,
+		ErrorMessage:           derefString(m.ErrorMessage),
+		Schedulable:            m.Schedulable,
+		RateLimitResetAt:       m.RateLimitResetAt,
+		OverloadUntil:          m.OverloadUntil,
+		TempUnschedulableUntil: m.TempUnschedulableUntil,
 	}
 }
 

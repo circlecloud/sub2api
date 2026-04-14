@@ -246,6 +246,9 @@ func (s *PaymentConfigService) parsePaymentConfig(vals map[string]string) *Payme
 
 // getStripePublishableKey finds the publishable key from the first enabled Stripe provider instance.
 func (s *PaymentConfigService) getStripePublishableKey(ctx context.Context) string {
+	if s == nil || s.entClient == nil {
+		return ""
+	}
 	instances, err := s.entClient.PaymentProviderInstance.Query().
 		Where(
 			paymentproviderinstance.EnabledEQ(true),

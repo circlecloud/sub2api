@@ -394,13 +394,30 @@ export interface OpsUserConcurrencyStatsResponse {
   timestamp?: string
 }
 
-export async function getConcurrencyStats(platform?: string, groupId?: number | null): Promise<OpsConcurrencyStatsResponse> {
+export type OpsRealtimeScope = 'platform' | 'group' | 'account'
+
+interface OpsRealtimeStatsOptions {
+  includeAccount?: boolean
+  scope?: OpsRealtimeScope
+}
+
+export async function getConcurrencyStats(
+  platform?: string,
+  groupId?: number | null,
+  options: OpsRealtimeStatsOptions = {}
+): Promise<OpsConcurrencyStatsResponse> {
   const params: Record<string, any> = {}
   if (platform) {
     params.platform = platform
   }
   if (typeof groupId === 'number' && groupId > 0) {
     params.group_id = groupId
+  }
+  if (options.includeAccount === false) {
+    params.include_account = false
+  }
+  if (options.scope) {
+    params.scope = options.scope
   }
 
   const { data } = await apiClient.get<OpsConcurrencyStatsResponse>('/admin/ops/concurrency', { params })
@@ -456,13 +473,102 @@ export interface OpsAccountAvailabilityStatsResponse {
   timestamp?: string
 }
 
-export async function getAccountAvailabilityStats(platform?: string, groupId?: number | null): Promise<OpsAccountAvailabilityStatsResponse> {
+export interface OpsOpenAIWarmPoolSummary {
+  tracked_account_count: number
+  bucket_ready_account_count: number
+  global_ready_account_count: number
+  active_group_count: number
+  global_target_per_active_group: number
+  global_refill_per_active_group: number
+  groups_below_target_count: number
+  groups_below_refill_count: number
+  probing_account_count: number
+  cooling_account_count: number
+  network_error_pool_count: number
+  take_count: number
+  network_error_pool_full: boolean
+  last_bucket_maintenance_at?: string | null
+  last_global_maintenance_at?: string | null
+}
+
+export interface OpsOpenAIWarmPoolBucket {
+  group_id: number
+  group_name: string
+  schedulable_accounts: number
+  bucket_ready_accounts: number
+  bucket_target_size: number
+  bucket_refill_below: number
+  take_count: number
+  probing_accounts: number
+  cooling_accounts: number
+  last_access_at?: string | null
+  last_refill_at?: string | null
+}
+
+export interface OpsOpenAIWarmPoolBucketRef {
+  group_id: number
+  group_name: string
+}
+
+export interface OpsOpenAIWarmPoolGroupCoverage {
+  group_id: number
+  group_name: string
+  coverage_count: number
+  target_size: number
+  refill_below: number
+}
+
+export interface OpsOpenAIWarmPoolAccount {
+  account_id: number
+  account_name: string
+  platform: string
+  schedulable: boolean
+  priority: number
+  concurrency: number
+  state: 'ready' | 'probing' | 'cooling' | 'network_error' | 'idle' | string
+  groups?: OpsOpenAIWarmPoolBucketRef[]
+  verified_at?: string | null
+  expires_at?: string | null
+  fail_until?: string | null
+  network_error_at?: string | null
+  network_error_until?: string | null
+}
+
+export interface OpsOpenAIWarmPoolNetworkErrorPool {
+  count: number
+  capacity: number
+  oldest_entered_at?: string | null
+}
+
+export interface OpsOpenAIWarmPoolStatsResponse {
+  enabled: boolean
+  warm_pool_enabled: boolean
+  reader_ready: boolean
+  timestamp?: string
+  summary?: OpsOpenAIWarmPoolSummary | null
+  buckets: OpsOpenAIWarmPoolBucket[]
+  accounts: OpsOpenAIWarmPoolAccount[]
+  global_coverages: OpsOpenAIWarmPoolGroupCoverage[]
+  network_error_pool?: OpsOpenAIWarmPoolNetworkErrorPool | null
+}
+
+export async function getAccountAvailabilityStats(
+  platform?: string,
+  groupId?: number | null,
+  options: OpsRealtimeStatsOptions = {}
+): Promise<OpsAccountAvailabilityStatsResponse> {
   const params: Record<string, any> = {}
   if (platform) {
     params.platform = platform
   }
   if (typeof groupId === 'number' && groupId > 0) {
     params.group_id = groupId
+  }
+  if (options.includeAccount === false) {
+    params.include_account = false
+  }
+  if (options.scope) {
+    params.scope = options.scope
   }
   const { data } = await apiClient.get<OpsAccountAvailabilityStatsResponse>('/admin/ops/account-availability', { params })
   return data
@@ -504,6 +610,38 @@ export async function getRealtimeTrafficSummary(
   }
 
   const { data } = await apiClient.get<OpsRealtimeTrafficSummaryResponse>('/admin/ops/realtime-traffic', { params })
+  return data
+}
+
+export interface GetOpenAIWarmPoolStatsOptions {
+  includeAccount?: boolean
+  accountState?: 'ready' | 'probing' | 'cooling' | 'network_error' | 'idle' | string
+  accountsOnly?: boolean
+}
+
+export async function getOpenAIWarmPoolStats(
+  groupId?: number | null,
+  options: GetOpenAIWarmPoolStatsOptions = {}
+): Promise<OpsOpenAIWarmPoolStatsResponse> {
+  const params: Record<string, any> = {}
+  if (typeof groupId === 'number' && groupId > 0) {
+    params.group_id = groupId
+  }
+  if (typeof options.includeAccount === 'boolean') {
+    params.include_account = options.includeAccount
+  }
+  if (typeof options.accountsOnly === 'boolean') {
+    params.accounts_only = options.accountsOnly
+  }
+  if (options.accountState?.trim()) {
+    params.account_state = options.accountState.trim()
+  }
+  const { data } = await apiClient.get<OpsOpenAIWarmPoolStatsResponse>('/admin/ops/openai-warm-pool', { params })
+  return data
+}
+
+export async function triggerOpenAIWarmPoolGlobalRefill(): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.post<{ ok: boolean }>('/admin/ops/openai-warm-pool/refill-global', {})
   return data
 }
 
@@ -1374,6 +1512,8 @@ export const opsAPI = {
   getConcurrencyStats,
   getUserConcurrencyStats,
   getAccountAvailabilityStats,
+  getOpenAIWarmPoolStats,
+  triggerOpenAIWarmPoolGlobalRefill,
   getRealtimeTrafficSummary,
   subscribeQPS,
 

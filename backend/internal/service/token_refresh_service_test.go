@@ -64,6 +64,33 @@ func (r *tokenRefreshAccountRepo) SetTempUnschedulable(ctx context.Context, id i
 	return nil
 }
 
+type tokenRefreshLightweightRepo struct {
+	tokenRefreshAccountRepo
+	accounts         []Account
+	lightweightCalls int
+}
+
+func (r *tokenRefreshLightweightRepo) ListActive(ctx context.Context) ([]Account, error) {
+	panic("unexpected ListActive call")
+}
+
+func (r *tokenRefreshLightweightRepo) ListActiveForTokenRefresh(ctx context.Context) ([]Account, error) {
+	r.lightweightCalls++
+	return r.accounts, nil
+}
+
+func TestTokenRefreshService_ListActiveAccounts_PrefersLightweightRepo(t *testing.T) {
+	repo := &tokenRefreshLightweightRepo{accounts: []Account{{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}}}
+	svc := &TokenRefreshService{accountRepo: repo}
+
+	accounts, err := svc.listActiveAccounts(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.lightweightCalls)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(1), accounts[0].ID)
+}
+
 type tokenCacheInvalidatorStub struct {
 	calls int
 	err   error

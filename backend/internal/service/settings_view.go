@@ -109,9 +109,12 @@ type SystemSettings struct {
 	BackendModeEnabled bool
 
 	// Gateway forwarding behavior
-	EnableFingerprintUnification bool // 是否统一 OAuth 账号的指纹头（默认 true）
-	EnableMetadataPassthrough    bool // 是否透传客户端原始 metadata（默认 false）
-	EnableCCHSigning             bool // 是否对 billing header cch 进行签名（默认 false）
+	EnableFingerprintUnification                bool
+	EnableMetadataPassthrough                   bool
+	EnableCCHSigning                            bool
+	EnableOpenAIStreamRectifier                 bool
+	OpenAIStreamResponseHeaderRectifierTimeouts []int
+	OpenAIStreamFirstTokenRectifierTimeouts     []int
 
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool // 是否启用 web search 模拟
@@ -124,6 +127,27 @@ type SystemSettings struct {
 	// Account quota notification
 	AccountQuotaNotifyEnabled bool
 	AccountQuotaNotifyEmails  []NotifyEmailEntry
+
+	// OpenAI warm pool behavior
+	OpenAIWarmPoolEnabled                     bool
+	OpenAIWarmPoolBucketTargetSize            int
+	OpenAIWarmPoolBucketRefillBelow           int
+	OpenAIWarmPoolBucketSyncFillMin           int
+	OpenAIWarmPoolBucketEntryTTLSeconds       int
+	OpenAIWarmPoolBucketRefillCooldownSeconds int
+	OpenAIWarmPoolBucketRefillIntervalSeconds int
+	OpenAIWarmPoolGlobalTargetSize            int
+	OpenAIWarmPoolGlobalRefillBelow           int
+	OpenAIWarmPoolGlobalEntryTTLSeconds       int
+	OpenAIWarmPoolGlobalRefillCooldownSeconds int
+	OpenAIWarmPoolGlobalRefillIntervalSeconds int
+	OpenAIWarmPoolNetworkErrorPoolSize        int
+	OpenAIWarmPoolNetworkErrorEntryTTLSeconds int
+	OpenAIWarmPoolProbeMaxCandidates          int
+	OpenAIWarmPoolProbeConcurrency            int
+	OpenAIWarmPoolProbeTimeoutSeconds         int
+	OpenAIWarmPoolProbeFailureCooldownSeconds int
+	OpenAIWarmPoolStartupGroupIDs             []int64
 }
 
 type DefaultSubscriptionSetting struct {

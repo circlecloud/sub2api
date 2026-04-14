@@ -359,6 +359,10 @@ type GatewayConfig struct {
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
+	// OpenAI stream rectifier 配置字段，当前提交只保留结构兼容，运行时默认值由 SettingService 兜底。
+	OpenAIStreamRectifierEnabled                bool  `mapstructure:"openai_stream_rectifier_enabled"`
+	OpenAIStreamResponseHeaderRectifierTimeouts []int `mapstructure:"openai_stream_response_header_rectifier_timeouts"`
+	OpenAIStreamFirstTokenRectifierTimeouts     []int `mapstructure:"openai_stream_first_token_rectifier_timeouts"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -557,6 +561,48 @@ type GatewayOpenAIWSConfig struct {
 	StickyPreviousResponseTTLSeconds int `mapstructure:"sticky_previous_response_ttl_seconds"`
 
 	SchedulerScoreWeights GatewayOpenAIWSSchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
+	// AccountWarmPool: OpenAI 账号预热池配置。
+	AccountWarmPool GatewayOpenAIAccountWarmPoolConfig `mapstructure:"account_warm_pool"`
+}
+
+// GatewayOpenAIAccountWarmPoolConfig OpenAI 账号预热池配置。
+type GatewayOpenAIAccountWarmPoolConfig struct {
+	// Enabled: 是否启用账号预热池。
+	Enabled bool `mapstructure:"enabled"`
+	// BucketTargetSize: Bucket 目标账号数。
+	BucketTargetSize int `mapstructure:"bucket_target_size"`
+	// BucketRefillBelow: Bucket 低水位阈值。
+	BucketRefillBelow int `mapstructure:"bucket_refill_below"`
+	// BucketSyncFillMin: 请求同步兜底时，Bucket 至少尝试补到的可用账号数。
+	BucketSyncFillMin int `mapstructure:"bucket_sync_fill_min"`
+	// BucketEntryTTLSeconds: Bucket entry 的有效期。
+	BucketEntryTTLSeconds int `mapstructure:"bucket_entry_ttl_seconds"`
+	// BucketRefillCooldownSeconds: 同一 Bucket 连续补池的最小冷却窗口。
+	BucketRefillCooldownSeconds int `mapstructure:"bucket_refill_cooldown_seconds"`
+	// BucketRefillIntervalSeconds: 活跃 Bucket 的后台扫描周期。
+	BucketRefillIntervalSeconds int `mapstructure:"bucket_refill_interval_seconds"`
+	// GlobalTargetSize: Global 目标账号数。
+	GlobalTargetSize int `mapstructure:"global_target_size"`
+	// GlobalRefillBelow: Global 低水位阈值。
+	GlobalRefillBelow int `mapstructure:"global_refill_below"`
+	// GlobalEntryTTLSeconds: Global ready 的有效期。
+	GlobalEntryTTLSeconds int `mapstructure:"global_entry_ttl_seconds"`
+	// GlobalRefillCooldownSeconds: Global 连续补池的最小冷却窗口。
+	GlobalRefillCooldownSeconds int `mapstructure:"global_refill_cooldown_seconds"`
+	// GlobalRefillIntervalSeconds: Global 后台扫描周期。
+	GlobalRefillIntervalSeconds int `mapstructure:"global_refill_interval_seconds"`
+	// NetworkErrorPoolSize: NetworkError 池容量。
+	NetworkErrorPoolSize int `mapstructure:"network_error_pool_size"`
+	// NetworkErrorEntryTTLSeconds: NetworkError 账号停留时间。
+	NetworkErrorEntryTTLSeconds int `mapstructure:"network_error_entry_ttl_seconds"`
+	// ProbeMaxCandidates: 单轮最多探测的候选账号数。
+	ProbeMaxCandidates int `mapstructure:"probe_max_candidates"`
+	// ProbeConcurrency: 探测并发度。
+	ProbeConcurrency int `mapstructure:"probe_concurrency"`
+	// ProbeTimeoutSeconds: 单账号探测超时。
+	ProbeTimeoutSeconds int `mapstructure:"probe_timeout_seconds"`
+	// ProbeFailureCooldownSeconds: 非网络类失败后的冷却时间。
+	ProbeFailureCooldownSeconds int `mapstructure:"probe_failure_cooldown_seconds"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1062,6 +1108,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 			"valid_modes", []string{UMQModeSerialize, UMQModeThrottle})
 		cfg.Gateway.UserMessageQueue.Mode = ""
 	}
+	normalizeOpenAIWarmPoolConfig(&cfg.Gateway.OpenAIWS.AccountWarmPool)
 
 	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
@@ -1412,6 +1459,24 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.queue", 0.7)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.error_rate", 0.8)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.enabled", true)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.bucket_target_size", 10)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.bucket_refill_below", 3)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.bucket_sync_fill_min", 1)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.bucket_entry_ttl_seconds", 30)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.bucket_refill_cooldown_seconds", 15)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.bucket_refill_interval_seconds", 30)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.global_target_size", 30)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.global_refill_below", 10)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.global_entry_ttl_seconds", 300)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.global_refill_cooldown_seconds", 60)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.global_refill_interval_seconds", 300)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.network_error_pool_size", 3)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.network_error_entry_ttl_seconds", 120)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.probe_max_candidates", 24)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.probe_concurrency", 4)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.probe_timeout_seconds", 15)
+	viper.SetDefault("gateway.openai_ws.account_warm_pool.probe_failure_cooldown_seconds", 120)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -1495,6 +1560,79 @@ func setDefaults() {
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
 	viper.SetDefault("subscription_maintenance.queue_size", 1024)
 
+}
+
+func normalizeOpenAIWarmPoolConfig(cfg *GatewayOpenAIAccountWarmPoolConfig) {
+	if cfg == nil || !cfg.Enabled {
+		return
+	}
+	reasons := make([]string, 0, 8)
+	if cfg.BucketTargetSize <= 0 {
+		reasons = append(reasons, "bucket_target_size must be positive")
+	}
+	if cfg.BucketRefillBelow <= 0 {
+		reasons = append(reasons, "bucket_refill_below must be positive")
+	}
+	if cfg.BucketTargetSize > 0 && cfg.BucketRefillBelow >= cfg.BucketTargetSize {
+		reasons = append(reasons, "bucket_refill_below must be < bucket_target_size")
+	}
+	if cfg.BucketSyncFillMin < 0 {
+		reasons = append(reasons, "bucket_sync_fill_min must be non-negative")
+	}
+	if cfg.BucketTargetSize > 0 && cfg.BucketSyncFillMin > cfg.BucketTargetSize {
+		reasons = append(reasons, "bucket_sync_fill_min must be <= bucket_target_size")
+	}
+	if cfg.BucketEntryTTLSeconds <= 0 {
+		reasons = append(reasons, "bucket_entry_ttl_seconds must be positive")
+	}
+	if cfg.BucketRefillCooldownSeconds < 0 {
+		reasons = append(reasons, "bucket_refill_cooldown_seconds must be non-negative")
+	}
+	if cfg.BucketRefillIntervalSeconds < 0 {
+		reasons = append(reasons, "bucket_refill_interval_seconds must be non-negative")
+	}
+	if cfg.GlobalTargetSize <= 0 {
+		reasons = append(reasons, "global_target_size must be positive")
+	}
+	if cfg.GlobalRefillBelow <= 0 {
+		reasons = append(reasons, "global_refill_below must be positive")
+	}
+	if cfg.GlobalTargetSize > 0 && cfg.GlobalRefillBelow > cfg.GlobalTargetSize {
+		reasons = append(reasons, "global_refill_below must be <= global_target_size")
+	}
+	if cfg.GlobalEntryTTLSeconds <= 0 {
+		reasons = append(reasons, "global_entry_ttl_seconds must be positive")
+	}
+	if cfg.GlobalRefillCooldownSeconds < 0 {
+		reasons = append(reasons, "global_refill_cooldown_seconds must be non-negative")
+	}
+	if cfg.GlobalRefillIntervalSeconds < 0 {
+		reasons = append(reasons, "global_refill_interval_seconds must be non-negative")
+	}
+	if cfg.NetworkErrorPoolSize < 0 {
+		reasons = append(reasons, "network_error_pool_size must be non-negative")
+	}
+	if cfg.NetworkErrorEntryTTLSeconds < 0 {
+		reasons = append(reasons, "network_error_entry_ttl_seconds must be non-negative")
+	}
+	if cfg.ProbeMaxCandidates <= 0 {
+		reasons = append(reasons, "probe_max_candidates must be positive")
+	}
+	if cfg.ProbeConcurrency <= 0 {
+		reasons = append(reasons, "probe_concurrency must be positive")
+	}
+	if cfg.ProbeTimeoutSeconds <= 0 {
+		reasons = append(reasons, "probe_timeout_seconds must be positive")
+	}
+	if cfg.ProbeFailureCooldownSeconds < 0 {
+		reasons = append(reasons, "probe_failure_cooldown_seconds must be non-negative")
+	}
+	if len(reasons) == 0 {
+		return
+	}
+	slog.Warn("invalid gateway.openai_ws.account_warm_pool config, disabling warm pool until it is re-enabled from admin settings",
+		"reasons", reasons)
+	cfg.Enabled = false
 }
 
 func (c *Config) Validate() error {
@@ -2097,6 +2235,68 @@ func (c *Config) Validate() error {
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT
 	if weightSum <= 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights must not all be zero")
+	}
+	if c.Gateway.OpenAIWS.AccountWarmPool.Enabled {
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketTargetSize <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_target_size must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketRefillBelow <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_refill_below must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketRefillBelow >= c.Gateway.OpenAIWS.AccountWarmPool.BucketTargetSize {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_refill_below must be < bucket_target_size")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketSyncFillMin < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_sync_fill_min must be non-negative")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketSyncFillMin > c.Gateway.OpenAIWS.AccountWarmPool.BucketTargetSize {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_sync_fill_min must be <= bucket_target_size")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketEntryTTLSeconds <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_entry_ttl_seconds must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketRefillCooldownSeconds < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_refill_cooldown_seconds must be non-negative")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.BucketRefillIntervalSeconds < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.bucket_refill_interval_seconds must be non-negative")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.GlobalTargetSize <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.global_target_size must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.GlobalRefillBelow <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.global_refill_below must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.GlobalRefillBelow > c.Gateway.OpenAIWS.AccountWarmPool.GlobalTargetSize {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.global_refill_below must be <= global_target_size")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.GlobalEntryTTLSeconds <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.global_entry_ttl_seconds must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.GlobalRefillCooldownSeconds < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.global_refill_cooldown_seconds must be non-negative")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.GlobalRefillIntervalSeconds < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.global_refill_interval_seconds must be non-negative")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.NetworkErrorPoolSize < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.network_error_pool_size must be non-negative")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.NetworkErrorEntryTTLSeconds < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.network_error_entry_ttl_seconds must be non-negative")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.ProbeMaxCandidates <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.probe_max_candidates must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.ProbeConcurrency <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.probe_concurrency must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.ProbeTimeoutSeconds <= 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.probe_timeout_seconds must be positive")
+		}
+		if c.Gateway.OpenAIWS.AccountWarmPool.ProbeFailureCooldownSeconds < 0 {
+			return fmt.Errorf("gateway.openai_ws.account_warm_pool.probe_failure_cooldown_seconds must be non-negative")
+		}
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")

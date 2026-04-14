@@ -236,9 +236,16 @@ func (s *TokenRefreshService) processRefresh() {
 	}
 }
 
+type tokenRefreshActiveAccountLister interface {
+	ListActiveForTokenRefresh(ctx context.Context) ([]Account, error)
+}
+
 // listActiveAccounts 获取所有active状态的账号
-// 使用ListActive确保刷新所有活跃账号的token（包括临时禁用的）
+// 使用轻量列表避免为 token 刷新批量加载 proxy/group 关联，防止大账号量下触发超大 IN 查询。
 func (s *TokenRefreshService) listActiveAccounts(ctx context.Context) ([]Account, error) {
+	if repo, ok := s.accountRepo.(tokenRefreshActiveAccountLister); ok {
+		return repo.ListActiveForTokenRefresh(ctx)
+	}
 	return s.accountRepo.ListActive(ctx)
 }
 

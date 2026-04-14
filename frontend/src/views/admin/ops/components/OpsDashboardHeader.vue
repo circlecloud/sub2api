@@ -861,7 +861,7 @@ function handleToolbarRefresh() {
 <template>
   <div :class="['flex flex-col gap-4 rounded-3xl bg-white shadow-sm ring-1 ring-gray-900/5 dark:bg-dark-800 dark:ring-dark-700', props.fullscreen ? 'p-8' : 'p-6']">
     <!-- Top Toolbar -->
-    <div class="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 pb-4 dark:border-dark-700">
+    <div class="flex flex-col gap-4 border-b border-gray-100 pb-4 dark:border-dark-700 xl:flex-row xl:items-center xl:justify-between">
       <div>
         <h1 class="flex items-center gap-2 text-xl font-black text-gray-900 dark:text-white">
           <svg class="h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -875,7 +875,7 @@ function handleToolbarRefresh() {
           {{ t('admin.ops.title') }}
         </h1>
 
-        <div v-if="!props.fullscreen" class="mt-1 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+        <div v-if="!props.fullscreen" class="mt-1 flex flex-wrap items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
           <span class="flex items-center gap-1.5" :title="props.loading ? t('admin.ops.loadingText') : t('admin.ops.ready')">
             <span class="relative flex h-2 w-2">
               <span class="relative inline-flex h-2 w-2 rounded-full" :class="props.loading ? 'bg-gray-400' : 'bg-green-500'"></span>
@@ -893,28 +893,28 @@ function handleToolbarRefresh() {
         </div>
       </div>
 
-      <div class="flex flex-wrap items-center gap-3">
+      <div class="flex w-full flex-wrap items-center gap-3 xl:w-auto xl:justify-end">
         <template v-if="!props.fullscreen">
           <Select
             :model-value="platform"
             :options="platformOptions"
-            class="w-full sm:w-[140px]"
+            class="w-full lg:w-[140px]"
             @update:model-value="handlePlatformChange"
           />
 
           <Select
             :model-value="groupId"
             :options="groupOptions"
-            class="w-full sm:w-[160px]"
+            class="w-full lg:w-[160px]"
             @update:model-value="handleGroupChange"
           />
 
-          <div class="mx-1 hidden h-4 w-[1px] bg-gray-200 dark:bg-dark-700 sm:block"></div>
+          <div class="mx-1 hidden h-4 w-[1px] bg-gray-200 dark:bg-dark-700 xl:block"></div>
 
           <Select
             :model-value="timeRange"
             :options="timeRangeOptions"
-            class="relative w-full sm:w-[150px]"
+            class="relative w-full lg:w-[150px]"
             @update:model-value="handleTimeRangeChange"
           />
         </template>
@@ -945,7 +945,7 @@ function handleToolbarRefresh() {
           </svg>
         </button>
 
-        <div v-if="!props.fullscreen" class="mx-1 hidden h-4 w-[1px] bg-gray-200 dark:bg-dark-700 sm:block"></div>
+        <div v-if="!props.fullscreen" class="mx-1 hidden h-4 w-[1px] bg-gray-200 dark:bg-dark-700 xl:block"></div>
 
         <!-- Alert Rules Button (hidden in fullscreen) -->
         <button
@@ -991,17 +991,17 @@ function handleToolbarRefresh() {
       </div>
     </div>
 
-    <div v-if="overview" class="grid grid-cols-1 gap-6 lg:grid-cols-12">
+    <div v-if="overview" class="grid grid-cols-1 gap-6 xl:grid-cols-12">
       <!-- Left: Health + Realtime -->
-      <div :class="['rounded-2xl bg-gray-50 dark:bg-dark-900 lg:col-span-5', props.fullscreen ? 'p-6' : 'p-4']">
-        <div class="grid h-full grid-cols-1 gap-6 md:grid-cols-[200px_1fr] md:items-center">
+      <div :class="['rounded-2xl bg-gray-50 dark:bg-dark-900 xl:col-span-5', props.fullscreen ? 'p-6' : 'p-4']">
+        <div class="grid h-full grid-cols-1 gap-6 xl:grid-cols-[200px_1fr] xl:items-center">
           <!-- 1) Health Score -->
           <div
-            class="group relative flex cursor-pointer flex-col items-center justify-center rounded-xl py-2 transition-all hover:bg-white/60 dark:hover:bg-dark-800/60 md:border-r md:border-gray-200 md:pr-6 dark:md:border-dark-700"
+            class="group relative flex cursor-pointer flex-col items-center justify-center rounded-xl py-2 transition-all hover:bg-white/60 dark:hover:bg-dark-800/60 xl:border-r xl:border-gray-200 xl:pr-6 dark:xl:border-dark-700"
           >
             <!-- Diagnosis Popover (hover) -->
             <div
-              class="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-72 -translate-x-1/2 opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100 md:left-full md:top-0 md:ml-2 md:mt-0 md:translate-x-0"
+              class="pointer-events-none absolute left-1/2 top-full z-50 mt-2 w-72 -translate-x-1/2 opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100 xl:left-full xl:top-0 xl:ml-2 xl:mt-0 xl:translate-x-0"
             >
               <div class="rounded-xl bg-white p-4 shadow-xl ring-1 ring-black/5 dark:bg-gray-800 dark:ring-white/10">
                 <h4 class="mb-3 border-b border-gray-100 pb-2 text-sm font-bold text-gray-900 dark:border-gray-700 dark:text-white flex items-center gap-2">
@@ -1207,7 +1207,7 @@ function handleToolbarRefresh() {
       </div>
 
       <!-- Right: 6 cards (3 cols x 2 rows) -->
-      <div class="grid h-full grid-cols-1 content-center gap-4 sm:grid-cols-2 lg:col-span-7 lg:grid-cols-3">
+      <div class="grid h-full grid-cols-1 content-center gap-4 md:grid-cols-2 xl:col-span-7 xl:grid-cols-3">
         <!-- Card 1: Requests -->
         <div class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-900" style="order: 1;">
           <div class="flex items-center justify-between">
@@ -1433,7 +1433,7 @@ function handleToolbarRefresh() {
 
     <!-- Integrated: System health (cards) -->
     <div v-if="overview" class="mt-2 border-t border-gray-100 pt-4 dark:border-dark-700">
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-6">
         <!-- CPU -->
         <div class="rounded-xl bg-gray-50 p-3 dark:bg-dark-900">
           <div class="flex items-center gap-1">

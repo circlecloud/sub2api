@@ -28,9 +28,9 @@ const props = withDefaults(defineProps<Props>(), {
         </div>
       </div>
 
-      <div class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
-        <div class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-900/30 lg:col-span-5">
-          <div class="grid h-full grid-cols-1 gap-6 md:grid-cols-[200px_1fr] md:items-center">
+      <div class="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-12">
+        <div class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-900/30 xl:col-span-5">
+          <div class="grid h-full grid-cols-1 gap-6 xl:grid-cols-[200px_1fr] xl:items-center">
             <div class="h-28 animate-pulse rounded-xl bg-gray-100 dark:bg-dark-700/70"></div>
             <div class="space-y-4">
               <div class="h-4 w-32 animate-pulse rounded bg-gray-200 dark:bg-dark-700"></div>
@@ -41,8 +41,8 @@ const props = withDefaults(defineProps<Props>(), {
           </div>
         </div>
 
-        <div class="lg:col-span-7">
-          <div class="grid h-full grid-cols-1 content-center gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div class="xl:col-span-7">
+          <div class="grid h-full grid-cols-1 content-center gap-4 md:grid-cols-2 xl:grid-cols-3">
             <div v-for="i in 6" :key="i" class="h-20 animate-pulse rounded-2xl bg-gray-50 dark:bg-dark-900/30"></div>
           </div>
         </div>
@@ -50,7 +50,7 @@ const props = withDefaults(defineProps<Props>(), {
     </div>
 
     <!-- Row: Concurrency + Throughput (matches OpsDashboard.vue) -->
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-4">
+    <div class="grid grid-cols-1 gap-6 xl:grid-cols-4">
       <div :class="['min-h-[360px] rounded-3xl bg-white shadow-sm ring-1 ring-gray-900/5 dark:bg-dark-800 dark:ring-dark-700 lg:col-span-1', props.fullscreen ? 'p-8' : 'p-6']">
         <div class="h-4 w-44 animate-pulse rounded bg-gray-200 dark:bg-dark-700"></div>
         <div class="mt-6 h-72 animate-pulse rounded-2xl bg-gray-100 dark:bg-dark-700/70"></div>
@@ -66,7 +66,7 @@ const props = withDefaults(defineProps<Props>(), {
     </div>
 
     <!-- Row: Visual Analysis (baseline 3-up grid) -->
-    <div class="grid grid-cols-1 gap-6 md:grid-cols-3">
+    <div class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
       <div
         v-for="i in 3"
         :key="i"

@@ -81,18 +81,58 @@ const backendModeDBTimeout = 5 * time.Second
 
 // cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）
 type cachedGatewayForwardingSettings struct {
-	fingerprintUnification bool
-	metadataPassthrough    bool
-	cchSigning             bool
-	expiresAt              int64 // unix nano
+	fingerprintUnification                  bool
+	metadataPassthrough                     bool
+	cchSigning                              bool
+	openAIStreamRectifier                   bool
+	openAIStreamResponseHeaderTimeouts      []int
+	openAIStreamFirstTokenRectifierTimeouts []int
+	expiresAt                               int64 // unix nano
+}
+
+type OpenAIWarmPoolSettings struct {
+	Enabled                     bool
+	BucketTargetSize            int
+	BucketRefillBelow           int
+	BucketSyncFillMin           int
+	BucketEntryTTLSeconds       int
+	BucketRefillCooldownSeconds int
+	BucketRefillIntervalSeconds int
+	GlobalTargetSize            int
+	GlobalRefillBelow           int
+	GlobalEntryTTLSeconds       int
+	GlobalRefillCooldownSeconds int
+	GlobalRefillIntervalSeconds int
+	NetworkErrorPoolSize        int
+	NetworkErrorEntryTTLSeconds int
+	ProbeMaxCandidates          int
+	ProbeConcurrency            int
+	ProbeTimeoutSeconds         int
+	ProbeFailureCooldownSeconds int
+	StartupGroupIDs             []int64
+}
+
+type cachedOpenAIWarmPoolSettings struct {
+	settings  OpenAIWarmPoolSettings
+	expiresAt int64 // unix nano
 }
 
 var gatewayForwardingCache atomic.Value // *cachedGatewayForwardingSettings
 var gatewayForwardingSF singleflight.Group
+var openAIWarmPoolCache atomic.Value // *cachedOpenAIWarmPoolSettings
+var openAIWarmPoolSF singleflight.Group
 
 const gatewayForwardingCacheTTL = 60 * time.Second
 const gatewayForwardingErrorTTL = 5 * time.Second
 const gatewayForwardingDBTimeout = 5 * time.Second
+const openAIWarmPoolCacheTTL = 60 * time.Second
+const openAIWarmPoolErrorTTL = 5 * time.Second
+const openAIWarmPoolDBTimeout = 5 * time.Second
+
+var (
+	defaultOpenAIResponseHeaderRectifierTimeouts = []int{8, 10, 12}
+	defaultOpenAIFirstTokenRectifierTimeouts     = []int{5, 8, 10}
+)
 
 // DefaultSubscriptionGroupReader validates group references used by default subscriptions.
 type DefaultSubscriptionGroupReader interface {
@@ -504,6 +544,7 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 		normalizedWhitelist = []string{}
 	}
 	settings.RegistrationEmailSuffixWhitelist = normalizedWhitelist
+	applyOpenAIWarmPoolSanitizationToSystemSettings(settings, defaultOpenAIWarmPoolSettingsFromConfig(s.cfg))
 
 	updates := make(map[string]string)
 
@@ -647,6 +688,38 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	updates[SettingKeyEnableFingerprintUnification] = strconv.FormatBool(settings.EnableFingerprintUnification)
 	updates[SettingKeyEnableMetadataPassthrough] = strconv.FormatBool(settings.EnableMetadataPassthrough)
 	updates[SettingKeyEnableCCHSigning] = strconv.FormatBool(settings.EnableCCHSigning)
+	updates[SettingKeyEnableOpenAIStreamRectifier] = strconv.FormatBool(settings.EnableOpenAIStreamRectifier)
+	responseHeaderRectifierTimeoutsJSON, err := json.Marshal(settings.OpenAIStreamResponseHeaderRectifierTimeouts)
+	if err != nil {
+		return fmt.Errorf("marshal openai response header rectifier timeouts: %w", err)
+	}
+	updates[SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts] = string(responseHeaderRectifierTimeoutsJSON)
+	firstTokenRectifierTimeoutsJSON, err := json.Marshal(settings.OpenAIStreamFirstTokenRectifierTimeouts)
+	if err != nil {
+		return fmt.Errorf("marshal openai first token rectifier timeouts: %w", err)
+	}
+	updates[SettingKeyOpenAIStreamFirstTokenRectifierTimeouts] = string(firstTokenRectifierTimeoutsJSON)
+
+	// OpenAI warm pool behavior
+	updates[SettingKeyOpenAIWarmPoolEnabled] = strconv.FormatBool(settings.OpenAIWarmPoolEnabled)
+	updates[SettingKeyOpenAIWarmPoolBucketTargetSize] = strconv.Itoa(settings.OpenAIWarmPoolBucketTargetSize)
+	updates[SettingKeyOpenAIWarmPoolBucketRefillBelow] = strconv.Itoa(settings.OpenAIWarmPoolBucketRefillBelow)
+	updates[SettingKeyOpenAIWarmPoolBucketSyncFillMin] = strconv.Itoa(settings.OpenAIWarmPoolBucketSyncFillMin)
+	updates[SettingKeyOpenAIWarmPoolBucketEntryTTLSeconds] = strconv.Itoa(settings.OpenAIWarmPoolBucketEntryTTLSeconds)
+	updates[SettingKeyOpenAIWarmPoolBucketRefillCooldownSeconds] = strconv.Itoa(settings.OpenAIWarmPoolBucketRefillCooldownSeconds)
+	updates[SettingKeyOpenAIWarmPoolBucketRefillIntervalSeconds] = strconv.Itoa(settings.OpenAIWarmPoolBucketRefillIntervalSeconds)
+	updates[SettingKeyOpenAIWarmPoolGlobalTargetSize] = strconv.Itoa(settings.OpenAIWarmPoolGlobalTargetSize)
+	updates[SettingKeyOpenAIWarmPoolGlobalRefillBelow] = strconv.Itoa(settings.OpenAIWarmPoolGlobalRefillBelow)
+	updates[SettingKeyOpenAIWarmPoolGlobalEntryTTLSeconds] = strconv.Itoa(settings.OpenAIWarmPoolGlobalEntryTTLSeconds)
+	updates[SettingKeyOpenAIWarmPoolGlobalRefillCooldownSeconds] = strconv.Itoa(settings.OpenAIWarmPoolGlobalRefillCooldownSeconds)
+	updates[SettingKeyOpenAIWarmPoolGlobalRefillIntervalSeconds] = strconv.Itoa(settings.OpenAIWarmPoolGlobalRefillIntervalSeconds)
+	updates[SettingKeyOpenAIWarmPoolNetworkErrorPoolSize] = strconv.Itoa(settings.OpenAIWarmPoolNetworkErrorPoolSize)
+	updates[SettingKeyOpenAIWarmPoolNetworkErrorEntryTTLSeconds] = strconv.Itoa(settings.OpenAIWarmPoolNetworkErrorEntryTTLSeconds)
+	updates[SettingKeyOpenAIWarmPoolProbeMaxCandidates] = strconv.Itoa(settings.OpenAIWarmPoolProbeMaxCandidates)
+	updates[SettingKeyOpenAIWarmPoolProbeConcurrency] = strconv.Itoa(settings.OpenAIWarmPoolProbeConcurrency)
+	updates[SettingKeyOpenAIWarmPoolProbeTimeoutSeconds] = strconv.Itoa(settings.OpenAIWarmPoolProbeTimeoutSeconds)
+	updates[SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds] = strconv.Itoa(settings.OpenAIWarmPoolProbeFailureCooldownSeconds)
+	updates[SettingKeyOpenAIWarmPoolStartupGroupIDs] = encodePositiveInt64CSV(settings.OpenAIWarmPoolStartupGroupIDs)
 
 	// Balance low notification
 	updates[SettingKeyBalanceLowNotifyEnabled] = strconv.FormatBool(settings.BalanceLowNotifyEnabled)
@@ -671,10 +744,38 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 		})
 		gatewayForwardingSF.Forget("gateway_forwarding")
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-			fingerprintUnification: settings.EnableFingerprintUnification,
-			metadataPassthrough:    settings.EnableMetadataPassthrough,
-			cchSigning:             settings.EnableCCHSigning,
-			expiresAt:              time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
+			fingerprintUnification:                  settings.EnableFingerprintUnification,
+			metadataPassthrough:                     settings.EnableMetadataPassthrough,
+			cchSigning:                              settings.EnableCCHSigning,
+			openAIStreamRectifier:                   settings.EnableOpenAIStreamRectifier,
+			openAIStreamResponseHeaderTimeouts:      cloneIntSlice(settings.OpenAIStreamResponseHeaderRectifierTimeouts),
+			openAIStreamFirstTokenRectifierTimeouts: cloneIntSlice(settings.OpenAIStreamFirstTokenRectifierTimeouts),
+			expiresAt:                               time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
+		})
+		openAIWarmPoolSF.Forget("openai_warm_pool")
+		openAIWarmPoolCache.Store(&cachedOpenAIWarmPoolSettings{
+			settings: sanitizeOpenAIWarmPoolSettings(OpenAIWarmPoolSettings{
+				Enabled:                     settings.OpenAIWarmPoolEnabled,
+				BucketTargetSize:            settings.OpenAIWarmPoolBucketTargetSize,
+				BucketRefillBelow:           settings.OpenAIWarmPoolBucketRefillBelow,
+				BucketSyncFillMin:           settings.OpenAIWarmPoolBucketSyncFillMin,
+				BucketEntryTTLSeconds:       settings.OpenAIWarmPoolBucketEntryTTLSeconds,
+				BucketRefillCooldownSeconds: settings.OpenAIWarmPoolBucketRefillCooldownSeconds,
+				BucketRefillIntervalSeconds: settings.OpenAIWarmPoolBucketRefillIntervalSeconds,
+				GlobalTargetSize:            settings.OpenAIWarmPoolGlobalTargetSize,
+				GlobalRefillBelow:           settings.OpenAIWarmPoolGlobalRefillBelow,
+				GlobalEntryTTLSeconds:       settings.OpenAIWarmPoolGlobalEntryTTLSeconds,
+				GlobalRefillCooldownSeconds: settings.OpenAIWarmPoolGlobalRefillCooldownSeconds,
+				GlobalRefillIntervalSeconds: settings.OpenAIWarmPoolGlobalRefillIntervalSeconds,
+				NetworkErrorPoolSize:        settings.OpenAIWarmPoolNetworkErrorPoolSize,
+				NetworkErrorEntryTTLSeconds: settings.OpenAIWarmPoolNetworkErrorEntryTTLSeconds,
+				ProbeMaxCandidates:          settings.OpenAIWarmPoolProbeMaxCandidates,
+				ProbeConcurrency:            settings.OpenAIWarmPoolProbeConcurrency,
+				ProbeTimeoutSeconds:         settings.OpenAIWarmPoolProbeTimeoutSeconds,
+				ProbeFailureCooldownSeconds: settings.OpenAIWarmPoolProbeFailureCooldownSeconds,
+				StartupGroupIDs:             cloneInt64Slice(settings.OpenAIWarmPoolStartupGroupIDs),
+			}, defaultOpenAIWarmPoolSettingsFromConfig(s.cfg)),
+			expiresAt: time.Now().Add(openAIWarmPoolCacheTTL).UnixNano(),
 		})
 		if s.onUpdate != nil {
 			s.onUpdate() // Invalidate cache after settings update
@@ -778,22 +879,50 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 	return false
 }
 
+
 // GetGatewayForwardingSettings returns cached gateway forwarding settings.
 // Uses in-process atomic.Value cache with 60s TTL, zero-lock hot path.
 // Returns (fingerprintUnification, metadataPassthrough, cchSigning).
 func (s *SettingService) GetGatewayForwardingSettings(ctx context.Context) (fingerprintUnification, metadataPassthrough, cchSigning bool) {
+	settings := s.getGatewayForwardingSettings(ctx)
+	return settings.fingerprintUnification, settings.metadataPassthrough, settings.cchSigning
+}
+
+func (s *SettingService) IsOpenAIStreamRectifierEnabled(ctx context.Context) bool {
+	return s.getGatewayForwardingSettings(ctx).openAIStreamRectifier
+}
+
+func (s *SettingService) GetOpenAIStreamRectifierTimeouts(ctx context.Context) (responseHeaderTimeouts, firstTokenTimeouts []int) {
+	settings := s.getGatewayForwardingSettings(ctx)
+	return cloneIntSlice(settings.openAIStreamResponseHeaderTimeouts), cloneIntSlice(settings.openAIStreamFirstTokenRectifierTimeouts)
+}
+
+func (s *SettingService) getGatewayForwardingSettings(ctx context.Context) cachedGatewayForwardingSettings {
+	defaultRectifierEnabled := true
+	var cfg *config.Config
+	if s != nil {
+		cfg = s.cfg
+	}
+	defaults := cachedGatewayForwardingSettings{
+		fingerprintUnification:                  true,
+		metadataPassthrough:                     false,
+		cchSigning:                              false,
+		openAIStreamRectifier:                   defaultRectifierEnabled,
+		openAIStreamResponseHeaderTimeouts:      defaultOpenAIResponseHeaderRectifierTimeoutsFromConfig(cfg),
+		openAIStreamFirstTokenRectifierTimeouts: defaultOpenAIFirstTokenRectifierTimeoutsFromConfig(cfg),
+	}
+	if s == nil || s.settingRepo == nil {
+		return defaults
+	}
 	if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
-			return cached.fingerprintUnification, cached.metadataPassthrough, cached.cchSigning
+			return *cached
 		}
-	}
-	type gwfResult struct {
-		fp, mp, cch bool
 	}
 	val, _, _ := gatewayForwardingSF.Do("gateway_forwarding", func() (any, error) {
 		if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
-				return gwfResult{cached.fingerprintUnification, cached.metadataPassthrough, cached.cchSigning}, nil
+				return *cached, nil
 			}
 		}
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewayForwardingDBTimeout)
@@ -802,35 +931,521 @@ func (s *SettingService) GetGatewayForwardingSettings(ctx context.Context) (fing
 			SettingKeyEnableFingerprintUnification,
 			SettingKeyEnableMetadataPassthrough,
 			SettingKeyEnableCCHSigning,
+			SettingKeyEnableOpenAIStreamRectifier,
+			SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts,
+			SettingKeyOpenAIStreamFirstTokenRectifierTimeouts,
 		})
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
-			gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-				fingerprintUnification: true,
-				metadataPassthrough:    false,
-				cchSigning:             false,
-				expiresAt:              time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
-			})
-			return gwfResult{true, false, false}, nil
+			fallback := defaults
+			fallback.expiresAt = time.Now().Add(gatewayForwardingErrorTTL).UnixNano()
+			gatewayForwardingCache.Store(&fallback)
+			return fallback, nil
 		}
-		fp := true
+		result := defaults
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
-			fp = v == "true"
+			result.fingerprintUnification = v == "true"
 		}
-		mp := values[SettingKeyEnableMetadataPassthrough] == "true"
-		cch := values[SettingKeyEnableCCHSigning] == "true"
-		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-			fingerprintUnification: fp,
-			metadataPassthrough:    mp,
-			cchSigning:             cch,
-			expiresAt:              time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
-		})
-		return gwfResult{fp, mp, cch}, nil
+		result.metadataPassthrough = values[SettingKeyEnableMetadataPassthrough] == "true"
+		result.cchSigning = values[SettingKeyEnableCCHSigning] == "true"
+		if v, ok := values[SettingKeyEnableOpenAIStreamRectifier]; ok && v != "" {
+			result.openAIStreamRectifier = v == "true"
+		}
+		if parsed := parseGatewayForwardingIntSliceSetting(values[SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts]); len(parsed) > 0 {
+			result.openAIStreamResponseHeaderTimeouts = parsed
+		}
+		if parsed := parseGatewayForwardingIntSliceSetting(values[SettingKeyOpenAIStreamFirstTokenRectifierTimeouts]); len(parsed) > 0 {
+			result.openAIStreamFirstTokenRectifierTimeouts = parsed
+		}
+		result.expiresAt = time.Now().Add(gatewayForwardingCacheTTL).UnixNano()
+		gatewayForwardingCache.Store(&result)
+		return result, nil
 	})
-	if r, ok := val.(gwfResult); ok {
-		return r.fp, r.mp, r.cch
+	if result, ok := val.(cachedGatewayForwardingSettings); ok {
+		return result
 	}
-	return true, false, false // fail-open defaults
+	return defaults
+}
+
+func parseGatewayForwardingIntSliceSetting(raw string) []int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var values []int
+	if err := json.Unmarshal([]byte(raw), &values); err != nil || len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+func cloneIntSlice(values []int) []int {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make([]int, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneInt64Slice(values []int64) []int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make([]int64, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+//nolint:unused // 预留给后续整流器 timeout 设置回归时复用
+func sanitizePositiveIntSlice(values []int) []int {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			return nil
+		}
+		result = append(result, value)
+	}
+	return result
+}
+
+func normalizePositiveInt64Slice(values []int64) []int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(values))
+	result := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
+func encodePositiveInt64CSV(values []int64) string {
+	normalized := normalizePositiveInt64Slice(values)
+	if len(normalized) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(normalized))
+	for _, value := range normalized {
+		parts = append(parts, strconv.FormatInt(value, 10))
+	}
+	return strings.Join(parts, ",")
+}
+
+func parsePositiveInt64CSV(raw string) []int64 {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 {
+			continue
+		}
+		values = append(values, parsed)
+	}
+	return normalizePositiveInt64Slice(values)
+}
+
+func defaultOpenAIResponseHeaderRectifierTimeoutsFromConfig(cfg *config.Config) []int {
+	_ = cfg
+	return cloneIntSlice(defaultOpenAIResponseHeaderRectifierTimeouts)
+}
+
+func defaultOpenAIFirstTokenRectifierTimeoutsFromConfig(cfg *config.Config) []int {
+	_ = cfg
+	return cloneIntSlice(defaultOpenAIFirstTokenRectifierTimeouts)
+}
+
+//nolint:unused // 预留给后续整流器 timeout 设置回归时复用
+func parseOpenAIStreamRectifierTimeoutsSettingOrDefault(settings map[string]string, key string, fallback []int) []int {
+	fallback = cloneIntSlice(fallback)
+	if settings == nil {
+		return fallback
+	}
+	raw, ok := settings[key]
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	var values []int
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		slog.Warn("failed to parse openai stream rectifier timeouts", "key", key, "error", err)
+		return fallback
+	}
+	if sanitized := sanitizePositiveIntSlice(values); len(sanitized) > 0 {
+		return sanitized
+	}
+	slog.Warn("invalid openai stream rectifier timeouts, using fallback", "key", key)
+	return fallback
+}
+
+func defaultOpenAIWarmPoolSettingsFromConfig(cfg *config.Config) OpenAIWarmPoolSettings {
+	defaults := OpenAIWarmPoolSettings{
+		Enabled:                     true,
+		BucketTargetSize:            10,
+		BucketRefillBelow:           3,
+		BucketSyncFillMin:           1,
+		BucketEntryTTLSeconds:       30,
+		BucketRefillCooldownSeconds: 15,
+		BucketRefillIntervalSeconds: 30,
+		GlobalTargetSize:            30,
+		GlobalRefillBelow:           10,
+		GlobalEntryTTLSeconds:       300,
+		GlobalRefillCooldownSeconds: 60,
+		GlobalRefillIntervalSeconds: 300,
+		NetworkErrorPoolSize:        3,
+		NetworkErrorEntryTTLSeconds: 120,
+		ProbeMaxCandidates:          24,
+		ProbeConcurrency:            4,
+		ProbeTimeoutSeconds:         15,
+		ProbeFailureCooldownSeconds: 120,
+	}
+	if cfg == nil {
+		return defaults
+	}
+	warmPool := cfg.Gateway.OpenAIWS.AccountWarmPool
+	if warmPool.Enabled {
+		defaults.Enabled = true
+	}
+	if warmPool.BucketTargetSize > 0 {
+		defaults.BucketTargetSize = warmPool.BucketTargetSize
+	}
+	if warmPool.BucketRefillBelow > 0 {
+		defaults.BucketRefillBelow = warmPool.BucketRefillBelow
+	}
+	if warmPool.BucketSyncFillMin > 0 {
+		defaults.BucketSyncFillMin = warmPool.BucketSyncFillMin
+	}
+	if warmPool.BucketEntryTTLSeconds > 0 {
+		defaults.BucketEntryTTLSeconds = warmPool.BucketEntryTTLSeconds
+	}
+	if warmPool.BucketRefillCooldownSeconds > 0 {
+		defaults.BucketRefillCooldownSeconds = warmPool.BucketRefillCooldownSeconds
+	}
+	if warmPool.BucketRefillIntervalSeconds > 0 {
+		defaults.BucketRefillIntervalSeconds = warmPool.BucketRefillIntervalSeconds
+	}
+	if warmPool.GlobalTargetSize > 0 {
+		defaults.GlobalTargetSize = warmPool.GlobalTargetSize
+	}
+	if warmPool.GlobalRefillBelow > 0 {
+		defaults.GlobalRefillBelow = warmPool.GlobalRefillBelow
+	}
+	if warmPool.GlobalEntryTTLSeconds > 0 {
+		defaults.GlobalEntryTTLSeconds = warmPool.GlobalEntryTTLSeconds
+	}
+	if warmPool.GlobalRefillCooldownSeconds > 0 {
+		defaults.GlobalRefillCooldownSeconds = warmPool.GlobalRefillCooldownSeconds
+	}
+	if warmPool.GlobalRefillIntervalSeconds > 0 {
+		defaults.GlobalRefillIntervalSeconds = warmPool.GlobalRefillIntervalSeconds
+	}
+	if warmPool.NetworkErrorPoolSize > 0 {
+		defaults.NetworkErrorPoolSize = warmPool.NetworkErrorPoolSize
+	}
+	if warmPool.NetworkErrorEntryTTLSeconds > 0 {
+		defaults.NetworkErrorEntryTTLSeconds = warmPool.NetworkErrorEntryTTLSeconds
+	}
+	if warmPool.ProbeMaxCandidates > 0 {
+		defaults.ProbeMaxCandidates = warmPool.ProbeMaxCandidates
+	}
+	if warmPool.ProbeConcurrency > 0 {
+		defaults.ProbeConcurrency = warmPool.ProbeConcurrency
+	}
+	if warmPool.ProbeTimeoutSeconds > 0 {
+		defaults.ProbeTimeoutSeconds = warmPool.ProbeTimeoutSeconds
+	}
+	if warmPool.ProbeFailureCooldownSeconds > 0 {
+		defaults.ProbeFailureCooldownSeconds = warmPool.ProbeFailureCooldownSeconds
+	}
+	return sanitizeOpenAIWarmPoolSettings(defaults, defaults)
+}
+
+func sanitizeOpenAIWarmPoolSettings(input OpenAIWarmPoolSettings, fallback OpenAIWarmPoolSettings) OpenAIWarmPoolSettings {
+	result := input
+	if result.BucketTargetSize <= 0 {
+		result.BucketTargetSize = fallback.BucketTargetSize
+	}
+	if result.BucketTargetSize <= 0 {
+		result.BucketTargetSize = 10
+	}
+	if result.BucketRefillBelow <= 0 {
+		result.BucketRefillBelow = fallback.BucketRefillBelow
+	}
+	if result.BucketRefillBelow <= 0 {
+		result.BucketRefillBelow = 3
+	}
+	if result.BucketRefillBelow >= result.BucketTargetSize {
+		result.BucketRefillBelow = result.BucketTargetSize - 1
+	}
+	if result.BucketRefillBelow <= 0 {
+		result.BucketRefillBelow = 1
+	}
+	if result.BucketSyncFillMin < 0 {
+		result.BucketSyncFillMin = fallback.BucketSyncFillMin
+	}
+	if result.BucketSyncFillMin < 0 {
+		result.BucketSyncFillMin = 0
+	}
+	if result.BucketSyncFillMin > result.BucketTargetSize {
+		result.BucketSyncFillMin = result.BucketTargetSize
+	}
+	if result.BucketEntryTTLSeconds <= 0 {
+		result.BucketEntryTTLSeconds = fallback.BucketEntryTTLSeconds
+	}
+	if result.BucketEntryTTLSeconds <= 0 {
+		result.BucketEntryTTLSeconds = 30
+	}
+	if result.BucketRefillCooldownSeconds < 0 {
+		result.BucketRefillCooldownSeconds = fallback.BucketRefillCooldownSeconds
+	}
+	if result.BucketRefillCooldownSeconds < 0 {
+		result.BucketRefillCooldownSeconds = 15
+	}
+	if result.BucketRefillIntervalSeconds < 0 {
+		result.BucketRefillIntervalSeconds = fallback.BucketRefillIntervalSeconds
+	}
+	if result.BucketRefillIntervalSeconds < 0 {
+		result.BucketRefillIntervalSeconds = 30
+	}
+	if result.GlobalTargetSize <= 0 {
+		result.GlobalTargetSize = fallback.GlobalTargetSize
+	}
+	if result.GlobalTargetSize <= 0 {
+		result.GlobalTargetSize = 30
+	}
+	if result.GlobalRefillBelow <= 0 {
+		result.GlobalRefillBelow = fallback.GlobalRefillBelow
+	}
+	if result.GlobalRefillBelow <= 0 {
+		result.GlobalRefillBelow = 10
+	}
+	if result.GlobalRefillBelow > result.GlobalTargetSize {
+		result.GlobalRefillBelow = result.GlobalTargetSize
+	}
+	if result.GlobalEntryTTLSeconds <= 0 {
+		result.GlobalEntryTTLSeconds = fallback.GlobalEntryTTLSeconds
+	}
+	if result.GlobalEntryTTLSeconds <= 0 {
+		result.GlobalEntryTTLSeconds = 300
+	}
+	if result.GlobalRefillCooldownSeconds < 0 {
+		result.GlobalRefillCooldownSeconds = fallback.GlobalRefillCooldownSeconds
+	}
+	if result.GlobalRefillCooldownSeconds < 0 {
+		result.GlobalRefillCooldownSeconds = 60
+	}
+	if result.GlobalRefillIntervalSeconds < 0 {
+		result.GlobalRefillIntervalSeconds = fallback.GlobalRefillIntervalSeconds
+	}
+	if result.GlobalRefillIntervalSeconds < 0 {
+		result.GlobalRefillIntervalSeconds = 300
+	}
+	if result.NetworkErrorPoolSize < 0 {
+		result.NetworkErrorPoolSize = fallback.NetworkErrorPoolSize
+	}
+	if result.NetworkErrorPoolSize < 0 {
+		result.NetworkErrorPoolSize = 3
+	}
+	if result.NetworkErrorEntryTTLSeconds < 0 {
+		result.NetworkErrorEntryTTLSeconds = fallback.NetworkErrorEntryTTLSeconds
+	}
+	if result.NetworkErrorEntryTTLSeconds < 0 {
+		result.NetworkErrorEntryTTLSeconds = 120
+	}
+	if result.ProbeMaxCandidates <= 0 {
+		result.ProbeMaxCandidates = fallback.ProbeMaxCandidates
+	}
+	if result.ProbeMaxCandidates <= 0 {
+		result.ProbeMaxCandidates = 24
+	}
+	if result.ProbeConcurrency <= 0 {
+		result.ProbeConcurrency = fallback.ProbeConcurrency
+	}
+	if result.ProbeConcurrency <= 0 {
+		result.ProbeConcurrency = 4
+	}
+	if result.ProbeTimeoutSeconds <= 0 {
+		result.ProbeTimeoutSeconds = fallback.ProbeTimeoutSeconds
+	}
+	if result.ProbeTimeoutSeconds <= 0 {
+		result.ProbeTimeoutSeconds = 15
+	}
+	if result.ProbeFailureCooldownSeconds < 0 {
+		result.ProbeFailureCooldownSeconds = fallback.ProbeFailureCooldownSeconds
+	}
+	if result.ProbeFailureCooldownSeconds < 0 {
+		result.ProbeFailureCooldownSeconds = 120
+	}
+	result.StartupGroupIDs = normalizePositiveInt64Slice(result.StartupGroupIDs)
+	return result
+}
+
+func applyOpenAIWarmPoolSanitizationToSystemSettings(settings *SystemSettings, fallback OpenAIWarmPoolSettings) {
+	if settings == nil {
+		return
+	}
+	sanitized := sanitizeOpenAIWarmPoolSettings(OpenAIWarmPoolSettings{
+		Enabled:                     settings.OpenAIWarmPoolEnabled,
+		BucketTargetSize:            settings.OpenAIWarmPoolBucketTargetSize,
+		BucketRefillBelow:           settings.OpenAIWarmPoolBucketRefillBelow,
+		BucketSyncFillMin:           settings.OpenAIWarmPoolBucketSyncFillMin,
+		BucketEntryTTLSeconds:       settings.OpenAIWarmPoolBucketEntryTTLSeconds,
+		BucketRefillCooldownSeconds: settings.OpenAIWarmPoolBucketRefillCooldownSeconds,
+		BucketRefillIntervalSeconds: settings.OpenAIWarmPoolBucketRefillIntervalSeconds,
+		GlobalTargetSize:            settings.OpenAIWarmPoolGlobalTargetSize,
+		GlobalRefillBelow:           settings.OpenAIWarmPoolGlobalRefillBelow,
+		GlobalEntryTTLSeconds:       settings.OpenAIWarmPoolGlobalEntryTTLSeconds,
+		GlobalRefillCooldownSeconds: settings.OpenAIWarmPoolGlobalRefillCooldownSeconds,
+		GlobalRefillIntervalSeconds: settings.OpenAIWarmPoolGlobalRefillIntervalSeconds,
+		NetworkErrorPoolSize:        settings.OpenAIWarmPoolNetworkErrorPoolSize,
+		NetworkErrorEntryTTLSeconds: settings.OpenAIWarmPoolNetworkErrorEntryTTLSeconds,
+		ProbeMaxCandidates:          settings.OpenAIWarmPoolProbeMaxCandidates,
+		ProbeConcurrency:            settings.OpenAIWarmPoolProbeConcurrency,
+		ProbeTimeoutSeconds:         settings.OpenAIWarmPoolProbeTimeoutSeconds,
+		ProbeFailureCooldownSeconds: settings.OpenAIWarmPoolProbeFailureCooldownSeconds,
+		StartupGroupIDs:             cloneInt64Slice(settings.OpenAIWarmPoolStartupGroupIDs),
+	}, fallback)
+	settings.OpenAIWarmPoolEnabled = sanitized.Enabled
+	settings.OpenAIWarmPoolBucketTargetSize = sanitized.BucketTargetSize
+	settings.OpenAIWarmPoolBucketRefillBelow = sanitized.BucketRefillBelow
+	settings.OpenAIWarmPoolBucketSyncFillMin = sanitized.BucketSyncFillMin
+	settings.OpenAIWarmPoolBucketEntryTTLSeconds = sanitized.BucketEntryTTLSeconds
+	settings.OpenAIWarmPoolBucketRefillCooldownSeconds = sanitized.BucketRefillCooldownSeconds
+	settings.OpenAIWarmPoolBucketRefillIntervalSeconds = sanitized.BucketRefillIntervalSeconds
+	settings.OpenAIWarmPoolGlobalTargetSize = sanitized.GlobalTargetSize
+	settings.OpenAIWarmPoolGlobalRefillBelow = sanitized.GlobalRefillBelow
+	settings.OpenAIWarmPoolGlobalEntryTTLSeconds = sanitized.GlobalEntryTTLSeconds
+	settings.OpenAIWarmPoolGlobalRefillCooldownSeconds = sanitized.GlobalRefillCooldownSeconds
+	settings.OpenAIWarmPoolGlobalRefillIntervalSeconds = sanitized.GlobalRefillIntervalSeconds
+	settings.OpenAIWarmPoolNetworkErrorPoolSize = sanitized.NetworkErrorPoolSize
+	settings.OpenAIWarmPoolNetworkErrorEntryTTLSeconds = sanitized.NetworkErrorEntryTTLSeconds
+	settings.OpenAIWarmPoolProbeMaxCandidates = sanitized.ProbeMaxCandidates
+	settings.OpenAIWarmPoolProbeConcurrency = sanitized.ProbeConcurrency
+	settings.OpenAIWarmPoolProbeTimeoutSeconds = sanitized.ProbeTimeoutSeconds
+	settings.OpenAIWarmPoolProbeFailureCooldownSeconds = sanitized.ProbeFailureCooldownSeconds
+	settings.OpenAIWarmPoolStartupGroupIDs = cloneInt64Slice(sanitized.StartupGroupIDs)
+}
+
+func parseBoolSettingOrDefault(settings map[string]string, key string, defaultValue bool) bool {
+	if v, ok := settings[key]; ok && strings.TrimSpace(v) != "" {
+		return v == "true"
+	}
+	return defaultValue
+}
+
+func parseIntSettingOrDefault(settings map[string]string, key string, defaultValue int) int {
+	if v, ok := settings[key]; ok {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+func (s *SettingService) GetOpenAIWarmPoolSettings(ctx context.Context) OpenAIWarmPoolSettings {
+
+	var cfg *config.Config
+	if s != nil {
+		cfg = s.cfg
+	}
+	defaults := defaultOpenAIWarmPoolSettingsFromConfig(cfg)
+	if s == nil || s.settingRepo == nil {
+		return defaults
+	}
+	if cached, ok := openAIWarmPoolCache.Load().(*cachedOpenAIWarmPoolSettings); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.settings
+		}
+	}
+	val, _, _ := openAIWarmPoolSF.Do("openai_warm_pool", func() (any, error) {
+		if cached, ok := openAIWarmPoolCache.Load().(*cachedOpenAIWarmPoolSettings); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached.settings, nil
+			}
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIWarmPoolDBTimeout)
+		defer cancel()
+		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyOpenAIWarmPoolEnabled,
+			SettingKeyOpenAIWarmPoolBucketTargetSize,
+			SettingKeyOpenAIWarmPoolBucketRefillBelow,
+			SettingKeyOpenAIWarmPoolBucketSyncFillMin,
+			SettingKeyOpenAIWarmPoolBucketEntryTTLSeconds,
+			SettingKeyOpenAIWarmPoolBucketRefillCooldownSeconds,
+			SettingKeyOpenAIWarmPoolBucketRefillIntervalSeconds,
+			SettingKeyOpenAIWarmPoolGlobalTargetSize,
+			SettingKeyOpenAIWarmPoolGlobalRefillBelow,
+			SettingKeyOpenAIWarmPoolGlobalEntryTTLSeconds,
+			SettingKeyOpenAIWarmPoolGlobalRefillCooldownSeconds,
+			SettingKeyOpenAIWarmPoolGlobalRefillIntervalSeconds,
+			SettingKeyOpenAIWarmPoolNetworkErrorPoolSize,
+			SettingKeyOpenAIWarmPoolNetworkErrorEntryTTLSeconds,
+			SettingKeyOpenAIWarmPoolProbeMaxCandidates,
+			SettingKeyOpenAIWarmPoolProbeConcurrency,
+			SettingKeyOpenAIWarmPoolProbeTimeoutSeconds,
+			SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds,
+			SettingKeyOpenAIWarmPoolStartupGroupIDs,
+		})
+		if err != nil {
+			slog.Warn("failed to get openai warm pool settings", "error", err)
+			openAIWarmPoolCache.Store(&cachedOpenAIWarmPoolSettings{
+				settings:  defaults,
+				expiresAt: time.Now().Add(openAIWarmPoolErrorTTL).UnixNano(),
+			})
+			return defaults, nil
+		}
+		settings := sanitizeOpenAIWarmPoolSettings(OpenAIWarmPoolSettings{
+			Enabled:                     parseBoolSettingOrDefault(values, SettingKeyOpenAIWarmPoolEnabled, defaults.Enabled),
+			BucketTargetSize:            parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolBucketTargetSize, defaults.BucketTargetSize),
+			BucketRefillBelow:           parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolBucketRefillBelow, defaults.BucketRefillBelow),
+			BucketSyncFillMin:           parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolBucketSyncFillMin, defaults.BucketSyncFillMin),
+			BucketEntryTTLSeconds:       parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolBucketEntryTTLSeconds, defaults.BucketEntryTTLSeconds),
+			BucketRefillCooldownSeconds: parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolBucketRefillCooldownSeconds, defaults.BucketRefillCooldownSeconds),
+			BucketRefillIntervalSeconds: parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolBucketRefillIntervalSeconds, defaults.BucketRefillIntervalSeconds),
+			GlobalTargetSize:            parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolGlobalTargetSize, defaults.GlobalTargetSize),
+			GlobalRefillBelow:           parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolGlobalRefillBelow, defaults.GlobalRefillBelow),
+			GlobalEntryTTLSeconds:       parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolGlobalEntryTTLSeconds, defaults.GlobalEntryTTLSeconds),
+			GlobalRefillCooldownSeconds: parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolGlobalRefillCooldownSeconds, defaults.GlobalRefillCooldownSeconds),
+			GlobalRefillIntervalSeconds: parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolGlobalRefillIntervalSeconds, defaults.GlobalRefillIntervalSeconds),
+			NetworkErrorPoolSize:        parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolNetworkErrorPoolSize, defaults.NetworkErrorPoolSize),
+			NetworkErrorEntryTTLSeconds: parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolNetworkErrorEntryTTLSeconds, defaults.NetworkErrorEntryTTLSeconds),
+			ProbeMaxCandidates:          parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolProbeMaxCandidates, defaults.ProbeMaxCandidates),
+			ProbeConcurrency:            parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolProbeConcurrency, defaults.ProbeConcurrency),
+			ProbeTimeoutSeconds:         parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolProbeTimeoutSeconds, defaults.ProbeTimeoutSeconds),
+			ProbeFailureCooldownSeconds: parseIntSettingOrDefault(values, SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds, defaults.ProbeFailureCooldownSeconds),
+			StartupGroupIDs:             parsePositiveInt64CSV(values[SettingKeyOpenAIWarmPoolStartupGroupIDs]),
+		}, defaults)
+		openAIWarmPoolCache.Store(&cachedOpenAIWarmPoolSettings{
+			settings:  settings,
+			expiresAt: time.Now().Add(openAIWarmPoolCacheTTL).UnixNano(),
+		})
+		return settings, nil
+	})
+	if settings, ok := val.(OpenAIWarmPoolSettings); ok {
+		return settings
+	}
+	return defaults
 }
 
 // IsEmailVerifyEnabled 检查是否开启邮件验证
@@ -1065,6 +1680,14 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 	result.DefaultSubscriptions = parseDefaultSubscriptions(settings[SettingKeyDefaultSubscriptions])
 
+	result.BalanceLowNotifyEnabled = settings[SettingKeyBalanceLowNotifyEnabled] == "true"
+	result.AccountQuotaNotifyEnabled = settings[SettingKeyAccountQuotaNotifyEnabled] == "true"
+	if threshold, err := strconv.ParseFloat(settings[SettingKeyBalanceLowNotifyThreshold], 64); err == nil && threshold >= 0 {
+		result.BalanceLowNotifyThreshold = threshold
+	}
+	result.BalanceLowNotifyRechargeURL = settings[SettingKeyBalanceLowNotifyRechargeURL]
+	result.AccountQuotaNotifyEmails = ParseNotifyEmails(settings[SettingKeyAccountQuotaNotifyEmails])
+
 	// 敏感信息直接返回，方便测试连接时使用
 	result.SMTPPassword = settings[SettingKeySMTPPassword]
 	result.TurnstileSecretKey = settings[SettingKeyTurnstileSecretKey]
@@ -1273,7 +1896,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// 分组隔离
 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
 
-	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false, cch_signing=false)
+	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false)
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 		result.EnableFingerprintUnification = v == "true"
 	} else {
@@ -1281,30 +1904,43 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 	result.EnableMetadataPassthrough = settings[SettingKeyEnableMetadataPassthrough] == "true"
 	result.EnableCCHSigning = settings[SettingKeyEnableCCHSigning] == "true"
+	result.EnableOpenAIStreamRectifier = parseBoolSettingOrDefault(
+		settings,
+		SettingKeyEnableOpenAIStreamRectifier,
+		true,
+	)
+	result.OpenAIStreamResponseHeaderRectifierTimeouts = parseOpenAIStreamRectifierTimeoutsSettingOrDefault(
+		settings,
+		SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts,
+		defaultOpenAIResponseHeaderRectifierTimeoutsFromConfig(s.cfg),
+	)
+	result.OpenAIStreamFirstTokenRectifierTimeouts = parseOpenAIStreamRectifierTimeoutsSettingOrDefault(
+		settings,
+		SettingKeyOpenAIStreamFirstTokenRectifierTimeouts,
+		defaultOpenAIFirstTokenRectifierTimeoutsFromConfig(s.cfg),
+	)
 
-	// Web search emulation: quick enabled check from the JSON config
-	if raw := settings[SettingKeyWebSearchEmulationConfig]; raw != "" {
-		var wsCfg WebSearchEmulationConfig
-		if err := json.Unmarshal([]byte(raw), &wsCfg); err == nil {
-			result.WebSearchEmulationEnabled = wsCfg.Enabled && len(wsCfg.Providers) > 0
-		}
-	}
-
-	// Balance low notification
-	result.BalanceLowNotifyEnabled = settings[SettingKeyBalanceLowNotifyEnabled] == "true"
-	if v, err := strconv.ParseFloat(settings[SettingKeyBalanceLowNotifyThreshold], 64); err == nil && v >= 0 {
-		result.BalanceLowNotifyThreshold = v
-	}
-	result.BalanceLowNotifyRechargeURL = settings[SettingKeyBalanceLowNotifyRechargeURL]
-
-	// Account quota notification
-	result.AccountQuotaNotifyEnabled = settings[SettingKeyAccountQuotaNotifyEnabled] == "true"
-	if raw := strings.TrimSpace(settings[SettingKeyAccountQuotaNotifyEmails]); raw != "" {
-		result.AccountQuotaNotifyEmails = ParseNotifyEmails(raw)
-	}
-	if result.AccountQuotaNotifyEmails == nil {
-		result.AccountQuotaNotifyEmails = []NotifyEmailEntry{}
-	}
+	warmPoolDefaults := defaultOpenAIWarmPoolSettingsFromConfig(s.cfg)
+	result.OpenAIWarmPoolEnabled = parseBoolSettingOrDefault(settings, SettingKeyOpenAIWarmPoolEnabled, warmPoolDefaults.Enabled)
+	result.OpenAIWarmPoolBucketTargetSize = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolBucketTargetSize, warmPoolDefaults.BucketTargetSize)
+	result.OpenAIWarmPoolBucketRefillBelow = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolBucketRefillBelow, warmPoolDefaults.BucketRefillBelow)
+	result.OpenAIWarmPoolBucketSyncFillMin = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolBucketSyncFillMin, warmPoolDefaults.BucketSyncFillMin)
+	result.OpenAIWarmPoolBucketEntryTTLSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolBucketEntryTTLSeconds, warmPoolDefaults.BucketEntryTTLSeconds)
+	result.OpenAIWarmPoolBucketRefillCooldownSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolBucketRefillCooldownSeconds, warmPoolDefaults.BucketRefillCooldownSeconds)
+	result.OpenAIWarmPoolBucketRefillIntervalSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolBucketRefillIntervalSeconds, warmPoolDefaults.BucketRefillIntervalSeconds)
+	result.OpenAIWarmPoolGlobalTargetSize = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolGlobalTargetSize, warmPoolDefaults.GlobalTargetSize)
+	result.OpenAIWarmPoolGlobalRefillBelow = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolGlobalRefillBelow, warmPoolDefaults.GlobalRefillBelow)
+	result.OpenAIWarmPoolGlobalEntryTTLSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolGlobalEntryTTLSeconds, warmPoolDefaults.GlobalEntryTTLSeconds)
+	result.OpenAIWarmPoolGlobalRefillCooldownSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolGlobalRefillCooldownSeconds, warmPoolDefaults.GlobalRefillCooldownSeconds)
+	result.OpenAIWarmPoolGlobalRefillIntervalSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolGlobalRefillIntervalSeconds, warmPoolDefaults.GlobalRefillIntervalSeconds)
+	result.OpenAIWarmPoolNetworkErrorPoolSize = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolNetworkErrorPoolSize, warmPoolDefaults.NetworkErrorPoolSize)
+	result.OpenAIWarmPoolNetworkErrorEntryTTLSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolNetworkErrorEntryTTLSeconds, warmPoolDefaults.NetworkErrorEntryTTLSeconds)
+	result.OpenAIWarmPoolProbeMaxCandidates = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolProbeMaxCandidates, warmPoolDefaults.ProbeMaxCandidates)
+	result.OpenAIWarmPoolProbeConcurrency = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolProbeConcurrency, warmPoolDefaults.ProbeConcurrency)
+	result.OpenAIWarmPoolProbeTimeoutSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolProbeTimeoutSeconds, warmPoolDefaults.ProbeTimeoutSeconds)
+	result.OpenAIWarmPoolProbeFailureCooldownSeconds = parseIntSettingOrDefault(settings, SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds, warmPoolDefaults.ProbeFailureCooldownSeconds)
+	result.OpenAIWarmPoolStartupGroupIDs = parsePositiveInt64CSV(settings[SettingKeyOpenAIWarmPoolStartupGroupIDs])
+	applyOpenAIWarmPoolSanitizationToSystemSettings(result, warmPoolDefaults)
 
 	return result
 }

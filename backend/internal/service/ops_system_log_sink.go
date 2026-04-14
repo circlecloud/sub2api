@@ -114,6 +114,9 @@ func (s *OpsSystemLogSink) shouldIndex(event *logger.LogEvent) bool {
 	if strings.Contains(component, "audit") {
 		return true
 	}
+	if strings.Contains(component, "openai_warm_pool") {
+		return true
+	}
 	return false
 }
 

@@ -7,23 +7,53 @@
       </div>
 
       <!-- Settings Form -->
-      <form v-else @submit.prevent="saveSettings" class="space-y-6" novalidate>
+      <form
+        v-else
+        ref="settingsFormRef"
+        @submit.prevent="saveSettings"
+        class="space-y-6"
+        novalidate
+        autocomplete="off"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
+      >
+        <input
+          name="settings-autofill-username"
+          type="text"
+          autocomplete="username"
+          tabindex="-1"
+          aria-hidden="true"
+          data-autofill-decoy="true"
+          class="sr-only"
+        />
+        <input
+          name="settings-autofill-password"
+          type="password"
+          autocomplete="current-password"
+          tabindex="-1"
+          aria-hidden="true"
+          data-autofill-decoy="true"
+          class="sr-only"
+        />
         <!-- Tab Navigation -->
-        <div class="sticky top-0 z-10 overflow-x-auto settings-tabs-scroll">
-          <nav class="settings-tabs">
-            <button
-              v-for="tab in settingsTabs"
-              :key="tab.key"
-              type="button"
-              :class="['settings-tab', activeTab === tab.key && 'settings-tab-active']"
-              @click="activeTab = tab.key"
-            >
-              <span class="settings-tab-icon">
-                <Icon :name="tab.icon" size="sm" />
-              </span>
-              <span>{{ t(`admin.settings.tabs.${tab.key}`) }}</span>
-            </button>
-          </nav>
+        <div class="sticky top-0 z-10 settings-tabs-shell">
+          <div class="overflow-x-auto settings-tabs-scroll">
+            <nav class="settings-tabs">
+              <button
+                v-for="tab in settingsTabs"
+                :key="tab.key"
+                type="button"
+                :class="['settings-tab', activeTab === tab.key && 'settings-tab-active']"
+                @click="activeTab = tab.key"
+              >
+                <span class="settings-tab-icon">
+                  <Icon :name="tab.icon" size="sm" />
+                </span>
+                <span>{{ t(`admin.settings.tabs.${tab.key}`) }}</span>
+              </button>
+            </nav>
+          </div>
         </div>
 
         <!-- Tab: Security — Admin API Key -->
@@ -1011,6 +1041,13 @@
                     type="password"
                     class="input font-mono text-sm"
                     placeholder="0x4AAAAAAA..."
+                    autocomplete="new-password"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    data-lpignore="true"
+                    @keydown="markSecretFieldManuallyEdited('turnstile')"
+                    @paste="markSecretFieldManuallyEdited('turnstile')"
+                    @drop="markSecretFieldManuallyEdited('turnstile')"
                   />
                   <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                     {{
@@ -1158,6 +1195,13 @@
                     v-model="form.linuxdo_connect_client_secret"
                     type="password"
                     class="input font-mono text-sm"
+                    autocomplete="new-password"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    data-lpignore="true"
+                    @keydown="markSecretFieldManuallyEdited('linuxdo')"
+                    @paste="markSecretFieldManuallyEdited('linuxdo')"
+                    @drop="markSecretFieldManuallyEdited('linuxdo')"
                     :placeholder="
                       form.linuxdo_connect_client_secret_configured
                         ? t('admin.settings.linuxdo.clientSecretConfiguredPlaceholder')
@@ -1742,6 +1786,147 @@
           </div>
         </div>
 
+        <!-- OpenAI Warm Pool Settings -->
+        <div v-if="false" class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.openaiWarmPool.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.openaiWarmPool.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="rounded-lg border border-sky-200 bg-sky-50 p-4 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-900/20 dark:text-sky-200">
+              {{ t('admin.settings.openaiWarmPool.sharedHint') }}
+            </div>
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.openaiWarmPool.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.openaiWarmPool.enabledHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.openai_warm_pool_enabled" />
+            </div>
+            <div
+              v-if="form.openai_warm_pool_enabled"
+              class="space-y-6 border-t border-gray-100 pt-4 dark:border-dark-700"
+            >
+              <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.bucketTitle') }}</h3>
+                <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketTargetSize') }}</label>
+                    <input v-model.number="form.openai_warm_pool_bucket_target_size" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketTargetSizeHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketRefillBelow') }}</label>
+                    <input v-model.number="form.openai_warm_pool_bucket_refill_below" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketRefillBelowHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketSyncFillMin') }}</label>
+                    <input v-model.number="form.openai_warm_pool_bucket_sync_fill_min" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketSyncFillMinHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketEntryTtlSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_bucket_entry_ttl_seconds" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketEntryTtlSecondsHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketRefillCooldownSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_bucket_refill_cooldown_seconds" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketRefillCooldownSecondsHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketRefillIntervalSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_bucket_refill_interval_seconds" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketRefillIntervalSecondsHint') }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.globalTitle') }}</h3>
+                <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalTargetSize') }}</label>
+                    <input v-model.number="form.openai_warm_pool_global_target_size" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalTargetSizeHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalRefillBelow') }}</label>
+                    <input v-model.number="form.openai_warm_pool_global_refill_below" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalRefillBelowHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalEntryTtlSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_global_entry_ttl_seconds" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalEntryTtlSecondsHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalRefillCooldownSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_global_refill_cooldown_seconds" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalRefillCooldownSecondsHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalRefillIntervalSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_global_refill_interval_seconds" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalRefillIntervalSecondsHint') }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.networkErrorTitle') }}</h3>
+                <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.networkErrorPoolSize') }}</label>
+                    <input v-model.number="form.openai_warm_pool_network_error_pool_size" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.networkErrorPoolSizeHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.networkErrorEntryTtlSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_network_error_entry_ttl_seconds" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.networkErrorEntryTtlSecondsHint') }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.probeTitle') }}</h3>
+                <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeMaxCandidates') }}</label>
+                    <input v-model.number="form.openai_warm_pool_probe_max_candidates" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeMaxCandidatesHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeConcurrency') }}</label>
+                    <input v-model.number="form.openai_warm_pool_probe_concurrency" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeConcurrencyHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeTimeoutSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_probe_timeout_seconds" type="number" min="1" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeTimeoutSecondsHint') }}</p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeFailureCooldownSeconds') }}</label>
+                    <input v-model.number="form.openai_warm_pool_probe_failure_cooldown_seconds" type="number" min="0" class="input max-w-xs" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeFailureCooldownSecondsHint') }}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Gateway Forwarding Behavior -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -1790,6 +1975,19 @@
                 </p>
               </div>
               <Toggle v-model="form.enable_cch_signing" />
+            </div>
+
+            <!-- OpenAI Stream Rectifier -->
+            <div v-if="false" class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.gatewayForwarding.openaiStreamRectifier') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.gatewayForwarding.openaiStreamRectifierHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.enable_openai_stream_rectifier" />
             </div>
           </div>
         </div>
@@ -2019,6 +2217,218 @@
         </div>
 
         </div><!-- /Tab: Gateway — Claude Code, Scheduling -->
+
+        <!-- Tab: OpenAI -->
+        <div v-show="activeTab === 'openai'" class="space-y-6">
+          <div class="card">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t('admin.settings.openaiRectifier.title') }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.openaiRectifier.description') }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.openaiRectifier.enabled') }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openaiRectifier.enabledHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="form.enable_openai_stream_rectifier" />
+              </div>
+
+              <div v-if="form.enable_openai_stream_rectifier" class="grid grid-cols-1 gap-6 border-t border-gray-100 pt-4 md:grid-cols-2 dark:border-dark-700">
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.openaiRectifier.responseHeaderTimeouts') }}
+                  </label>
+                  <PositiveIntegerTagsInput
+                    v-model="form.openai_stream_response_header_rectifier_timeouts"
+                    :placeholder="t('admin.settings.openaiRectifier.responseHeaderPlaceholder')"
+                    :input-aria-label="t('admin.settings.openaiRectifier.responseHeaderTimeouts')"
+                    :remove-aria-label="t('common.delete')"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openaiRectifier.responseHeaderTimeoutsHint') }}
+                  </p>
+                </div>
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.openaiRectifier.firstTokenTimeouts') }}
+                  </label>
+                  <PositiveIntegerTagsInput
+                    v-model="form.openai_stream_first_token_rectifier_timeouts"
+                    :placeholder="t('admin.settings.openaiRectifier.firstTokenPlaceholder')"
+                    :input-aria-label="t('admin.settings.openaiRectifier.firstTokenTimeouts')"
+                    :remove-aria-label="t('common.delete')"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openaiRectifier.firstTokenTimeoutsHint') }}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t('admin.settings.openaiWarmPool.title') }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.openaiWarmPool.description') }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div class="rounded-lg border border-sky-200 bg-sky-50 p-4 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-900/20 dark:text-sky-200">
+                {{ t('admin.settings.openaiWarmPool.sharedHint') }}
+              </div>
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.openaiWarmPool.enabled') }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openaiWarmPool.enabledHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="form.openai_warm_pool_enabled" />
+              </div>
+              <div
+                v-if="form.openai_warm_pool_enabled"
+                class="space-y-6 border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.startupGroups') }}</h3>
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.openaiWarmPool.startupGroupsHint') }}
+                  </p>
+                  <div class="mt-4">
+                    <GroupSelector
+                      v-model="form.openai_warm_pool_startup_group_ids"
+                      :groups="activeGroups"
+                      :label="t('admin.settings.openaiWarmPool.startupGroups')"
+                      platform="openai"
+                    />
+                  </div>
+                </div>
+                <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.bucketTitle') }}</h3>
+                  <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketTargetSize') }}</label>
+                      <input v-model.number="form.openai_warm_pool_bucket_target_size" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketTargetSizeHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketRefillBelow') }}</label>
+                      <input v-model.number="form.openai_warm_pool_bucket_refill_below" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketRefillBelowHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketSyncFillMin') }}</label>
+                      <input v-model.number="form.openai_warm_pool_bucket_sync_fill_min" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketSyncFillMinHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketEntryTtlSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_bucket_entry_ttl_seconds" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketEntryTtlSecondsHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketRefillCooldownSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_bucket_refill_cooldown_seconds" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketRefillCooldownSecondsHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.bucketRefillIntervalSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_bucket_refill_interval_seconds" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.bucketRefillIntervalSecondsHint') }}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.globalTitle') }}</h3>
+                  <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalTargetSize') }}</label>
+                      <input v-model.number="form.openai_warm_pool_global_target_size" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalTargetSizeHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalRefillBelow') }}</label>
+                      <input v-model.number="form.openai_warm_pool_global_refill_below" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalRefillBelowHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalEntryTtlSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_global_entry_ttl_seconds" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalEntryTtlSecondsHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalRefillCooldownSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_global_refill_cooldown_seconds" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalRefillCooldownSecondsHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.globalRefillIntervalSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_global_refill_interval_seconds" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.globalRefillIntervalSecondsHint') }}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.networkErrorTitle') }}</h3>
+                  <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.networkErrorPoolSize') }}</label>
+                      <input v-model.number="form.openai_warm_pool_network_error_pool_size" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.networkErrorPoolSizeHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.networkErrorEntryTtlSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_network_error_entry_ttl_seconds" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.networkErrorEntryTtlSecondsHint') }}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.openaiWarmPool.probeTitle') }}</h3>
+                  <div class="mt-4 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeMaxCandidates') }}</label>
+                      <input v-model.number="form.openai_warm_pool_probe_max_candidates" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeMaxCandidatesHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeConcurrency') }}</label>
+                      <input v-model.number="form.openai_warm_pool_probe_concurrency" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeConcurrencyHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeTimeoutSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_probe_timeout_seconds" type="number" min="1" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeTimeoutSecondsHint') }}</p>
+                    </div>
+                    <div>
+                      <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.openaiWarmPool.probeFailureCooldownSeconds') }}</label>
+                      <input v-model.number="form.openai_warm_pool_probe_failure_cooldown_seconds" type="number" min="0" class="input max-w-xs" />
+                      <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.openaiWarmPool.probeFailureCooldownSecondsHint') }}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <!-- Tab: General -->
         <div v-show="activeTab === 'general'" class="space-y-6">
@@ -2296,6 +2706,74 @@
           </div>
         </div>
 
+        <!-- Purchase Subscription Page -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.purchase.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.purchase.description') }}
+            </p>
+          </div>
+          <div class="space-y-6 p-6">
+            <!-- Enable Toggle -->
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="font-medium text-gray-900 dark:text-white">{{
+                  t('admin.settings.purchase.enabled')
+                }}</label>
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.purchase.enabledHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.purchase_subscription_enabled" />
+            </div>
+
+            <!-- URL -->
+            <div>
+              <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.purchase.url') }}
+              </label>
+              <input
+                v-model="form.purchase_subscription_url"
+                type="url"
+                class="input font-mono text-sm"
+                :placeholder="t('admin.settings.purchase.urlPlaceholder')"
+                autocomplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-form-type="other"
+              />
+              <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.purchase.urlHint') }}
+              </p>
+              <p class="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                {{ t('admin.settings.purchase.iframeWarning') }}
+              </p>
+            </div>
+
+            <!-- Integration Docs -->
+            <div class="flex items-center gap-2 text-sm">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <a
+                href="https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/docs/ADMIN_PAYMENT_INTEGRATION_API.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-blue-600 hover:underline dark:text-blue-400"
+                download="ADMIN_PAYMENT_INTEGRATION_API.md"
+              >
+                {{ t('admin.settings.purchase.integrationDoc') }}
+              </a>
+              <span class="text-gray-400 dark:text-gray-500">—</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.purchase.integrationDocHint') }}
+              </span>
+            </div>
+          </div>
+        </div>
 
         <!-- Custom Menu Items -->
         <div class="card">
@@ -2667,16 +3145,19 @@
                 <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                   {{ t('admin.settings.smtp.password') }}
                 </label>
-                <input
-                  v-model="form.smtp_password"
-                  type="password"
-                  class="input"
-                  autocomplete="new-password"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  @keydown="smtpPasswordManuallyEdited = true"
-                  @paste="smtpPasswordManuallyEdited = true"
-                  :placeholder="
+                  <input
+                    v-model="form.smtp_password"
+                    type="password"
+                    class="input"
+                    autocomplete="new-password"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    data-lpignore="true"
+                    @keydown="markSecretFieldManuallyEdited('smtp')"
+                    @paste="markSecretFieldManuallyEdited('smtp')"
+                    @drop="markSecretFieldManuallyEdited('smtp')"
+                    :placeholder="
+
                     form.smtp_password_configured
                       ? t('admin.settings.smtp.passwordConfiguredPlaceholder')
                       : t('admin.settings.smtp.passwordPlaceholder')
@@ -2906,7 +3387,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUpdated } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api'
 import type {
@@ -2927,9 +3408,11 @@ import PaymentProviderList from '@/components/payment/PaymentProviderList.vue'
 import PaymentProviderDialog from '@/components/payment/PaymentProviderDialog.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
 import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
+import GroupSelector from '@/components/common/GroupSelector.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ImageUpload from '@/components/common/ImageUpload.vue'
+import PositiveIntegerTagsInput from '@/components/common/PositiveIntegerTagsInput.vue'
 import BackupSettings from '@/views/admin/BackupView.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -2946,13 +3429,15 @@ const { t, locale } = useI18n()
 const appStore = useAppStore()
 const adminSettingsStore = useAdminSettingsStore()
 
-type SettingsTab = 'general' | 'security' | 'users' | 'gateway' | 'payment' | 'email' | 'backup'
+type SettingsTab = 'general' | 'security' | 'users' | 'gateway' | 'openai' | 'payment' | 'email' | 'backup'
 const activeTab = ref<SettingsTab>('general')
+const settingsFormRef = ref<HTMLFormElement | null>(null)
 const settingsTabs = [
   { key: 'general'  as SettingsTab, icon: 'home'   as const },
   { key: 'security' as SettingsTab, icon: 'shield' as const },
   { key: 'users'    as SettingsTab, icon: 'user'   as const },
   { key: 'gateway'  as SettingsTab, icon: 'server' as const },
+  { key: 'openai'   as SettingsTab, icon: 'sparkles' as const },
   { key: 'payment'  as SettingsTab, icon: 'creditCard' as const },
   { key: 'email'    as SettingsTab, icon: 'mail'   as const },
   { key: 'backup'   as SettingsTab, icon: 'database' as const },
@@ -2965,10 +3450,191 @@ const saving = ref(false)
 const testingSmtp = ref(false)
 const sendingTestEmail = ref(false)
 const smtpPasswordManuallyEdited = ref(false)
+const turnstileSecretKeyManuallyEdited = ref(false)
+const geetestCaptchaKeyManuallyEdited = ref(false)
+const linuxdoClientSecretManuallyEdited = ref(false)
+
+function markSecretFieldManuallyEdited(field: 'smtp' | 'turnstile' | 'geetest' | 'linuxdo') {
+  switch (field) {
+    case 'smtp':
+      smtpPasswordManuallyEdited.value = true
+      break
+    case 'turnstile':
+      turnstileSecretKeyManuallyEdited.value = true
+      break
+    case 'geetest':
+      geetestCaptchaKeyManuallyEdited.value = true
+      break
+    case 'linuxdo':
+      linuxdoClientSecretManuallyEdited.value = true
+      break
+  }
+}
+
+function resetSecretFieldEditState() {
+  smtpPasswordManuallyEdited.value = false
+  turnstileSecretKeyManuallyEdited.value = false
+  geetestCaptchaKeyManuallyEdited.value = false
+  linuxdoClientSecretManuallyEdited.value = false
+}
 const testEmailAddress = ref('')
 const registrationEmailSuffixWhitelistTags = ref<string[]>([])
 const registrationEmailSuffixWhitelistDraft = ref('')
 const tablePageSizeOptionsInput = ref('10, 20, 50, 100')
+const webSearchProxies = ref<Proxy[]>([])
+const DEFAULT_WEB_SEARCH_QUOTA_LIMIT = 1000
+
+const webSearchConfig = reactive<WebSearchEmulationConfig>({
+  enabled: false,
+  providers: [],
+})
+
+const expandedProviders = reactive<Record<number, boolean>>({})
+const apiKeyVisible = reactive<Record<number, boolean>>({})
+const wsTestQuery = ref('')
+const wsTestLoading = ref(false)
+const wsTestResult = ref<WebSearchTestResult | null>(null)
+const wsTestDialogOpen = ref(false)
+
+function openTestDialog() {
+  wsTestResult.value = null
+  wsTestDialogOpen.value = true
+}
+
+function toggleProviderExpand(idx: number) {
+  expandedProviders[idx] = !expandedProviders[idx]
+}
+
+function removeWebSearchProvider(idx: number) {
+  webSearchConfig.providers.splice(idx, 1)
+  const newExpanded: Record<number, boolean> = {}
+  const newVisible: Record<number, boolean> = {}
+  for (let i = 0; i < webSearchConfig.providers.length; i++) {
+    const oldIdx = i >= idx ? i + 1 : i
+    newExpanded[i] = expandedProviders[oldIdx] ?? false
+    newVisible[i] = apiKeyVisible[oldIdx] ?? false
+  }
+  Object.keys(expandedProviders).forEach((k) => delete expandedProviders[Number(k)])
+  Object.keys(apiKeyVisible).forEach((k) => delete apiKeyVisible[Number(k)])
+  Object.assign(expandedProviders, newExpanded)
+  Object.assign(apiKeyVisible, newVisible)
+}
+
+function addWebSearchProvider() {
+  const idx = webSearchConfig.providers.length
+  webSearchConfig.providers.push({
+    type: 'brave',
+    api_key: '',
+    api_key_configured: false,
+    quota_limit: DEFAULT_WEB_SEARCH_QUOTA_LIMIT,
+    subscribed_at: null,
+    proxy_id: null,
+    expires_at: null,
+  } as WebSearchProviderConfig)
+  expandedProviders[idx] = true
+}
+
+function formatSubscribedAt(ts: number | null): string {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function parseSubscribedAt(dateStr: string): number | null {
+  if (!dateStr) return null
+  return Math.floor(new Date(dateStr + 'T00:00:00Z').getTime() / 1000)
+}
+
+function quotaPercentage(provider: WebSearchProviderConfig): number {
+  if (!provider.quota_limit || provider.quota_limit <= 0) return 0
+  return ((provider.quota_used ?? 0) / provider.quota_limit) * 100
+}
+
+async function resetWebSearchUsage(idx: number) {
+  const provider = webSearchConfig.providers[idx]
+  if (!provider) return
+  if (!confirm(t('admin.settings.webSearchEmulation.resetUsageConfirm'))) return
+  try {
+    await adminAPI.settings.resetWebSearchUsage({ provider_type: provider.type })
+    provider.quota_used = 0
+    appStore.showSuccess(t('admin.settings.webSearchEmulation.resetUsageSuccess'))
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('common.error')))
+  }
+}
+
+async function copyApiKey(idx: number) {
+  const key = webSearchConfig.providers[idx]?.api_key
+  if (!key) {
+    appStore.showError(t('admin.settings.webSearchEmulation.apiKeyPlaceholder'))
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(key)
+    appStore.showSuccess(t('admin.settings.webSearchEmulation.copied'))
+  } catch {
+    appStore.showError(t('common.error'))
+  }
+}
+
+async function testWebSearchProvider() {
+  wsTestLoading.value = true
+  wsTestResult.value = null
+  try {
+    const query = wsTestQuery.value.trim() || t('admin.settings.webSearchEmulation.testDefaultQuery')
+    wsTestResult.value = await adminAPI.settings.testWebSearchEmulation(query)
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('common.error')))
+  } finally {
+    wsTestLoading.value = false
+  }
+}
+
+async function loadWebSearchConfig() {
+  try {
+    const [resp, proxiesResp] = await Promise.all([
+      adminAPI.settings.getWebSearchEmulationConfig(),
+      adminAPI.proxies.list().catch(() => ({ items: [] as Proxy[] })),
+    ])
+    if (resp) {
+      webSearchConfig.enabled = resp.enabled || false
+      webSearchConfig.providers = resp.providers || []
+    }
+    webSearchProxies.value = proxiesResp.items || []
+  } catch (err: unknown) {
+    const status = (err as { status?: number })?.status
+    if (status !== 404 && status !== undefined) {
+      appStore.showError(extractApiErrorMessage(err, t('common.error')))
+    }
+  }
+}
+
+async function saveWebSearchConfig(): Promise<boolean> {
+  try {
+    for (const p of webSearchConfig.providers) {
+      const raw = p.quota_limit
+      if (raw != null && Number(raw) !== 0 && Number(raw) < 1) {
+        appStore.showError(t('admin.settings.webSearchEmulation.quotaLimitMustBePositive'))
+        return false
+      }
+    }
+    const providers = webSearchConfig.providers.map((p: WebSearchProviderConfig) => ({
+      ...p,
+      quota_limit: Number(p.quota_limit) > 0 ? Number(p.quota_limit) : null,
+    }))
+    await adminAPI.settings.updateWebSearchEmulationConfig({
+      enabled: webSearchConfig.enabled,
+      providers,
+    })
+    return true
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('common.error')))
+    return false
+  }
+}
 
 // Admin API Key 状态
 const adminApiKeyLoading = ref(true)
@@ -2976,6 +3642,7 @@ const adminApiKeyExists = ref(false)
 const adminApiKeyMasked = ref('')
 const adminApiKeyOperating = ref(false)
 const newAdminApiKey = ref('')
+const activeGroups = ref<AdminGroup[]>([])
 const subscriptionGroups = ref<AdminGroup[]>([])
 
 // Overload Cooldown (529) 状态
@@ -3067,6 +3734,8 @@ const form = reactive<SettingsForm>({
   backend_mode_enabled: false,
   hide_ccs_import_button: false,
   payment_enabled: false,  payment_min_amount: 1,  payment_max_amount: 10000,  payment_daily_limit: 50000,  payment_max_pending_orders: 3,  payment_order_timeout_minutes: 30,  payment_balance_disabled: false,  payment_balance_recharge_multiplier: 1,  payment_recharge_fee_rate: 0,  payment_enabled_types: [],  payment_help_image_url: '',  payment_help_text: '',  payment_product_name_prefix: '',  payment_product_name_suffix: '',  payment_load_balance_strategy: 'round-robin',  payment_cancel_rate_limit_enabled: false,  payment_cancel_rate_limit_max: 10,  payment_cancel_rate_limit_window: 1,  payment_cancel_rate_limit_unit: 'day',  payment_cancel_rate_limit_window_mode: 'rolling',
+  purchase_subscription_enabled: false,
+  purchase_subscription_url: '',
   table_default_page_size: tablePageSizeDefault,
   table_page_size_options: [10, 20, 50, 100],
   custom_menu_items: [] as Array<{id: string; label: string; icon_svg: string; url: string; visibility: 'user' | 'admin'; sort_order: number}>,
@@ -3144,7 +3813,29 @@ const form = reactive<SettingsForm>({
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
-  // Balance & quota notification
+  enable_openai_stream_rectifier: true,
+  openai_stream_response_header_rectifier_timeouts: [8, 10, 12],
+  openai_stream_first_token_rectifier_timeouts: [5, 8, 10],
+  // OpenAI warm pool behavior
+  openai_warm_pool_enabled: true,
+  openai_warm_pool_bucket_target_size: 10,
+  openai_warm_pool_bucket_refill_below: 3,
+  openai_warm_pool_bucket_sync_fill_min: 1,
+  openai_warm_pool_bucket_entry_ttl_seconds: 30,
+  openai_warm_pool_bucket_refill_cooldown_seconds: 15,
+  openai_warm_pool_bucket_refill_interval_seconds: 30,
+  openai_warm_pool_global_target_size: 30,
+  openai_warm_pool_global_refill_below: 10,
+  openai_warm_pool_global_entry_ttl_seconds: 300,
+  openai_warm_pool_global_refill_cooldown_seconds: 60,
+  openai_warm_pool_global_refill_interval_seconds: 300,
+  openai_warm_pool_network_error_pool_size: 3,
+  openai_warm_pool_network_error_entry_ttl_seconds: 120,
+  openai_warm_pool_probe_max_candidates: 24,
+  openai_warm_pool_probe_concurrency: 4,
+  openai_warm_pool_probe_timeout_seconds: 15,
+  openai_warm_pool_probe_failure_cooldown_seconds: 120,
+  openai_warm_pool_startup_group_ids: [],
   balance_low_notify_enabled: false,
   balance_low_notify_threshold: 0,
   balance_low_notify_recharge_url: '',
@@ -3152,166 +3843,47 @@ const form = reactive<SettingsForm>({
   account_quota_notify_emails: [] as NotifyEmailEntry[]
 })
 
-// Proxies for web search emulation ProxySelector
-const webSearchProxies = ref<Proxy[]>([])
-
-// Web Search Emulation config (loaded/saved separately)
-const DEFAULT_WEB_SEARCH_QUOTA_LIMIT = 1000
-
-const webSearchConfig = reactive<WebSearchEmulationConfig>({
-  enabled: false,
-  providers: [],
-})
-
-const expandedProviders = reactive<Record<number, boolean>>({})
-const apiKeyVisible = reactive<Record<number, boolean>>({})
-const wsTestQuery = ref('')
-const wsTestLoading = ref(false)
-const wsTestResult = ref<WebSearchTestResult | null>(null)
-const wsTestDialogOpen = ref(false)
-
-function openTestDialog() {
-  wsTestResult.value = null
-  wsTestDialogOpen.value = true
-}
-
-function toggleProviderExpand(idx: number) {
-  expandedProviders[idx] = !expandedProviders[idx]
-}
-
-function removeWebSearchProvider(idx: number) {
-  webSearchConfig.providers.splice(idx, 1)
-  // Re-index expandedProviders and apiKeyVisible after removal
-  const newExpanded: Record<number, boolean> = {}
-  const newVisible: Record<number, boolean> = {}
-  for (let i = 0; i < webSearchConfig.providers.length; i++) {
-    const oldIdx = i >= idx ? i + 1 : i
-    newExpanded[i] = expandedProviders[oldIdx] ?? false
-    newVisible[i] = apiKeyVisible[oldIdx] ?? false
+function ensurePositiveIntArray(rawValues: unknown, fieldLabel: string): number[] {
+  if (!Array.isArray(rawValues) || rawValues.length === 0) {
+    throw new Error(`${fieldLabel}${t('admin.settings.openaiRectifier.validationRequired')}`)
   }
-  Object.keys(expandedProviders).forEach((k) => delete expandedProviders[Number(k)])
-  Object.keys(apiKeyVisible).forEach((k) => delete apiKeyVisible[Number(k)])
-  Object.assign(expandedProviders, newExpanded)
-  Object.assign(apiKeyVisible, newVisible)
-}
 
-function addWebSearchProvider() {
-  const idx = webSearchConfig.providers.length
-  webSearchConfig.providers.push({
-    type: 'brave',
-    api_key: '',
-    api_key_configured: false,
-    quota_limit: DEFAULT_WEB_SEARCH_QUOTA_LIMIT,
-    subscribed_at: null,
-    proxy_id: null,
-    expires_at: null,
-  } as WebSearchProviderConfig)
-  expandedProviders[idx] = true
-}
-
-function formatSubscribedAt(ts: number | null): string {
-  if (!ts) return ''
-  // Use UTC to avoid timezone drift on repeated edits
-  const d = new Date(ts * 1000)
-  const y = d.getUTCFullYear()
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(d.getUTCDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
-function parseSubscribedAt(dateStr: string): number | null {
-  if (!dateStr) return null
-  // Parse as UTC to match formatSubscribedAt
-  return Math.floor(new Date(dateStr + 'T00:00:00Z').getTime() / 1000)
-}
-
-function quotaPercentage(provider: WebSearchProviderConfig): number {
-  if (!provider.quota_limit || provider.quota_limit <= 0) return 0
-  return ((provider.quota_used ?? 0) / provider.quota_limit) * 100
-}
-
-async function resetWebSearchUsage(idx: number) {
-  const provider = webSearchConfig.providers[idx]
-  if (!provider) return
-  if (!confirm(t('admin.settings.webSearchEmulation.resetUsageConfirm'))) return
-  try {
-    await adminAPI.settings.resetWebSearchUsage({ provider_type: provider.type })
-    provider.quota_used = 0
-    appStore.showSuccess(t('admin.settings.webSearchEmulation.resetUsageSuccess'))
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('common.error')))
+  const values = rawValues.map((value) => Number(value))
+  if (values.some((value) => !Number.isInteger(value) || value <= 0)) {
+    throw new Error(`${fieldLabel}${t('admin.settings.openaiRectifier.validationPositiveInteger')}`)
   }
+
+  return values
 }
 
-async function copyApiKey(idx: number) {
-  const key = webSearchConfig.providers[idx]?.api_key
-  if (!key) {
-    appStore.showError(t('admin.settings.webSearchEmulation.apiKeyPlaceholder'))
+function normalizePositiveIntModelValue(rawValues: unknown): number[] {
+  if (!Array.isArray(rawValues)) {
+    return []
+  }
+
+  return rawValues
+    .map((value) => Number(value))
+    .filter((value, index, values) => Number.isInteger(value) && value > 0 && values.indexOf(value) === index)
+}
+
+function applySettingsAutofillSuppression() {
+  const formElement = settingsFormRef.value
+  if (!formElement) {
     return
   }
-  try {
-    await navigator.clipboard.writeText(key)
-    appStore.showSuccess(t('admin.settings.webSearchEmulation.copied'))
-  } catch {
-    appStore.showError(t('common.error'))
-  }
-}
 
-async function testWebSearchProvider() {
-  wsTestLoading.value = true
-  wsTestResult.value = null
-  try {
-    const query = wsTestQuery.value.trim() || t('admin.settings.webSearchEmulation.testDefaultQuery')
-    wsTestResult.value = await adminAPI.settings.testWebSearchEmulation(query)
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('common.error')))
-  } finally {
-    wsTestLoading.value = false
-  }
-}
+  const fields = formElement.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([data-autofill-decoy="true"]), textarea, select'
+  )
 
-async function loadWebSearchConfig() {
-  try {
-    const [resp, proxiesResp] = await Promise.all([
-      adminAPI.settings.getWebSearchEmulationConfig(),
-      adminAPI.proxies.list().catch(() => ({ items: [] as Proxy[] })),
-    ])
-    if (resp) {
-      webSearchConfig.enabled = resp.enabled || false
-      webSearchConfig.providers = resp.providers || []
+  fields.forEach((field) => {
+    if (!field.hasAttribute('autocomplete')) {
+      field.setAttribute('autocomplete', 'off')
     }
-    webSearchProxies.value = proxiesResp.items || []
-  } catch (err: unknown) {
-    // 404 is expected when config hasn't been created yet; show error for other failures
-    const status = (err as { status?: number })?.status
-    if (status !== 404 && status !== undefined) {
-      appStore.showError(extractApiErrorMessage(err, t('common.error')))
-    }
-  }
-}
-
-async function saveWebSearchConfig(): Promise<boolean> {
-  try {
-    for (const p of webSearchConfig.providers) {
-      const raw = p.quota_limit
-      if (raw != null && Number(raw) !== 0 && Number(raw) < 1) {
-        appStore.showError(t('admin.settings.webSearchEmulation.quotaLimitMustBePositive'))
-        return false
-      }
-    }
-    const providers = webSearchConfig.providers.map((p: WebSearchProviderConfig) => ({
-      ...p,
-      quota_limit: Number(p.quota_limit) > 0 ? Number(p.quota_limit) : null,
-    }))
-    await adminAPI.settings.updateWebSearchEmulationConfig({
-      enabled: webSearchConfig.enabled,
-      providers,
-    })
-    return true
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('common.error')))
-    return false
-  }
+    field.setAttribute('data-lpignore', 'true')
+    field.setAttribute('data-1p-ignore', 'true')
+    field.setAttribute('data-form-type', 'other')
+  })
 }
 
 const defaultSubscriptionGroupOptions = computed<DefaultSubscriptionGroupOption[]>(() =>
@@ -3518,6 +4090,9 @@ async function loadSettings() {
       }
     }
     form.backend_mode_enabled = settings.backend_mode_enabled
+    form.openai_warm_pool_startup_group_ids = normalizePositiveIntModelValue(
+      settings.openai_warm_pool_startup_group_ids
+    )
     form.default_subscriptions = Array.isArray(settings.default_subscriptions)
       ? settings.default_subscriptions
           .filter((item) => item.group_id > 0 && item.validity_days > 0)
@@ -3550,13 +4125,16 @@ async function loadSettings() {
   }
 }
 
-async function loadSubscriptionGroups() {
+async function loadGroups() {
   try {
     const groups = await adminAPI.groups.getAll()
-    subscriptionGroups.value = groups.filter(
-      (group) => group.subscription_type === 'subscription' && group.status === 'active'
+    activeGroups.value = groups.filter((group) => group.status === 'active')
+    subscriptionGroups.value = activeGroups.value.filter(
+      (group) => group.subscription_type === 'subscription'
     )
-  } catch (_error: unknown) {
+  } catch (error) {
+    console.error('Failed to load groups:', error)
+    activeGroups.value = []
     subscriptionGroups.value = []
   }
 }
@@ -3648,7 +4226,16 @@ async function saveSettings() {
     if (!isValidHttpUrl(form.frontend_url)) form.frontend_url = ''
     if (!isValidHttpUrl(form.doc_url)) form.doc_url = ''
 
+    const responseHeaderRectifierTimeouts = ensurePositiveIntArray(
+      form.openai_stream_response_header_rectifier_timeouts,
+      t('admin.settings.openaiRectifier.responseHeaderTimeouts')
+    )
+    const firstTokenRectifierTimeouts = ensurePositiveIntArray(
+      form.openai_stream_first_token_rectifier_timeouts,
+      t('admin.settings.openaiRectifier.firstTokenTimeouts')
+    )
     const payload: UpdateSettingsRequest = {
+
       registration_enabled: form.registration_enabled,
       email_verify_enabled: form.email_verify_enabled,
       registration_email_suffix_whitelist: registrationEmailSuffixWhitelistTags.value.map(
@@ -3678,20 +4265,20 @@ async function saveSettings() {
       smtp_host: form.smtp_host,
       smtp_port: form.smtp_port,
       smtp_username: form.smtp_username,
-      smtp_password: form.smtp_password || undefined,
+      smtp_password: smtpPasswordManuallyEdited.value ? form.smtp_password || undefined : undefined,
       smtp_from_email: form.smtp_from_email,
       smtp_from_name: form.smtp_from_name,
       smtp_use_tls: form.smtp_use_tls,
       turnstile_enabled: form.turnstile_enabled,
       turnstile_site_key: form.turnstile_site_key,
-      turnstile_secret_key: form.turnstile_secret_key || undefined,
+      turnstile_secret_key: turnstileSecretKeyManuallyEdited.value ? form.turnstile_secret_key || undefined : undefined,
       geetest_enabled: form.geetest_enabled,
       geetest_captcha_id: form.geetest_captcha_id,
-      geetest_captcha_key: form.geetest_captcha_key || undefined,
+      geetest_captcha_key: geetestCaptchaKeyManuallyEdited.value ? form.geetest_captcha_key || undefined : undefined,
       geetest_popup_on_submit: form.geetest_popup_on_submit,
       linuxdo_connect_enabled: form.linuxdo_connect_enabled,
       linuxdo_connect_client_id: form.linuxdo_connect_client_id,
-      linuxdo_connect_client_secret: form.linuxdo_connect_client_secret || undefined,
+      linuxdo_connect_client_secret: linuxdoClientSecretManuallyEdited.value ? form.linuxdo_connect_client_secret || undefined : undefined,
       linuxdo_connect_redirect_url: form.linuxdo_connect_redirect_url,
       oidc_connect_enabled: form.oidc_connect_enabled,
       oidc_connect_provider_name: form.oidc_connect_provider_name,
@@ -3728,6 +4315,28 @@ async function saveSettings() {
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,
+      enable_openai_stream_rectifier: form.enable_openai_stream_rectifier,
+      openai_stream_response_header_rectifier_timeouts: responseHeaderRectifierTimeouts,
+      openai_stream_first_token_rectifier_timeouts: firstTokenRectifierTimeouts,
+      openai_warm_pool_enabled: form.openai_warm_pool_enabled,
+      openai_warm_pool_bucket_target_size: form.openai_warm_pool_bucket_target_size,
+      openai_warm_pool_bucket_refill_below: form.openai_warm_pool_bucket_refill_below,
+      openai_warm_pool_bucket_sync_fill_min: form.openai_warm_pool_bucket_sync_fill_min,
+      openai_warm_pool_bucket_entry_ttl_seconds: form.openai_warm_pool_bucket_entry_ttl_seconds,
+      openai_warm_pool_bucket_refill_cooldown_seconds: form.openai_warm_pool_bucket_refill_cooldown_seconds,
+      openai_warm_pool_bucket_refill_interval_seconds: form.openai_warm_pool_bucket_refill_interval_seconds,
+      openai_warm_pool_global_target_size: form.openai_warm_pool_global_target_size,
+      openai_warm_pool_global_refill_below: form.openai_warm_pool_global_refill_below,
+      openai_warm_pool_global_entry_ttl_seconds: form.openai_warm_pool_global_entry_ttl_seconds,
+      openai_warm_pool_global_refill_cooldown_seconds: form.openai_warm_pool_global_refill_cooldown_seconds,
+      openai_warm_pool_global_refill_interval_seconds: form.openai_warm_pool_global_refill_interval_seconds,
+      openai_warm_pool_network_error_pool_size: form.openai_warm_pool_network_error_pool_size,
+      openai_warm_pool_network_error_entry_ttl_seconds: form.openai_warm_pool_network_error_entry_ttl_seconds,
+      openai_warm_pool_probe_max_candidates: form.openai_warm_pool_probe_max_candidates,
+      openai_warm_pool_probe_concurrency: form.openai_warm_pool_probe_concurrency,
+      openai_warm_pool_probe_timeout_seconds: form.openai_warm_pool_probe_timeout_seconds,
+      openai_warm_pool_probe_failure_cooldown_seconds: form.openai_warm_pool_probe_failure_cooldown_seconds,
+      openai_warm_pool_startup_group_ids: form.openai_warm_pool_startup_group_ids,
       // Payment configuration
       payment_enabled: form.payment_enabled,
       payment_min_amount: Number(form.payment_min_amount) || 0,
@@ -3771,12 +4380,11 @@ async function saveSettings() {
     )
     registrationEmailSuffixWhitelistDraft.value = ''
     form.smtp_password = ''
-    smtpPasswordManuallyEdited.value = false
     form.turnstile_secret_key = ''
     form.geetest_captcha_key = ''
     form.linuxdo_connect_client_secret = ''
     form.oidc_connect_client_secret = ''
-    // Save web search emulation config separately (errors handled internally)
+    resetSecretFieldEditState()
     const wsOk = await saveWebSearchConfig()
     // Refresh cached settings so sidebar/header update immediately
     await appStore.fetchPublicSettings(true)
@@ -4288,8 +4896,9 @@ async function handleDeleteProvider() {
 }
 
 onMounted(() => {
+  applySettingsAutofillSuppression()
   loadSettings()
-  loadSubscriptionGroups()
+  loadGroups()
   loadAdminApiKey()
   loadOverloadCooldownSettings()
   loadStreamTimeoutSettings()
@@ -4297,6 +4906,11 @@ onMounted(() => {
   loadBetaPolicySettings()
   loadProviders()
 })
+
+onUpdated(() => {
+  applySettingsAutofillSuppression()
+})
+
 </script>
 
 <style scoped>
@@ -4311,6 +4925,12 @@ onMounted(() => {
 /* ============ Settings Tab Navigation ============ */
 
 /* Scroll container: thin scrollbar on PC, auto-hide on mobile */
+.settings-tabs-shell {
+  @apply rounded-2xl border border-gray-100 bg-white/80 p-1 backdrop-blur-sm
+         dark:border-dark-700/50 dark:bg-dark-800/80;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.04), 0 1px 2px rgb(0 0 0 / 0.02);
+}
+
 .settings-tabs-scroll {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -4339,10 +4959,7 @@ onMounted(() => {
 }
 
 .settings-tabs {
-  @apply inline-flex min-w-full gap-0.5 rounded-2xl
-         border border-gray-100 bg-white/80 p-1 backdrop-blur-sm
-         dark:border-dark-700/50 dark:bg-dark-800/80;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.04), 0 1px 2px rgb(0 0 0 / 0.02);
+  @apply inline-flex min-w-full gap-0.5;
 }
 
 @media (min-width: 640px) {

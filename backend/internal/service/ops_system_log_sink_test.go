@@ -60,6 +60,20 @@ func TestOpsSystemLogSink_ShouldIndex(t *testing.T) {
 			want: true,
 		},
 		{
+			name:  "openai warm pool component",
+			event: &logger.LogEvent{Level: "info", Component: "service.openai_warm_pool"},
+			want:  true,
+		},
+		{
+			name: "openai warm pool component from fields",
+			event: &logger.LogEvent{
+				Level:     "info",
+				Component: "",
+				Fields:    map[string]any{"component": "service.openai_warm_pool"},
+			},
+			want: true,
+		},
+		{
 			name:  "plain info",
 			event: &logger.LogEvent{Level: "info", Component: "app"},
 			want:  false,

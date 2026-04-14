@@ -304,7 +304,7 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
 		usage, err := s.getOpenAIUsage(ctx, account, forceRefresh)
-		if err == nil {
+		if err == nil && usageAllowsRecoverableErrorClear(usage) {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
@@ -312,7 +312,7 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 
 	if account.Platform == PlatformGemini {
 		usage, err := s.getGeminiUsage(ctx, account)
-		if err == nil {
+		if err == nil && usageAllowsRecoverableErrorClear(usage) {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
@@ -321,7 +321,7 @@ func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, for
 	// Antigravity 平台：使用 AntigravityQuotaFetcher 获取额度
 	if account.Platform == PlatformAntigravity {
 		usage, err := s.getAntigravityUsage(ctx, account)
-		if err == nil {
+		if err == nil && usageAllowsRecoverableErrorClear(usage) {
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
@@ -500,6 +500,7 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if account == nil {
 		return usage, nil
 	}
+	syncOpenAICodexRateLimitFromExtra(ctx, s.accountRepo, account, now)
 
 	if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
 		usage.FiveHour = progress
@@ -527,7 +528,12 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	if forceRefresh {
 		updates, resetAt, err := s.probeOpenAICodexSnapshot(ctx, account)
 		if err != nil {
-			usage.ErrorCode = "network_error"
+			if isOpenAIUsageProbeUnauthorizedError(err) {
+				usage.ErrorCode = errorCodeUnauthenticated
+				usage.NeedsReauth = true
+			} else {
+				usage.ErrorCode = errorCodeNetworkError
+			}
 			usage.Error = err.Error()
 			return usage, nil
 		}
@@ -777,30 +783,6 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 			slog.Warn("openai_codex_probe_snapshot_persist_failed", "account_id", accountID, "error", err)
 		}
 	}()
-}
-
-func codexUsagePercentExhausted(value *float64) bool {
-	return value != nil && *value >= 100-1e-9
-}
-
-func codexRateLimitResetAtFromSnapshot(snapshot *OpenAICodexUsageSnapshot, fallbackNow time.Time) *time.Time {
-	if snapshot == nil {
-		return nil
-	}
-	normalized := snapshot.Normalize()
-	if normalized == nil {
-		return nil
-	}
-	baseTime := codexSnapshotBaseTime(snapshot, fallbackNow)
-	if codexUsagePercentExhausted(normalized.Used7dPercent) && normalized.Reset7dSeconds != nil {
-		resetAt := baseTime.Add(time.Duration(*normalized.Reset7dSeconds) * time.Second)
-		return &resetAt
-	}
-	if codexUsagePercentExhausted(normalized.Used5hPercent) && normalized.Reset5hSeconds != nil {
-		resetAt := baseTime.Add(time.Duration(*normalized.Reset5hSeconds) * time.Second)
-		return &resetAt
-	}
-	return nil
 }
 
 func extractOpenAICodexProbeSnapshot(resp *http.Response) (map[string]any, *time.Time, error) {
@@ -1318,6 +1300,19 @@ func parseTime(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unable to parse time: %s", s)
+}
+
+func usageAllowsRecoverableErrorClear(info *UsageInfo) bool {
+	if info == nil {
+		return false
+	}
+	if strings.TrimSpace(info.ErrorCode) != "" || strings.TrimSpace(info.Error) != "" {
+		return false
+	}
+	if info.IsForbidden || info.NeedsVerify || info.IsBanned || info.NeedsReauth {
+		return false
+	}
+	return true
 }
 
 func (s *AccountUsageService) tryClearRecoverableAccountError(ctx context.Context, account *Account) {

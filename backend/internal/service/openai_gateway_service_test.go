@@ -54,10 +54,80 @@ func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account,
 	return nil, errors.New("account not found")
 }
 
+func (r stubOpenAIAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	if len(ids) == 0 {
+		return []*Account{}, nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]*Account, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		for i := range r.accounts {
+			if r.accounts[i].ID == id {
+				acc := r.accounts[i]
+				out = append(out, &acc)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (r stubOpenAIAccountRepo) ListSchedulable(ctx context.Context) ([]Account, error) {
+	var result []Account
+	for _, acc := range r.accounts {
+		if acc.IsSchedulable() {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (r stubOpenAIAccountRepo) hasAnyGroupMetadata() bool {
+	for _, acc := range r.accounts {
+		if len(acc.Groups) > 0 || len(acc.GroupIDs) > 0 || len(acc.AccountGroups) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (r stubOpenAIAccountRepo) matchesGroup(groupID int64, acc Account) bool {
+	if groupID <= 0 {
+		return true
+	}
+	if !r.hasAnyGroupMetadata() {
+		return true
+	}
+	return opsRealtimeAccountMatchesGroup(acc, groupID)
+}
+
+func (r stubOpenAIAccountRepo) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
+	var result []Account
+	for _, acc := range r.accounts {
+		if !acc.IsSchedulable() {
+			continue
+		}
+		if r.matchesGroup(groupID, acc) {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
 func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range r.accounts {
-		if acc.Platform == platform {
+		if !acc.IsSchedulable() || acc.Platform != platform {
+			continue
+		}
+		if r.matchesGroup(groupID, acc) {
 			result = append(result, acc)
 		}
 	}
@@ -67,7 +137,7 @@ func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.C
 func (r stubOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range r.accounts {
-		if acc.Platform == platform {
+		if acc.IsSchedulable() && acc.Platform == platform {
 			result = append(result, acc)
 		}
 	}

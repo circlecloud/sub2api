@@ -3949,6 +3949,113 @@ export default {
           requestsWithFirstToken: '首 Token 样本数'
         }
       },
+      openaiWarmPool: {
+        title: 'OpenAI 预热池',
+        description: '查看分组池、全局池和网络异常池三层预热状态以及分组覆盖情况。',
+        loadFailed: '加载 OpenAI 预热池监控数据失败',
+        disabledHint: '实时运维监控已关闭，暂时无法查看预热池状态。',
+        featureDisabledHint: 'OpenAI 预热池当前未启用。',
+        readerUnavailableHint: '预热探测依赖的用量读取器尚未就绪，监控数据可能不完整。',
+        bootstrappingHint: '预热池首次初始化中，首轮分组池 / 全局池正在补齐，当前数值可能暂时为 0。',
+        sharedBucket: '共享桶',
+        empty: '当前暂无活跃的 OpenAI 分组池。',
+        accountEmpty: '当前分组下暂无可展示的预热池账号状态。',
+        viewReadyList: '查看全局池就绪列表',
+        triggerGlobalRefill: '补充全局池',
+        triggerGlobalRefillLoading: '补充中...',
+        triggerGlobalRefillSuccess: '已触发全局池补充',
+        triggerGlobalRefillFailed: '触发全局池补充失败',
+        readyListTitle: '全局池就绪账号列表',
+        readyListEmpty: '当前筛选范围内暂无全局池就绪账号。',
+        readyListLoadFailed: '加载全局池就绪账号列表失败',
+        logTitle: '最近日志',
+        logEmpty: '当前时间范围内暂无预热池日志。',
+        logLoadFailed: '加载预热池日志失败',
+        bucketTitle: '分组池列表',
+        accountTitle: '分组账号状态',
+        networkErrorTitle: '网络异常池',
+        summary: {
+          bucketReadyAccounts: '分组池',
+          globalReadyAccounts: '全局池（去重）',
+          globalReadyAccountsHint: '按活跃组共享覆盖计算，当前活跃组数：{count}',
+          probingAccounts: '探测中',
+          coolingAccounts: '冷却中',
+          networkErrorAccounts: '网络异常池',
+          takeCount: '取走次数',
+          networkErrorPoolFull: '网络异常池已满',
+          trackedAccounts: '已跟踪账号：{count}',
+          activeGroups: '活跃组：{count}',
+          targetPerGroup: '每活跃组目标：{count}',
+          refillPerGroup: '每活跃组低水位：{count}',
+          groupsBelowTarget: '未达目标组：{count}',
+          groupsBelowRefill: '低于低水位组：{count}',
+          lastBucketMaintenance: '最近分组池维护：{time}',
+          lastGlobalMaintenance: '最近全局池维护：{time}'
+        },
+        table: {
+          group: '分组',
+          ready: '分组池（全局覆盖）',
+          takeCount: '取走次数',
+          schedulable: '可调度',
+          probing: '探测中',
+          cooling: '冷却中',
+          status: '状态',
+          lastAccess: '最近访问',
+          lastRefill: '最近补池'
+        },
+        coverage: {
+          title: '活跃组覆盖',
+          empty: '当前没有需要维护的活跃组覆盖数据。',
+          table: {
+            group: '活跃组',
+            coverage: '当前覆盖',
+            target: '目标',
+            refillBelow: '低水位',
+            status: '状态'
+          },
+          status: {
+            targetMet: '已达目标',
+            refillMet: '高于低水位',
+            refillBelow: '低于低水位'
+          }
+        },
+        bucketStatus: {
+          normal: '正常',
+          pendingRefill: '待补充',
+          refilling: '补充中',
+          all: '全部'
+        },
+        globalStatus: {
+          normal: '正常',
+          pendingRefill: '待补充',
+          refilling: '补充中',
+          all: '全部'
+        },
+        accountTable: {
+          name: '账号',
+          state: '状态',
+          priority: '优先级',
+          expiresAt: '全局池到期时间',
+          failUntil: '冷却到',
+          networkErrorUntil: '网络异常池到期'
+        },
+        readyListTable: {
+          groups: '所属分组',
+          verifiedAt: '验证时间'
+        },
+        networkError: {
+          count: '当前数量',
+          capacity: '容量上限',
+          oldestEnteredAt: '最早进入时间'
+        },
+        state: {
+          ready: '就绪',
+          probing: '探测中',
+          cooling: '冷却中',
+          network_error: '网络异常',
+          idle: '空闲'
+        }
+      },
       customTimeRange: {
         startTime: '开始时间',
         endTime: '结束时间'
@@ -4784,6 +4891,53 @@ export default {
         allowUngroupedKey: '允许未分组 Key 调度',
         allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。'
       },
+      openaiWarmPool: {
+        title: 'OpenAI 预热池',
+        description: '控制 OpenAI OAuth 账号的分组池、全局池和网络异常池三层预热行为。',
+        sharedHint: '全局池预热结果在账号级别共享，同一账号可服务多个分组；分组池仅表示分组级直接命中层。',
+        enabled: '启用 OpenAI 预热池',
+        enabledHint: '开启后，请求会优先尝试当前分组池中最近探测成功的 OpenAI OAuth 账号。',
+        bucketTitle: '分组池',
+        bucketTargetSize: '分组池目标大小',
+        bucketTargetSizeHint: '每个分组希望维持的分组池账号数量。',
+        bucketRefillBelow: '分组池低水位',
+        bucketRefillBelowHint: '当分组池数量低于该值时，触发分组池补池。',
+        bucketSyncFillMin: '分组池同步补齐最小值',
+        bucketSyncFillMinHint: '首次冷启动请求会先同步拿到首个可用账号，剩余账号继续在后台补到该值。',
+        bucketEntryTtlSeconds: '分组池复检周期（秒）',
+        bucketEntryTtlSecondsHint: '账号进入分组池后，多久开始触发独立复检；到时间不会直接移出分组池，只有复检失败才会移出。',
+        bucketRefillCooldownSeconds: '分组池补池冷却（秒）',
+        bucketRefillCooldownSecondsHint: '同一分组池连续触发补池的最短间隔。',
+        bucketRefillIntervalSeconds: '分组池扫描周期（秒）',
+        bucketRefillIntervalSecondsHint: '后台维护活跃分组池的扫描周期；设为 0 表示关闭。',
+        globalTitle: '全局池',
+        globalTargetSize: '全局池目标大小',
+        globalTargetSizeHint: '每个活跃分组需要达到的全局覆盖目标。共享账号会同时覆盖多个活跃分组，所以不是简单按全局去重账号总数计算。',
+        globalRefillBelow: '全局池低水位',
+        globalRefillBelowHint: '当任一活跃分组的全局覆盖低于该值时，触发全局池补池；不是按全局去重账号总数判断。',
+        globalEntryTtlSeconds: '全局池有效期（秒）',
+        globalEntryTtlSecondsHint: '账号进入全局池后的就绪有效时间；若账号已不属于任何当前活跃分组，会被提前清出全局池。',
+        globalRefillCooldownSeconds: '全局池补池冷却（秒）',
+        globalRefillCooldownSecondsHint: '连续触发全局池补池的最短间隔。',
+        globalRefillIntervalSeconds: '全局池扫描周期（秒）',
+        globalRefillIntervalSecondsHint: '后台维护全局池的扫描周期；设为 0 表示关闭。',
+        networkErrorTitle: '网络异常池',
+        networkErrorPoolSize: '网络异常池容量',
+        networkErrorPoolSizeHint: '最近探测为网络异常的账号会进入网络异常池。',
+        networkErrorEntryTtlSeconds: '网络异常池停留时间（秒）',
+        networkErrorEntryTtlSecondsHint: '账号进入网络异常池后，多久后允许再次被全局池优先回收。',
+        probeTitle: '探测',
+        probeMaxCandidates: '单轮最大候选数',
+        probeMaxCandidatesHint: '每轮最多探测多少个候选账号。',
+        probeConcurrency: '探测并发度',
+        probeConcurrencyHint: '同时允许多少个账号执行用量探测。',
+        probeTimeoutSeconds: '探测超时（秒）',
+        probeTimeoutSecondsHint: '单个账号执行用量探测的超时时间。',
+        probeFailureCooldownSeconds: '失败冷却（秒）',
+        probeFailureCooldownSecondsHint: '非网络类探测失败后，多长时间内不重复探测该账号。',
+        startupGroups: '启动预热分组',
+        startupGroupsHint: '仅服务启动时用于首轮预热。请选择已有 OpenAI 分组；未选择任何分组时，不执行启动预热。'
+      },
       gatewayForwarding: {
         title: '请求转发行为',
         description: '控制请求转发到上游 OAuth 账号时的行为',
@@ -4885,7 +5039,7 @@ export default {
         homeContentIframeWarning:
           '⚠️ iframe 模式提示：部分网站设置了 X-Frame-Options 或 CSP 安全策略，禁止被嵌入到 iframe 中。如果页面显示空白或报错，请确认目标网站允许被嵌入，或考虑使用 HTML 模式自行构建页面内容。',
         hideCcsImportButton: '隐藏 CCS 导入按钮',
-        hideCcsImportButtonHint: '启用后将在 API Keys 页面隐藏"导入 CCS"按钮'
+        hideCcsImportButtonHint: '启用后将在 API Keys 页面隐藏"导入 CCS"按钮',
       },
       purchase: {
         title: '充值/订阅页面',

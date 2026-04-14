@@ -1,8 +1,8 @@
 <template>
   <div>
     <label class="input-label">
-      {{ t('admin.users.groups') }}
-      <span class="font-normal text-gray-400">{{ t('common.selectedCount', { count: modelValue.length }) }}</span>
+      {{ props.label || t('admin.users.groups') }}
+      <span class="font-normal text-gray-400">{{ t('common.selectedCount', { count: selectedGroupIds.length }) }}</span>
     </label>
     <div
       class="grid max-h-32 grid-cols-2 gap-1 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-dark-600 dark:bg-dark-800"
@@ -16,7 +16,7 @@
         <input
           type="checkbox"
           :value="group.id"
-          :checked="modelValue.includes(group.id)"
+          :checked="selectedGroupIds.includes(group.id)"
           @change="handleChange(group.id, ($event.target as HTMLInputElement).checked)"
           class="h-3.5 w-3.5 shrink-0 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500"
         />
@@ -48,8 +48,9 @@ import type { AdminGroup, GroupPlatform } from '@/types'
 const { t } = useI18n()
 
 interface Props {
-  modelValue: number[]
+  modelValue: number[] | null
   groups: AdminGroup[]
+  label?: string
   platform?: GroupPlatform // Optional platform filter
   mixedScheduling?: boolean // For antigravity accounts: allow anthropic/gemini groups
 }
@@ -58,6 +59,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   'update:modelValue': [value: number[]]
 }>()
+
+const selectedGroupIds = computed<number[]>(() => (Array.isArray(props.modelValue) ? props.modelValue : []))
 
 // Filter groups by platform if specified
 const filteredGroups = computed(() => {
@@ -75,9 +78,10 @@ const filteredGroups = computed(() => {
 })
 
 const handleChange = (groupId: number, checked: boolean) => {
+  const currentValue = selectedGroupIds.value
   const newValue = checked
-    ? [...props.modelValue, groupId]
-    : props.modelValue.filter((id) => id !== groupId)
+    ? [...currentValue, groupId]
+    : currentValue.filter((id) => id !== groupId)
   emit('update:modelValue', newValue)
 }
 </script>

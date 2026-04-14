@@ -23,6 +23,22 @@ type GroupCapacityService struct {
 	concurrencyService *ConcurrencyService
 	sessionLimitCache  SessionLimitCache
 	rpmCache           RPMCache
+	snapshotProvider   GroupCapacitySnapshotProvider
+	runtimeProvider    GroupCapacityRuntimeProvider
+}
+
+type GroupCapacityServiceOption func(*GroupCapacityService)
+
+func WithGroupCapacitySnapshotProvider(provider GroupCapacitySnapshotProvider) GroupCapacityServiceOption {
+	return func(s *GroupCapacityService) {
+		s.snapshotProvider = provider
+	}
+}
+
+func WithGroupCapacityRuntimeProvider(provider GroupCapacityRuntimeProvider) GroupCapacityServiceOption {
+	return func(s *GroupCapacityService) {
+		s.runtimeProvider = provider
+	}
 }
 
 // NewGroupCapacityService creates a new GroupCapacityService.
@@ -32,14 +48,21 @@ func NewGroupCapacityService(
 	concurrencyService *ConcurrencyService,
 	sessionLimitCache SessionLimitCache,
 	rpmCache RPMCache,
+	options ...GroupCapacityServiceOption,
 ) *GroupCapacityService {
-	return &GroupCapacityService{
+	svc := &GroupCapacityService{
 		accountRepo:        accountRepo,
 		groupRepo:          groupRepo,
 		concurrencyService: concurrencyService,
 		sessionLimitCache:  sessionLimitCache,
 		rpmCache:           rpmCache,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(svc)
+		}
+	}
+	return svc
 }
 
 // GetAllGroupCapacity returns capacity summary for all active groups.
@@ -53,7 +76,6 @@ func (s *GroupCapacityService) GetAllGroupCapacity(ctx context.Context) ([]Group
 	for i := range groups {
 		cap, err := s.getGroupCapacity(ctx, groups[i].ID)
 		if err != nil {
-			// Skip groups with errors, return partial results
 			continue
 		}
 		cap.GroupID = groups[i].ID
@@ -63,6 +85,15 @@ func (s *GroupCapacityService) GetAllGroupCapacity(ctx context.Context) ([]Group
 }
 
 func (s *GroupCapacityService) getGroupCapacity(ctx context.Context, groupID int64) (GroupCapacitySummary, error) {
+	if summary, ok, err := s.getGroupCapacityFromProviders(ctx, groupID); ok {
+		return summary, err
+	} else if err != nil {
+		return GroupCapacitySummary{}, err
+	}
+	return s.getGroupCapacityLegacy(ctx, groupID)
+}
+
+func (s *GroupCapacityService) getGroupCapacityLegacy(ctx context.Context, groupID int64) (GroupCapacitySummary, error) {
 	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, groupID)
 	if err != nil {
 		return GroupCapacitySummary{}, err
@@ -96,7 +127,10 @@ func (s *GroupCapacityService) getGroupCapacity(ctx context.Context, groupID int
 	}
 
 	// Batch query runtime data from Redis
-	concurrencyMap, _ := s.concurrencyService.GetAccountConcurrencyBatch(ctx, accountIDs)
+	concurrencyMap := map[int64]int{}
+	if s.concurrencyService != nil {
+		concurrencyMap, _ = s.concurrencyService.GetAccountConcurrencyBatch(ctx, accountIDs)
+	}
 
 	var sessionsMap map[int64]int
 	if sessionsMax > 0 && s.sessionLimitCache != nil {

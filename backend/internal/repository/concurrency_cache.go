@@ -34,6 +34,10 @@ const (
 
 	// 默认槽位过期时间（分钟），可通过配置覆盖
 	defaultSlotTTLMinutes = 15
+
+	// 后台清理活跃账号槽位时的扫描/批处理大小。
+	cleanupExpiredSlotScanCount = 200
+	cleanupExpiredSlotBatchSize = 100
 )
 
 var (
@@ -494,6 +498,10 @@ func (c *concurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accou
 	return err
 }
 
+func (c *concurrencyCache) CleanupExpiredActiveAccountSlots(ctx context.Context) error {
+	return c.cleanupExpiredSlotsByPattern(ctx, accountSlotKeyPrefix+"*")
+}
+
 func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
 	if activeRequestPrefix == "" {
 		return nil
@@ -518,12 +526,48 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 	return nil
 }
 
-// cleanupSlotsByPattern 扫描匹配 pattern 的有序集合键，批量调用 Lua 脚本清理非当前进程成员。
-func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, activePrefix string) error {
-	const scanCount = 200
+// cleanupExpiredSlotsByPattern 扫描匹配 pattern 的账号槽位键，并分批复用 cleanupExpiredSlotsScript 清理过期成员。
+func (c *concurrencyCache) cleanupExpiredSlotsByPattern(ctx context.Context, pattern string) error {
 	var cursor uint64
 	for {
-		keys, nextCursor, err := c.rdb.Scan(ctx, cursor, pattern, scanCount).Result()
+		keys, nextCursor, err := c.rdb.Scan(ctx, cursor, pattern, cleanupExpiredSlotScanCount).Result()
+		if err != nil {
+			return fmt.Errorf("scan %s: %w", pattern, err)
+		}
+		if err := c.cleanupExpiredSlotKeyBatch(ctx, keys); err != nil {
+			return fmt.Errorf("cleanup expired slots %s: %w", pattern, err)
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return nil
+}
+
+func (c *concurrencyCache) cleanupExpiredSlotKeyBatch(ctx context.Context, keys []string) error {
+	for start := 0; start < len(keys); start += cleanupExpiredSlotBatchSize {
+		end := start + cleanupExpiredSlotBatchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+
+		pipe := c.rdb.Pipeline()
+		for _, key := range keys[start:end] {
+			cleanupExpiredSlotsScript.Eval(ctx, pipe, []string{key}, c.slotTTLSeconds)
+		}
+		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+			return err
+		}
+	}
+	return nil
+}
+
+// cleanupSlotsByPattern 扫描匹配 pattern 的有序集合键，批量调用 Lua 脚本清理非当前进程成员。
+func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, activePrefix string) error {
+	var cursor uint64
+	for {
+		keys, nextCursor, err := c.rdb.Scan(ctx, cursor, pattern, cleanupExpiredSlotScanCount).Result()
 		if err != nil {
 			return fmt.Errorf("scan %s: %w", pattern, err)
 		}

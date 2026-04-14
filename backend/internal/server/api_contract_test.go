@@ -61,7 +61,7 @@ func TestAPIContracts(t *testing.T) {
 					"balance_notify_enabled": false,
 					"balance_notify_threshold_type": "",
 					"balance_notify_threshold": null,
-					"balance_notify_extra_emails": null,
+					"balance_notify_extra_emails": [],
 					"total_recharged": 0,
 					"run_mode": "standard"
 				}
@@ -587,7 +587,9 @@ func TestAPIContracts(t *testing.T) {
 					"purchase_subscription_enabled": false,
 					"purchase_subscription_url": "",
 					"table_default_page_size": 20,
-						"table_page_size_options": [10, 20, 50, 100],
+					"table_page_size_options": [10, 20, 50, 100],
+					"custom_menu_items": [],
+					"custom_endpoints": [],
 					"min_claude_code_version": "",
 					"max_claude_code_version": "",
 					"allow_ungrouped_key_scheduling": false,
@@ -596,8 +598,28 @@ func TestAPIContracts(t *testing.T) {
 					"enable_fingerprint_unification": true,
 					"enable_metadata_passthrough": false,
 					"web_search_emulation_enabled": false,
-					"custom_menu_items": [],
-					"custom_endpoints": [],
+					"enable_openai_stream_rectifier": true,
+					"openai_stream_response_header_rectifier_timeouts": [8, 10, 12],
+					"openai_stream_first_token_rectifier_timeouts": [5, 8, 10],
+					"openai_warm_pool_enabled": true,
+					"openai_warm_pool_bucket_target_size": 10,
+					"openai_warm_pool_bucket_refill_below": 3,
+					"openai_warm_pool_bucket_sync_fill_min": 1,
+					"openai_warm_pool_bucket_entry_ttl_seconds": 30,
+					"openai_warm_pool_bucket_refill_cooldown_seconds": 15,
+					"openai_warm_pool_bucket_refill_interval_seconds": 30,
+					"openai_warm_pool_global_target_size": 30,
+					"openai_warm_pool_global_refill_below": 10,
+					"openai_warm_pool_global_entry_ttl_seconds": 300,
+					"openai_warm_pool_global_refill_cooldown_seconds": 60,
+					"openai_warm_pool_global_refill_interval_seconds": 300,
+					"openai_warm_pool_network_error_pool_size": 3,
+					"openai_warm_pool_network_error_entry_ttl_seconds": 120,
+					"openai_warm_pool_probe_max_candidates": 24,
+					"openai_warm_pool_probe_concurrency": 4,
+					"openai_warm_pool_probe_timeout_seconds": 15,
+					"openai_warm_pool_probe_failure_cooldown_seconds": 120,
+					"openai_warm_pool_startup_group_ids": [],
 					"payment_enabled": false,
 					"payment_min_amount": 0,
 					"payment_max_amount": 0,
@@ -1071,7 +1093,7 @@ func (s *stubAccountRepo) List(ctx context.Context, params pagination.Pagination
 	return nil, nil, errors.New("not implemented")
 }
 
-func (s *stubAccountRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]service.Account, *pagination.PaginationResult, error) {
+func (s *stubAccountRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
 	return nil, nil, errors.New("not implemented")
 }
 

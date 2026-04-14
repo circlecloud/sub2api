@@ -7,10 +7,12 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"golang.org/x/sync/singleflight"
 )
 
 var ErrOpsDisabled = infraerrors.NotFound("OPS_DISABLED", "Ops monitoring is disabled")
@@ -53,7 +55,17 @@ type OpsService struct {
 	openAIGatewayService      *OpenAIGatewayService
 	geminiCompatService       *GeminiMessagesCompatService
 	antigravityGatewayService *AntigravityGatewayService
+	opsRealtimeCache          OpsRealtimeCache
 	systemLogSink             *OpsSystemLogSink
+
+	realtimeSnapshotOnce     sync.Once
+	realtimeAccountsCache    map[string]opsRealtimeAccountsCacheEntry
+	realtimeUsersCache       *opsRealtimeUsersCacheEntry
+	realtimeConcurrencyCache map[string]opsRealtimeConcurrencyCacheEntry
+	realtimeWarmPoolCache    map[string]opsWarmPoolResultCacheEntry
+	realtimeCacheMissLogAt   map[string]time.Time
+	realtimeSnapshotMu       sync.RWMutex
+	realtimeSnapshotFlight   singleflight.Group
 }
 
 func NewOpsService(
@@ -88,11 +100,59 @@ func NewOpsService(
 	return svc
 }
 
+func ProvideOpsService(
+	opsRepo OpsRepository,
+	settingRepo SettingRepository,
+	cfg *config.Config,
+	accountRepo AccountRepository,
+	userRepo UserRepository,
+	concurrencyService *ConcurrencyService,
+	gatewayService *GatewayService,
+	openAIGatewayService *OpenAIGatewayService,
+	geminiCompatService *GeminiMessagesCompatService,
+	antigravityGatewayService *AntigravityGatewayService,
+	opsRealtimeCache OpsRealtimeCache,
+	systemLogSink *OpsSystemLogSink,
+) *OpsService {
+	svc := NewOpsService(
+		opsRepo,
+		settingRepo,
+		cfg,
+		accountRepo,
+		userRepo,
+		concurrencyService,
+		gatewayService,
+		openAIGatewayService,
+		geminiCompatService,
+		antigravityGatewayService,
+		systemLogSink,
+	)
+	svc.opsRealtimeCache = opsRealtimeCache
+	return svc
+}
+
 func (s *OpsService) RequireMonitoringEnabled(ctx context.Context) error {
 	if s.IsMonitoringEnabled(ctx) {
 		return nil
 	}
 	return ErrOpsDisabled
+}
+
+func (s *OpsService) logRealtimeCacheMiss(scope string, err error) {
+	if s == nil || err == nil || strings.TrimSpace(scope) == "" {
+		return
+	}
+	s.initRealtimeSnapshotCache()
+	now := time.Now()
+	s.realtimeSnapshotMu.Lock()
+	last := s.realtimeCacheMissLogAt[scope]
+	if !last.IsZero() && now.Sub(last) < time.Minute {
+		s.realtimeSnapshotMu.Unlock()
+		return
+	}
+	s.realtimeCacheMissLogAt[scope] = now
+	s.realtimeSnapshotMu.Unlock()
+	log.Printf("[OpsService] realtime cache fallback (%s): %v", scope, err)
 }
 
 func (s *OpsService) IsMonitoringEnabled(ctx context.Context) bool {

@@ -24,6 +24,10 @@ const (
 
 	defaultSchedulerSnapshotMGetChunkSize  = 128
 	defaultSchedulerSnapshotWriteChunkSize = 256
+	schedulerBucketMetaTTL                 = 24 * time.Hour
+	schedulerAccountCacheTTL               = 24 * time.Hour
+	schedulerOutboxTTL                     = 7 * 24 * time.Hour
+	schedulerCompactSnapshotWriteChunkSize = 1000
 )
 
 type schedulerCache struct {
@@ -72,39 +76,10 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		return nil, false, err
 	}
 
-	snapshotKey := schedulerSnapshotKey(bucket, activeVal)
-	ids, err := c.rdb.ZRange(ctx, snapshotKey, 0, -1).Result()
-	if err != nil {
-		return nil, false, err
+	if accounts, handled, hit, err := c.getCompactSnapshot(ctx, bucket, activeVal); handled {
+		return accounts, hit, err
 	}
-	if len(ids) == 0 {
-		// 空快照视为缓存未命中，触发数据库回退查询
-		// 这解决了新分组创建后立即绑定账号时的竞态条件问题
-		return nil, false, nil
-	}
-
-	keys := make([]string, 0, len(ids))
-	for _, id := range ids {
-		keys = append(keys, schedulerAccountMetaKey(id))
-	}
-	values, err := c.mgetChunked(ctx, keys)
-	if err != nil {
-		return nil, false, err
-	}
-
-	accounts := make([]*service.Account, 0, len(values))
-	for _, val := range values {
-		if val == nil {
-			return nil, false, nil
-		}
-		account, err := decodeCachedAccount(val)
-		if err != nil {
-			return nil, false, err
-		}
-		accounts = append(accounts, account)
-	}
-
-	return accounts, true, nil
+	return c.getLegacySnapshot(ctx, bucket, activeVal)
 }
 
 func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.SchedulerBucket, accounts []service.Account) error {
@@ -118,44 +93,60 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 	}
 
 	versionStr := strconv.FormatInt(version, 10)
-	snapshotKey := schedulerSnapshotKey(bucket, versionStr)
+	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 
-	if err := c.writeAccounts(ctx, accounts); err != nil {
-		return err
+	if isCompactOpenAISnapshotBucket(bucket) {
+		if err := c.setCompactSnapshot(ctx, bucket, versionStr, accounts); err != nil {
+			_ = c.deleteSnapshotVersionData(context.Background(), bucket, versionStr)
+			return err
+		}
+	} else {
+		snapshotKey := schedulerSnapshotKey(bucket, versionStr)
+		if err := c.writeAccounts(ctx, accounts); err != nil {
+			return err
+		}
+
+		pipe := c.rdb.Pipeline()
+		if len(accounts) > 0 {
+			members := make([]redis.Z, 0, len(accounts))
+			for idx, account := range accounts {
+				members = append(members, redis.Z{
+					Score:  float64(idx),
+					Member: strconv.FormatInt(account.ID, 10),
+				})
+			}
+			for start := 0; start < len(members); start += c.writeChunkSize {
+				end := start + c.writeChunkSize
+				if end > len(members) {
+					end = len(members)
+				}
+				pipe.ZAdd(ctx, snapshotKey, members[start:end]...)
+			}
+		} else {
+			pipe.Del(ctx, snapshotKey)
+		}
+		pipe.Expire(ctx, snapshotKey, schedulerBucketMetaTTL)
+		if _, err := pipe.Exec(ctx); err != nil {
+			_ = c.deleteSnapshotVersionData(context.Background(), bucket, versionStr)
+			return err
+		}
 	}
 
 	pipe := c.rdb.Pipeline()
-	if len(accounts) > 0 {
-		// 使用序号作为 score，保持数据库返回的排序语义。
-		members := make([]redis.Z, 0, len(accounts))
-		for idx, account := range accounts {
-			members = append(members, redis.Z{
-				Score:  float64(idx),
-				Member: strconv.FormatInt(account.ID, 10),
-			})
-		}
-		for start := 0; start < len(members); start += c.writeChunkSize {
-			end := start + c.writeChunkSize
-			if end > len(members) {
-				end = len(members)
-			}
-			pipe.ZAdd(ctx, snapshotKey, members[start:end]...)
-		}
-	} else {
-		pipe.Del(ctx, snapshotKey)
-	}
-	pipe.Set(ctx, activeKey, versionStr, 0)
-	pipe.Set(ctx, schedulerBucketKey(schedulerReadyPrefix, bucket), "1", 0)
+	pipe.Set(ctx, activeKey, versionStr, schedulerBucketMetaTTL)
+	pipe.Set(ctx, readyKey, "1", schedulerBucketMetaTTL)
+	pipe.Expire(ctx, versionKey, schedulerBucketMetaTTL)
 	pipe.SAdd(ctx, schedulerBucketSetKey, bucket.String())
+	pipe.Expire(ctx, schedulerBucketSetKey, schedulerOutboxTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
+		_ = c.deleteSnapshotVersionData(context.Background(), bucket, versionStr)
 		return err
 	}
 
 	if oldActive != "" && oldActive != versionStr {
-		_ = c.rdb.Del(ctx, schedulerSnapshotKey(bucket, oldActive)).Err()
+		_ = c.deleteSnapshotVersionData(ctx, bucket, oldActive)
 	}
-
-	return nil
+	return c.pruneInactiveBucket(ctx, bucket)
 }
 
 func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*service.Account, error) {
@@ -220,8 +211,8 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 		if err != nil {
 			return err
 		}
-		pipe.Set(ctx, keys[i], updated, 0)
-		pipe.Set(ctx, schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)), metaPayload, 0)
+		pipe.Set(ctx, keys[i], updated, schedulerAccountCacheTTL)
+		pipe.Set(ctx, schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)), metaPayload, schedulerAccountCacheTTL)
 	}
 	_, err = pipe.Exec(ctx)
 	return err
@@ -264,7 +255,7 @@ func (c *schedulerCache) GetOutboxWatermark(ctx context.Context) (int64, error) 
 }
 
 func (c *schedulerCache) SetOutboxWatermark(ctx context.Context, id int64) error {
-	return c.rdb.Set(ctx, schedulerOutboxWatermarkKey, strconv.FormatInt(id, 10), 0).Err()
+	return c.rdb.Set(ctx, schedulerOutboxWatermarkKey, strconv.FormatInt(id, 10), schedulerOutboxTTL).Err()
 }
 
 func schedulerBucketKey(prefix string, bucket service.SchedulerBucket) string {
@@ -283,19 +274,100 @@ func schedulerAccountMetaKey(id string) string {
 	return schedulerAccountMetaPrefix + id
 }
 
+func (c *schedulerCache) getLegacySnapshot(ctx context.Context, bucket service.SchedulerBucket, version string) ([]*service.Account, bool, error) {
+	snapshotKey := schedulerSnapshotKey(bucket, version)
+	ids, err := c.rdb.ZRange(ctx, snapshotKey, 0, -1).Result()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ids) == 0 {
+		// 空快照视为缓存未命中，触发数据库回退查询
+		// 这解决了新分组创建后立即绑定账号时的竞态条件问题
+		return nil, false, nil
+	}
+
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, schedulerAccountMetaKey(id))
+	}
+	values, err := c.mgetChunked(ctx, keys)
+	if err != nil {
+		return nil, false, err
+	}
+
+	accounts := make([]*service.Account, 0, len(values))
+	for _, val := range values {
+		if val == nil {
+			return nil, false, nil
+		}
+		account, err := decodeCachedAccount(val)
+		if err != nil {
+			return nil, false, err
+		}
+		accounts = append(accounts, account)
+	}
+
+	return accounts, true, nil
+}
+
+func (c *schedulerCache) deleteSnapshotVersionData(ctx context.Context, bucket service.SchedulerBucket, version string) error {
+	if version == "" {
+		return nil
+	}
+	if err := c.deleteCompactSnapshot(ctx, bucket, version); err != nil {
+		return err
+	}
+	return c.rdb.Del(ctx, schedulerSnapshotKey(bucket, version)).Err()
+}
+
+func (c *schedulerCache) pruneInactiveBucket(ctx context.Context, bucket service.SchedulerBucket) error {
+
+	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
+	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
+	versionKey := schedulerBucketKey(schedulerVersionPrefix, bucket)
+
+	activeExists, err := c.rdb.Exists(ctx, activeKey).Result()
+	if err != nil {
+		return err
+	}
+	readyExists, err := c.rdb.Exists(ctx, readyKey).Result()
+	if err != nil {
+		return err
+	}
+	versionExists, err := c.rdb.Exists(ctx, versionKey).Result()
+	if err != nil {
+		return err
+	}
+	if activeExists > 0 || readyExists > 0 || versionExists > 0 {
+		return nil
+	}
+	return c.rdb.SRem(ctx, schedulerBucketSetKey, bucket.String()).Err()
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }
 
-func decodeCachedAccount(val any) (*service.Account, error) {
-	var payload []byte
+//nolint:unused // 保留旧缓存编码辅助，避免当前提交扩大重构面
+func encodeCachedAccount(account service.Account) ([]byte, error) {
+	return json.Marshal(account)
+}
+
+func decodeCachedPayloadBytes(val any) ([]byte, error) {
 	switch raw := val.(type) {
 	case string:
-		payload = []byte(raw)
+		return []byte(raw), nil
 	case []byte:
-		payload = raw
+		return raw, nil
 	default:
 		return nil, fmt.Errorf("unexpected account cache type: %T", val)
+	}
+}
+
+func decodeCachedAccount(val any) (*service.Account, error) {
+	payload, err := decodeCachedPayloadBytes(val)
+	if err != nil {
+		return nil, err
 	}
 	var account service.Account
 	if err := json.Unmarshal(payload, &account); err != nil {
@@ -334,8 +406,8 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
 		}
 
 		id := strconv.FormatInt(account.ID, 10)
-		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, 0)
-		pipe.Set(ctx, schedulerAccountMetaKey(id), metaPayload, 0)
+		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, schedulerAccountCacheTTL)
+		pipe.Set(ctx, schedulerAccountMetaKey(id), metaPayload, schedulerAccountCacheTTL)
 		pending++
 		if pending >= c.writeChunkSize {
 			if err := flush(); err != nil {

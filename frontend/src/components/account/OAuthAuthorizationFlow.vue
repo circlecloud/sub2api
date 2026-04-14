@@ -70,28 +70,6 @@
                 t('admin.accounts.publicAddPage.importOptionLabel')
               }}</span>
             </label>
-            <label v-if="showSessionTokenOption" class="flex cursor-pointer items-center gap-2">
-              <input
-                v-model="inputMethod"
-                type="radio"
-                value="session_token"
-                class="text-blue-600 focus:ring-blue-500"
-              />
-              <span class="text-sm text-blue-900 dark:text-blue-200">{{
-                t(getOAuthKey('sessionTokenAuth'))
-              }}</span>
-            </label>
-            <label v-if="showAccessTokenOption" class="flex cursor-pointer items-center gap-2">
-              <input
-                v-model="inputMethod"
-                type="radio"
-                value="access_token"
-                class="text-blue-600 focus:ring-blue-500"
-              />
-              <span class="text-sm text-blue-900 dark:text-blue-200">{{
-                t('admin.accounts.oauth.openai.accessTokenAuth', '手动输入 AT')
-              }}</span>
-            </label>
           </div>
         </div>
 
@@ -827,8 +805,6 @@ interface Props {
   showRefreshTokenOption?: boolean // Whether to show refresh token input option (OpenAI only)
   showMobileRefreshTokenOption?: boolean // Whether to show mobile refresh token option (OpenAI only)
   showTokenFileOption?: boolean // Whether to show token file import option (OpenAI public page)
-  showSessionTokenOption?: boolean // Whether to show session token input option (Sora only)
-  showAccessTokenOption?: boolean // Whether to show access token input option (Sora only)
   tokenFilePreviewItems?: OAuthTokenFilePreviewItem[]
   tokenFileReadyCount?: number
   tokenFileInvalidCount?: number
@@ -855,8 +831,6 @@ const props = withDefaults(defineProps<Props>(), {
   showRefreshTokenOption: false,
   showMobileRefreshTokenOption: false,
   showTokenFileOption: false,
-  showSessionTokenOption: false,
-  showAccessTokenOption: false,
   tokenFilePreviewItems: () => [],
   tokenFileReadyCount: 0,
   tokenFileInvalidCount: 0,
@@ -876,8 +850,6 @@ const emit = defineEmits<{
   'cookie-auth': [sessionKey: string]
   'validate-refresh-token': [refreshToken: string]
   'validate-mobile-refresh-token': [refreshToken: string]
-  'validate-session-token': [sessionToken: string]
-  'import-access-token': [accessToken: string]
   'import-token-files': [files: File[]]
   'remove-token-file-item': [id: string]
   'clear-token-file-items': []
@@ -934,9 +906,7 @@ const showMethodSelection = computed(
     props.showCookieOption ||
     props.showRefreshTokenOption ||
     props.showMobileRefreshTokenOption ||
-    props.showTokenFileOption ||
-    props.showSessionTokenOption ||
-    props.showAccessTokenOption
+    props.showTokenFileOption
 )
 
 // Clipboard

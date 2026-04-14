@@ -2,15 +2,23 @@ package service
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type accountUsageCodexProbeRepo struct {
 	stubOpenAIAccountRepo
-	updateExtraCh chan map[string]any
-	rateLimitCh   chan time.Time
+	updateExtraCh   chan map[string]any
+	rateLimitCh     chan time.Time
+	errorID         int64
+	errorMessage    string
+	clearErrorID    int64
+	clearErrorCalls int
 }
 
 func (r *accountUsageCodexProbeRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -27,6 +35,25 @@ func (r *accountUsageCodexProbeRepo) UpdateExtra(_ context.Context, _ int64, upd
 func (r *accountUsageCodexProbeRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
 	if r.rateLimitCh != nil {
 		r.rateLimitCh <- resetAt
+	}
+	return nil
+}
+
+func (r *accountUsageCodexProbeRepo) SetError(_ context.Context, id int64, errorMsg string) error {
+	r.errorID = id
+	r.errorMessage = errorMsg
+	return nil
+}
+
+func (r *accountUsageCodexProbeRepo) ClearError(_ context.Context, id int64) error {
+	r.clearErrorID = id
+	r.clearErrorCalls++
+	for i := range r.accounts {
+		if r.accounts[i].ID == id {
+			r.accounts[i].Status = StatusActive
+			r.accounts[i].ErrorMessage = ""
+			break
+		}
 	}
 	return nil
 }
@@ -92,6 +119,44 @@ func TestExtractOpenAICodexProbeUpdatesAccepts429WithCodexHeaders(t *testing.T) 
 	}
 }
 
+func TestExtractOpenAICodexProbeSnapshotAccepts429WithResetAt(t *testing.T) {
+	t.Parallel()
+
+	headers := make(http.Header)
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "604800")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+	headers.Set("x-codex-secondary-used-percent", "100")
+	headers.Set("x-codex-secondary-reset-after-seconds", "18000")
+	headers.Set("x-codex-secondary-window-minutes", "300")
+
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(&http.Response{StatusCode: http.StatusTooManyRequests, Header: headers})
+	if err != nil {
+		t.Fatalf("extractOpenAICodexProbeSnapshot() error = %v", err)
+	}
+	if len(updates) == 0 {
+		t.Fatal("expected codex probe updates from 429 headers")
+	}
+	if resetAt == nil {
+		t.Fatal("expected resetAt from exhausted codex headers")
+	}
+}
+
+func TestExtractOpenAICodexProbeSnapshotIncludesBadRequestBody(t *testing.T) {
+	t.Parallel()
+
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(&http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"probe payload rejected"}}`)),
+	})
+	require.Error(t, err)
+	require.Nil(t, updates)
+	require.Nil(t, resetAt)
+	require.Contains(t, err.Error(), "status 400")
+	require.Contains(t, err.Error(), "probe payload rejected")
+}
+
 func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *testing.T) {
 	t.Parallel()
 
@@ -121,7 +186,7 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *
 	}
 }
 
-func TestAccountUsageService_GetOpenAIUsage_DoesNotPromoteCodexExtraToRateLimit(t *testing.T) {
+func TestAccountUsageService_GetOpenAIUsage_PromotesCodexExtraToRateLimit(t *testing.T) {
 	t.Parallel()
 
 	resetAt := time.Now().Add(6 * 24 * time.Hour).UTC().Truncate(time.Second)
@@ -130,6 +195,7 @@ func TestAccountUsageService_GetOpenAIUsage_DoesNotPromoteCodexExtraToRateLimit(
 	}
 	svc := &AccountUsageService{accountRepo: repo}
 	account := &Account{
+		ID:       123,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
 		Extra: map[string]any{
@@ -147,14 +213,95 @@ func TestAccountUsageService_GetOpenAIUsage_DoesNotPromoteCodexExtraToRateLimit(
 	if usage.SevenDay == nil || usage.SevenDay.Utilization != 100.0 {
 		t.Fatalf("预期 7 天用量仍然可见，实际为 %#v", usage.SevenDay)
 	}
-	if account.RateLimitResetAt != nil {
-		t.Fatalf("不应让已耗尽的 codex extra 改写运行时限流状态: %v", account.RateLimitResetAt)
+	if account.RateLimitResetAt == nil || !account.RateLimitResetAt.Equal(resetAt) {
+		t.Fatalf("预期 codex extra 同步到运行时限流状态，实际为 %v", account.RateLimitResetAt)
 	}
 	select {
 	case got := <-repo.rateLimitCh:
-		t.Fatalf("不应将已耗尽的 codex extra 持久化为运行时限流状态: %v", got)
-	case <-time.After(200 * time.Millisecond):
+		if !got.Equal(resetAt) {
+			t.Fatalf("SetRateLimited() = %v, want %v", got, resetAt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待 SetRateLimited 调用超时")
 	}
+}
+
+func TestAccountUsageService_HandleOpenAIUsageProbeUnauthorizedMarksError(t *testing.T) {
+	t.Parallel()
+
+	repo := &accountUsageCodexProbeRepo{}
+	svc := &AccountUsageService{accountRepo: repo}
+	account := &Account{ID: 901, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive}
+	body := []byte(`{"error":{"code":"token_revoked","message":"revoked by upstream"}}`)
+
+	svc.handleOpenAIUsageProbeUnauthorized(context.Background(), account, body, nil)
+
+	require.Equal(t, int64(901), repo.errorID)
+	require.Equal(t, StatusError, account.Status)
+	require.Contains(t, repo.errorMessage, "revoked by upstream")
+	require.Equal(t, repo.errorMessage, account.ErrorMessage)
+}
+
+func TestBuildOpenAIUsageProbeUnauthorizedErrorIncludesUpstreamMessage(t *testing.T) {
+	t.Parallel()
+
+	err := buildOpenAIUsageProbeUnauthorizedError([]byte(`{"error":{"message":"session expired"}}`))
+	require.Error(t, err)
+	require.True(t, isOpenAIUsageProbeUnauthorizedError(err))
+	require.Contains(t, err.Error(), "session expired")
+}
+
+func TestAccountUsageService_GetUsage_DoesNotClearRecoverableErrorOnDegradedOpenAIUsage(t *testing.T) {
+	t.Parallel()
+
+	repo := &accountUsageCodexProbeRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+		ID:           902,
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeOAuth,
+		Status:       StatusError,
+		ErrorMessage: "unauthenticated",
+	}}}}
+	svc := &AccountUsageService{accountRepo: repo}
+
+	usage, err := svc.GetUsage(context.Background(), 902, true)
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, errorCodeNetworkError, usage.ErrorCode)
+	require.Zero(t, repo.clearErrorCalls, "降级 usage 返回不应清理账号错误状态")
+	require.Equal(t, StatusError, repo.accounts[0].Status)
+	require.Equal(t, "unauthenticated", repo.accounts[0].ErrorMessage)
+}
+
+func TestAccountUsageService_GetUsage_ClearsRecoverableErrorAfterHealthyOpenAIUsage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	repo := &accountUsageCodexProbeRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+		ID:           903,
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeOAuth,
+		Status:       StatusError,
+		ErrorMessage: "unauthenticated",
+		Extra: map[string]any{
+			"openai_oauth_responses_websockets_v2_enabled": true,
+			"codex_usage_updated_at":                       now.Format(time.RFC3339),
+			"codex_5h_used_percent":                        12.0,
+			"codex_5h_reset_at":                            now.Add(2 * time.Hour).Format(time.RFC3339),
+			"codex_7d_used_percent":                        34.0,
+			"codex_7d_reset_at":                            now.Add(24 * time.Hour).Format(time.RFC3339),
+		},
+	}}}}
+	svc := &AccountUsageService{accountRepo: repo}
+
+	usage, err := svc.GetUsage(context.Background(), 903, false)
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.Empty(t, usage.ErrorCode)
+	require.Empty(t, usage.Error)
+	require.Equal(t, 1, repo.clearErrorCalls)
+	require.Equal(t, int64(903), repo.clearErrorID)
+	require.Equal(t, StatusActive, repo.accounts[0].Status)
+	require.Empty(t, repo.accounts[0].ErrorMessage)
 }
 
 func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {

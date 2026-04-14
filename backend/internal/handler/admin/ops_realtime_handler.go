@@ -45,7 +45,21 @@ func (h *OpsHandler) GetConcurrencyStats(c *gin.Context) {
 		groupID = &id
 	}
 
-	platform, group, account, collectedAt, err := h.opsService.GetConcurrencyStats(c.Request.Context(), platformFilter, groupID)
+	includeAccount := parseOpsExplicitIncludeAccount(c.Query("include_account"))
+	scopeRaw := strings.TrimSpace(c.Query("scope"))
+	if scopeRaw != "" {
+		switch strings.ToLower(scopeRaw) {
+		case "platform", "group", "account":
+		default:
+			response.BadRequest(c, "Invalid scope")
+			return
+		}
+	}
+	if strings.EqualFold(scopeRaw, "account") {
+		includeAccount = true
+	}
+	scope := normalizeOpsRealtimeScopeForHandler(scopeRaw, platformFilter, groupID, includeAccount)
+	platform, group, account, collectedAt, err := h.opsService.GetConcurrencyStatsWithOptions(c.Request.Context(), platformFilter, groupID, scope)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -138,7 +152,21 @@ func (h *OpsHandler) GetAccountAvailability(c *gin.Context) {
 		groupID = &id
 	}
 
-	platformStats, groupStats, accountStats, collectedAt, err := h.opsService.GetAccountAvailabilityStats(c.Request.Context(), platform, groupID)
+	includeAccount := parseOpsExplicitIncludeAccount(c.Query("include_account"))
+	scopeRaw := strings.TrimSpace(c.Query("scope"))
+	if scopeRaw != "" {
+		switch strings.ToLower(scopeRaw) {
+		case "platform", "group", "account":
+		default:
+			response.BadRequest(c, "Invalid scope")
+			return
+		}
+	}
+	if strings.EqualFold(scopeRaw, "account") {
+		includeAccount = true
+	}
+	scope := normalizeOpsRealtimeScopeForHandler(scopeRaw, platform, groupID, includeAccount)
+	platformStats, groupStats, accountStats, collectedAt, err := h.opsService.GetAccountAvailabilityStatsWithOptions(c.Request.Context(), platform, groupID, scope)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -154,6 +182,112 @@ func (h *OpsHandler) GetAccountAvailability(c *gin.Context) {
 		payload["timestamp"] = collectedAt.UTC()
 	}
 	response.Success(c, payload)
+}
+
+// GetOpenAIWarmPoolStats returns realtime OpenAI warm-pool visibility data.
+// GET /api/v1/admin/ops/openai-warm-pool
+func (h *OpsHandler) GetOpenAIWarmPoolStats(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	var groupID *int64
+	if v := strings.TrimSpace(c.Query("group_id")); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid group_id")
+			return
+		}
+		groupID = &id
+	}
+
+	includeAccount := parseOpsExplicitIncludeAccount(c.Query("include_account"))
+	accountState := parseOpsWarmPoolAccountState(c.Query("account_state"))
+	if strings.TrimSpace(c.Query("account_state")) != "" && accountState == "" {
+		response.BadRequest(c, "Invalid account_state")
+		return
+	}
+	accountsOnly := parseOpsExplicitIncludeAccount(strings.TrimSpace(c.Query("accounts_only")))
+	if accountsOnly {
+		includeAccount = true
+	}
+
+	stats, err := h.opsService.GetOpenAIWarmPoolStatsWithOptions(c.Request.Context(), groupID, includeAccount, accountState, accountsOnly)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, stats)
+}
+
+// TriggerOpenAIWarmPoolGlobalRefill manually refills the OpenAI global warm pool.
+// POST /api/v1/admin/ops/openai-warm-pool/refill-global
+func (h *OpsHandler) TriggerOpenAIWarmPoolGlobalRefill(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.TriggerOpenAIWarmPoolGlobalRefill(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"ok": true})
+}
+
+//nolint:unused // 预留给后续 ops 账户明细筛选接线
+func parseOpsIncludeAccount(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func parseOpsExplicitIncludeAccount(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeOpsRealtimeScopeForHandler(raw string, platformFilter string, groupIDFilter *int64, includeAccount bool) service.OpsRealtimeScope {
+	scopeRaw := strings.TrimSpace(raw)
+	if strings.EqualFold(scopeRaw, "account") {
+		includeAccount = true
+	}
+	if scopeRaw == "" && groupIDFilter != nil && *groupIDFilter > 0 {
+		if includeAccount {
+			scopeRaw = "account"
+		} else {
+			scopeRaw = "group"
+		}
+	}
+	if scopeRaw == "" && strings.TrimSpace(platformFilter) != "" {
+		scopeRaw = "group"
+	}
+	if scopeRaw == "" {
+		scopeRaw = "platform"
+	}
+	return service.NormalizeOpsRealtimeScope(scopeRaw, platformFilter, groupIDFilter, includeAccount)
+}
+
+func parseOpsWarmPoolAccountState(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "ready", "probing", "cooling", "network_error", "idle":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
 }
 
 func parseOpsRealtimeWindow(v string) (time.Duration, string, bool) {

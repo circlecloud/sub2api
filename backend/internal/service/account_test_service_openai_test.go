@@ -221,6 +221,31 @@ func TestAccountTestService_OpenAI401OAuthMarksTempUnschedulable(t *testing.T) {
 	require.Zero(t, repo.rateLimitedID)
 }
 
+func TestAccountTestService_OpenAI401UnauthorizedDetailMarksError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusUnauthorized, `{"detail":"Unauthorized"}`)
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
+	account := &Account{
+		ID:          65,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Equal(t, int64(65), repo.errorID)
+	require.Zero(t, repo.tempUnschedID)
+	require.Contains(t, repo.errorMessage, "Unauthorized")
+}
+
 func TestAccountTestService_OpenAI401AccountDeactivatedMarksError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()

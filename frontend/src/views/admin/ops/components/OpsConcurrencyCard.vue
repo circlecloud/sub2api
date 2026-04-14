@@ -268,10 +268,19 @@ async function loadData() {
       const userData = await opsAPI.getUserConcurrencyStats()
       userConcurrency.value = userData
     } else {
-      // 常规模式加载账号/平台/分组数据
+      // 常规模式按当前展示维度只请求必要聚合，避免平台视图还构建全量分组/账号结果。
+      const scope = displayDimension.value === 'account'
+        ? 'account'
+        : displayDimension.value === 'group'
+          ? 'group'
+          : 'platform'
+      const requestOptions = {
+        includeAccount: scope === 'account',
+        scope
+      } as const
       const [concData, availData] = await Promise.all([
-        opsAPI.getConcurrencyStats(props.platformFilter, props.groupIdFilter),
-        opsAPI.getAccountAvailabilityStats(props.platformFilter, props.groupIdFilter)
+        opsAPI.getConcurrencyStats(props.platformFilter, props.groupIdFilter, requestOptions),
+        opsAPI.getAccountAvailabilityStats(props.platformFilter, props.groupIdFilter, requestOptions)
       ])
       concurrency.value = concData
       availability.value = availData

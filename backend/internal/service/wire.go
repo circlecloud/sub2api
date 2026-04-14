@@ -196,10 +196,88 @@ func ProvideSchedulerSnapshotService(
 	accountRepo AccountRepository,
 	groupRepo GroupRepository,
 	cfg *config.Config,
+	opsRealtimeCache OpsRealtimeCache,
+	groupCapacityProjector *GroupCapacitySnapshotProjector,
 ) *SchedulerSnapshotService {
 	svc := NewSchedulerSnapshotService(cache, outboxRepo, accountRepo, groupRepo, cfg)
+	if groupCapacityProjector != nil {
+		svc.RegisterObserver(groupCapacityProjector)
+	}
+	if projector := NewOpsRealtimeProjector(opsRealtimeCache, accountRepo); projector != nil {
+		resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := opsRealtimeCache.ClearWarmPoolState(resetCtx); err != nil {
+			logger.LegacyPrintf("service.scheduler_snapshot", "[OpsRealtimeProjector] clear warm pool cache on startup failed: %v", err)
+		}
+		resetCancel()
+		svc.RegisterObserver(projector)
+		projector.Start(svc.stopCh)
+		rebuildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if err := projector.RebuildAll(rebuildCtx); err != nil {
+			logger.LegacyPrintf("service.scheduler_snapshot", "[OpsRealtimeProjector] initial rebuild failed: %v", err)
+		}
+		cancel()
+	}
 	svc.Start()
 	return svc
+}
+
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	proxyRepo ProxyRepository,
+	proxyProber ProxyExitInfoProber,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	opsRealtimeCache OpsRealtimeCache,
+	settingService *SettingService,
+	accountUsageService *AccountUsageService,
+) *OpenAIGatewayService {
+	svc := NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		proxyRepo,
+		proxyProber,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		resolver,
+		channelService,
+		balanceNotifyService,
+	)
+	svc.opsRealtimeCache = opsRealtimeCache
+	svc.settingService = settingService
+	svc.SetOpenAIWarmPoolUsageReader(accountUsageService)
+	return svc
+}
+
+func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiTokenCache) *OAuthRefreshAPI {
+	return NewOAuthRefreshAPI(accountRepo, tokenCache)
 }
 
 // ProvideRateLimitService creates RateLimitService with optional dependencies.
@@ -381,6 +459,34 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	return svc
 }
 
+func ProvideGroupCapacitySnapshotProvider(accountRepo AccountRepository, groupRepo GroupRepository, projector *GroupCapacitySnapshotProjector) GroupCapacitySnapshotProvider {
+	return NewGroupCapacitySnapshotProviderService(accountRepo, groupRepo, projector, 0)
+}
+
+func ProvideGroupCapacityRuntimeProvider(concurrencyService *ConcurrencyService, sessionLimitCache SessionLimitCache, rpmCache RPMCache) GroupCapacityRuntimeProvider {
+	return NewGroupCapacityRuntimeProviderService(concurrencyService, sessionLimitCache, rpmCache, 0, 0)
+}
+
+func ProvideGroupCapacityService(
+	accountRepo AccountRepository,
+	groupRepo GroupRepository,
+	concurrencyService *ConcurrencyService,
+	sessionLimitCache SessionLimitCache,
+	rpmCache RPMCache,
+	snapshotProvider GroupCapacitySnapshotProvider,
+	runtimeProvider GroupCapacityRuntimeProvider,
+) *GroupCapacityService {
+	return NewGroupCapacityService(
+		accountRepo,
+		groupRepo,
+		concurrencyService,
+		sessionLimitCache,
+		rpmCache,
+		WithGroupCapacitySnapshotProvider(snapshotProvider),
+		WithGroupCapacityRuntimeProvider(runtimeProvider),
+	)
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -401,7 +507,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementService,
 	NewAdminService,
 	NewGatewayService,
-	NewOpenAIGatewayService,
+	ProvideOpenAIGatewayService,
 	NewOAuthService,
 	NewOpenAIOAuthService,
 	NewGeminiOAuthService,
@@ -409,7 +515,7 @@ var ProviderSet = wire.NewSet(
 	NewCompositeTokenCacheInvalidator,
 	wire.Bind(new(TokenCacheInvalidator), new(*CompositeTokenCacheInvalidator)),
 	NewAntigravityOAuthService,
-	NewOAuthRefreshAPI,
+	ProvideOAuthRefreshAPI,
 	ProvideGeminiTokenProvider,
 	NewGeminiMessagesCompatService,
 	ProvideAntigravityTokenProvider,
@@ -423,7 +529,7 @@ var ProviderSet = wire.NewSet(
 	NewDataManagementService,
 	ProvideBackupService,
 	ProvideOpsSystemLogSink,
-	NewOpsService,
+	ProvideOpsService,
 	ProvideOpsMetricsCollector,
 	ProvideOpsAggregationService,
 	ProvideOpsAlertEvaluatorService,
@@ -461,7 +567,10 @@ var ProviderSet = wire.NewSet(
 	ProvideIdempotencyCleanupService,
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
-	NewGroupCapacityService,
+	NewGroupCapacitySnapshotProjector,
+	ProvideGroupCapacitySnapshotProvider,
+	ProvideGroupCapacityRuntimeProvider,
+	ProvideGroupCapacityService,
 	NewChannelService,
 	NewModelPricingResolver,
 	ProvidePaymentConfigService,

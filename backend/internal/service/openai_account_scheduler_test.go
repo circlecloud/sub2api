@@ -16,10 +16,14 @@ type openAISnapshotCacheStub struct {
 	SchedulerCache
 	snapshotAccounts []*Account
 	accountsByID     map[int64]*Account
+	snapshotHit      bool
 }
 
 func (s *openAISnapshotCacheStub) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
 	if len(s.snapshotAccounts) == 0 {
+		if s.snapshotHit {
+			return []*Account{}, true, nil
+		}
 		return nil, false, nil
 	}
 	out := make([]*Account, 0, len(s.snapshotAccounts))
@@ -63,6 +67,36 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyRateLimite
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
 	require.Equal(t, int64(31002), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_FallsBackToDBWhenSnapshotBucketIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(101011)
+	dbAccount := Account{
+		ID:          31011,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		GroupIDs:    []int64{groupID},
+	}
+	snapshotCache := &openAISnapshotCacheStub{snapshotHit: true, accountsByID: map[int64]*Account{dbAccount.ID: &dbAccount}}
+	snapshotService := &SchedulerSnapshotService{cache: snapshotCache, accountRepo: stubOpenAIAccountRepo{accounts: []Account{dbAccount}}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{dbAccount}},
+		cfg:                &config.Config{},
+		schedulerSnapshot:  snapshotService,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportAny)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, dbAccount.ID, selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 

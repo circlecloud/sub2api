@@ -158,6 +158,28 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.IngressModeDefault != "ctx_pool" {
 		t.Fatalf("Gateway.OpenAIWS.IngressModeDefault = %q, want %q", cfg.Gateway.OpenAIWS.IngressModeDefault, "ctx_pool")
 	}
+	if !cfg.Gateway.OpenAIWS.AccountWarmPool.Enabled {
+		t.Fatalf("Gateway.OpenAIWS.AccountWarmPool.Enabled = false, want true")
+	}
+	if cfg.Gateway.OpenAIWS.AccountWarmPool.BucketTargetSize != 10 {
+		t.Fatalf("Gateway.OpenAIWS.AccountWarmPool.BucketTargetSize = %d, want 10", cfg.Gateway.OpenAIWS.AccountWarmPool.BucketTargetSize)
+	}
+	if cfg.Gateway.OpenAIWS.AccountWarmPool.GlobalTargetSize != 30 {
+		t.Fatalf("Gateway.OpenAIWS.AccountWarmPool.GlobalTargetSize = %d, want 30", cfg.Gateway.OpenAIWS.AccountWarmPool.GlobalTargetSize)
+	}
+	if cfg.Gateway.OpenAIWS.AccountWarmPool.ProbeMaxCandidates != 24 {
+		t.Fatalf("Gateway.OpenAIWS.AccountWarmPool.ProbeMaxCandidates = %d, want 24", cfg.Gateway.OpenAIWS.AccountWarmPool.ProbeMaxCandidates)
+	}
+}
+
+func TestLoadInvalidOpenAIWarmPoolConfigDisablesFeature(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_WS_ACCOUNT_WARM_POOL_ENABLED", "true")
+	t.Setenv("GATEWAY_OPENAI_WS_ACCOUNT_WARM_POOL_BUCKET_TARGET_SIZE", "0")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.OpenAIWS.AccountWarmPool.Enabled)
 }
 
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {

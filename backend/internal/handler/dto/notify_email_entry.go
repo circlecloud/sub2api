@@ -13,7 +13,7 @@ type NotifyEmailEntry struct {
 // NotifyEmailEntriesFromService converts service entries to DTO entries.
 func NotifyEmailEntriesFromService(entries []service.NotifyEmailEntry) []NotifyEmailEntry {
 	if entries == nil {
-		return nil
+		return []NotifyEmailEntry{}
 	}
 	result := make([]NotifyEmailEntry, len(entries))
 	for i, e := range entries {

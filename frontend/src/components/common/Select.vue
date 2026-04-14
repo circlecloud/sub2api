@@ -175,10 +175,20 @@ const dropdownStyle = computed(() => {
   if (!triggerRect.value) return {}
 
   const rect = triggerRect.value
+  const viewportPadding = 8
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : rect.width
+  const availableWidth = Math.max(rect.width, viewportWidth - viewportPadding * 2)
+  const minWidth = Math.min(rect.width, viewportWidth - viewportPadding * 2)
+  const left = Math.min(
+    Math.max(viewportPadding, rect.left),
+    Math.max(viewportPadding, viewportWidth - availableWidth - viewportPadding)
+  )
+
   const style: Record<string, string> = {
     position: 'fixed',
-    left: `${rect.left}px`,
-    minWidth: `${rect.width}px`,
+    left: `${left}px`,
+    minWidth: `${Math.max(0, minWidth)}px`,
+    maxWidth: `${Math.max(0, viewportWidth - viewportPadding * 2)}px`,
     zIndex: '100000020'
   }
 
@@ -426,7 +436,7 @@ onUnmounted(() => {
 
 <style scoped>
 .select-trigger {
-  @apply flex w-full items-center justify-between gap-2;
+  @apply flex w-full min-w-0 items-center justify-between gap-2;
   @apply rounded-xl px-4 py-2.5 text-sm;
   @apply bg-white dark:bg-dark-800;
   @apply border border-gray-200 dark:border-dark-600;
@@ -460,7 +470,7 @@ onUnmounted(() => {
 
 <style>
 .select-dropdown-portal {
-  @apply w-max min-w-[200px];
+  @apply w-max min-w-[200px] max-w-[calc(100vw-1rem)];
   @apply bg-white dark:bg-dark-800;
   @apply rounded-xl;
   @apply border border-gray-200 dark:border-dark-700;

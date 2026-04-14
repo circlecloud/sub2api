@@ -2158,7 +2158,6 @@ const handleRefresh = async (a: Account) => {
 }
 const handleRefreshUsageWindow = async (a: Account) => {
   if (refreshingUsageWindowAccountId.value !== null || refreshingAccountId.value !== null || bulkRefreshingTokens.value || bulkRefreshingUsageWindows.value || batchTestingAccounts.value) return
-  if (!confirm(t('admin.accounts.refreshUsageWindowConfirm', { name: a.name }))) return
 
   refreshingUsageWindowAccountId.value = a.id
   try {

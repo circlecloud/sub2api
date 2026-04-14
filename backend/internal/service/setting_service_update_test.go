@@ -13,7 +13,9 @@ import (
 )
 
 type settingUpdateRepoStub struct {
-	updates map[string]string
+	updates          map[string]string
+	values           map[string]string
+	getMultipleCalls int
 }
 
 func (s *settingUpdateRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
@@ -29,7 +31,17 @@ func (s *settingUpdateRepoStub) Set(ctx context.Context, key, value string) erro
 }
 
 func (s *settingUpdateRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
-	panic("unexpected GetMultiple call")
+	s.getMultipleCalls++
+	result := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if s.values == nil {
+			continue
+		}
+		if value, ok := s.values[key]; ok {
+			result[key] = value
+		}
+	}
+	return result, nil
 }
 
 func (s *settingUpdateRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
@@ -192,6 +204,91 @@ func TestSettingService_UpdateSettings_RegistrationEmailSuffixWhitelist_Invalid(
 	})
 	require.Error(t, err)
 	require.Equal(t, "INVALID_REGISTRATION_EMAIL_SUFFIX_WHITELIST", infraerrors.Reason(err))
+}
+
+func TestSettingService_UpdateSettings_OpenAIWarmPool_PersistsAndRefreshesCache(t *testing.T) {
+	repo := &settingUpdateRepoStub{
+		values: map[string]string{
+			SettingKeyOpenAIWarmPoolEnabled:                     "true",
+			SettingKeyOpenAIWarmPoolBucketTargetSize:            "10",
+			SettingKeyOpenAIWarmPoolBucketRefillBelow:           "3",
+			SettingKeyOpenAIWarmPoolBucketSyncFillMin:           "1",
+			SettingKeyOpenAIWarmPoolBucketEntryTTLSeconds:       "30",
+			SettingKeyOpenAIWarmPoolBucketRefillCooldownSeconds: "15",
+			SettingKeyOpenAIWarmPoolBucketRefillIntervalSeconds: "30",
+			SettingKeyOpenAIWarmPoolGlobalTargetSize:            "30",
+			SettingKeyOpenAIWarmPoolGlobalRefillBelow:           "10",
+			SettingKeyOpenAIWarmPoolGlobalEntryTTLSeconds:       "300",
+			SettingKeyOpenAIWarmPoolGlobalRefillCooldownSeconds: "60",
+			SettingKeyOpenAIWarmPoolGlobalRefillIntervalSeconds: "300",
+			SettingKeyOpenAIWarmPoolNetworkErrorPoolSize:        "3",
+			SettingKeyOpenAIWarmPoolNetworkErrorEntryTTLSeconds: "120",
+			SettingKeyOpenAIWarmPoolProbeMaxCandidates:          "24",
+			SettingKeyOpenAIWarmPoolProbeConcurrency:            "4",
+			SettingKeyOpenAIWarmPoolProbeTimeoutSeconds:         "15",
+			SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds: "120",
+			SettingKeyOpenAIWarmPoolStartupGroupIDs:             "5,2,5",
+		},
+	}
+	openAIWarmPoolSF.Forget("openai_warm_pool")
+	openAIWarmPoolCache.Store((*cachedOpenAIWarmPoolSettings)(nil))
+	t.Cleanup(func() {
+		openAIWarmPoolSF.Forget("openai_warm_pool")
+		openAIWarmPoolCache.Store((*cachedOpenAIWarmPoolSettings)(nil))
+	})
+
+	svc := NewSettingService(repo, nil)
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		OpenAIWarmPoolEnabled:                     false,
+		OpenAIWarmPoolBucketTargetSize:            21,
+		OpenAIWarmPoolBucketRefillBelow:           8,
+		OpenAIWarmPoolBucketSyncFillMin:           4,
+		OpenAIWarmPoolBucketEntryTTLSeconds:       45,
+		OpenAIWarmPoolBucketRefillCooldownSeconds: 18,
+		OpenAIWarmPoolBucketRefillIntervalSeconds: 36,
+		OpenAIWarmPoolGlobalTargetSize:            44,
+		OpenAIWarmPoolGlobalRefillBelow:           12,
+		OpenAIWarmPoolGlobalEntryTTLSeconds:       600,
+		OpenAIWarmPoolGlobalRefillCooldownSeconds: 90,
+		OpenAIWarmPoolGlobalRefillIntervalSeconds: 420,
+		OpenAIWarmPoolNetworkErrorPoolSize:        5,
+		OpenAIWarmPoolNetworkErrorEntryTTLSeconds: 240,
+		OpenAIWarmPoolProbeMaxCandidates:          33,
+		OpenAIWarmPoolProbeConcurrency:            6,
+		OpenAIWarmPoolProbeTimeoutSeconds:         19,
+		OpenAIWarmPoolProbeFailureCooldownSeconds: 180,
+		OpenAIWarmPoolStartupGroupIDs:             []int64{9, 3, 9},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "false", repo.updates[SettingKeyOpenAIWarmPoolEnabled])
+	require.Equal(t, "21", repo.updates[SettingKeyOpenAIWarmPoolBucketTargetSize])
+	require.Equal(t, "8", repo.updates[SettingKeyOpenAIWarmPoolBucketRefillBelow])
+	require.Equal(t, "4", repo.updates[SettingKeyOpenAIWarmPoolBucketSyncFillMin])
+	require.Equal(t, "44", repo.updates[SettingKeyOpenAIWarmPoolGlobalTargetSize])
+	require.Equal(t, "12", repo.updates[SettingKeyOpenAIWarmPoolGlobalRefillBelow])
+	require.Equal(t, "33", repo.updates[SettingKeyOpenAIWarmPoolProbeMaxCandidates])
+	require.Equal(t, "6", repo.updates[SettingKeyOpenAIWarmPoolProbeConcurrency])
+	require.Equal(t, "19", repo.updates[SettingKeyOpenAIWarmPoolProbeTimeoutSeconds])
+	require.Equal(t, "180", repo.updates[SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds])
+	require.Equal(t, "3,9", repo.updates[SettingKeyOpenAIWarmPoolStartupGroupIDs])
+
+	warmPool := svc.GetOpenAIWarmPoolSettings(context.Background())
+	require.Zero(t, repo.getMultipleCalls)
+	require.False(t, warmPool.Enabled)
+	require.Equal(t, 21, warmPool.BucketTargetSize)
+	require.Equal(t, 8, warmPool.BucketRefillBelow)
+	require.Equal(t, 4, warmPool.BucketSyncFillMin)
+	require.Equal(t, 44, warmPool.GlobalTargetSize)
+	require.Equal(t, 12, warmPool.GlobalRefillBelow)
+	require.Equal(t, 600, warmPool.GlobalEntryTTLSeconds)
+	require.Equal(t, 5, warmPool.NetworkErrorPoolSize)
+	require.Equal(t, 240, warmPool.NetworkErrorEntryTTLSeconds)
+	require.Equal(t, 33, warmPool.ProbeMaxCandidates)
+	require.Equal(t, 6, warmPool.ProbeConcurrency)
+	require.Equal(t, 19, warmPool.ProbeTimeoutSeconds)
+	require.Equal(t, 180, warmPool.ProbeFailureCooldownSeconds)
+	require.Equal(t, []int64{3, 9}, warmPool.StartupGroupIDs)
 }
 
 func TestParseDefaultSubscriptions_NormalizesValues(t *testing.T) {
