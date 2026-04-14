@@ -214,7 +214,7 @@ func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken stri
 func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refreshToken string, proxyURL string, clientID string) (*OpenAITokenInfo, error) {
 	tokenResp, err := s.oauthClient.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 	if err != nil {
-		return nil, err
+		return nil, normalizeOpenAIRefreshError(err)
 	}
 
 	// Parse ID token to get user info
@@ -284,6 +284,40 @@ func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *Ope
 }
 
 // RefreshAccountToken refreshes token for an OpenAI OAuth account
+func isOpenAIRefreshTokenReusedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "refresh_token_reused") ||
+		strings.Contains(msg, "already been used to generate a new access token")
+}
+
+func isOpenAIAccountDeactivatedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "account_deactivated") ||
+		strings.Contains(msg, "account disabled by upstream")
+}
+
+func normalizeOpenAIRefreshError(err error) error {
+	if isOpenAIRefreshTokenReusedError(err) {
+		return infraerrors.BadRequest(
+			"OPENAI_OAUTH_REAUTH_REQUIRED",
+			"openai refresh token is no longer usable; please sign in again to re-authorize this account",
+		).WithCause(err)
+	}
+	if isOpenAIAccountDeactivatedError(err) {
+		return infraerrors.BadRequest(
+			"OPENAI_OAUTH_REAUTH_REQUIRED",
+			"openai account has been deactivated; please sign in again to re-authorize this account",
+		).WithCause(err)
+	}
+	return err
+}
+
 func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *Account) (*OpenAITokenInfo, error) {
 	if account.Platform != PlatformOpenAI {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT", "account is not an OpenAI account")

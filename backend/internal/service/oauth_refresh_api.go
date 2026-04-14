@@ -165,9 +165,14 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	}, nil
 }
 
-// isInvalidGrantError 检查错误是否为 invalid_grant
+// isInvalidGrantError 检查错误是否为 invalid_grant 类刷新错误。
+// OpenAI 还会返回 refresh_token_reused，此时也需要先尝试竞争恢复。
 func isInvalidGrantError(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "invalid_grant")
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "invalid_grant") || strings.Contains(msg, "refresh_token_reused")
 }
 
 // tryRecoverFromRefreshRace 在 invalid_grant 错误后尝试竞争恢复

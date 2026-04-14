@@ -417,11 +417,14 @@ func isNonRetryableRefreshError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	nonRetryable := []string{
-		"invalid_grant",       // refresh_token 已失效
-		"invalid_client",      // 客户端配置错误
-		"unauthorized_client", // 客户端未授权
-		"access_denied",       // 访问被拒绝
-		"missing_project_id",  // 缺少 project_id
+		"invalid_grant",                // refresh_token 已失效
+		"refresh_token_reused",         // OpenAI 单次 refresh_token 已被消费
+		"account_deactivated",          // OpenAI 账号已被上游停用
+		"openai_oauth_reauth_required", // 归一化后的 OpenAI 需重授权错误
+		"invalid_client",               // 客户端配置错误
+		"unauthorized_client",          // 客户端未授权
+		"access_denied",                // 访问被拒绝
+		"missing_project_id",           // 缺少 project_id
 		"no refresh token available",
 	}
 	for _, needle := range nonRetryable {

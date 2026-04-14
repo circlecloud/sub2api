@@ -519,10 +519,51 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		// 401 Unauthorized: 标记账号为永久错误
-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
-			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+		upstreamCode := strings.TrimSpace(extractUpstreamErrorCode(body))
+		if s.accountRepo != nil {
+			switch resp.StatusCode {
+			case http.StatusUnauthorized:
+				switch upstreamCode {
+				case "token_invalidated", "token_revoked":
+					msg := "Token revoked (401): account authentication permanently revoked"
+					if upstreamMsg != "" {
+						msg = "Token revoked (401): " + upstreamMsg
+					}
+					_ = s.accountRepo.SetError(ctx, account.ID, msg)
+				case "account_deactivated":
+					msg := "Account deactivated (401): account has been deactivated"
+					if upstreamMsg != "" {
+						msg = "Account deactivated (401): " + upstreamMsg
+					}
+					_ = s.accountRepo.SetError(ctx, account.ID, msg)
+				default:
+					if isOAuth {
+						msg := "Authentication failed (401): invalid or expired credentials"
+						if upstreamMsg != "" {
+							msg = "OAuth 401: " + upstreamMsg
+						}
+						cooldownMinutes := 10
+						if s.cfg != nil && s.cfg.RateLimit.OAuth401CooldownMinutes > 0 {
+							cooldownMinutes = s.cfg.RateLimit.OAuth401CooldownMinutes
+						}
+						until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+						_ = s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg)
+					} else {
+						msg := "Authentication failed (401): invalid or expired credentials"
+						if upstreamMsg != "" {
+							msg = "Authentication failed (401): " + upstreamMsg
+						}
+						_ = s.accountRepo.SetError(ctx, account.ID, msg)
+					}
+				}
+			case http.StatusForbidden:
+				msg := fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body))
+				if upstreamMsg != "" {
+					msg = fmt.Sprintf("Forbidden (403): %s", upstreamMsg)
+				}
+				_ = s.accountRepo.SetError(ctx, account.ID, msg)
+			}
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}

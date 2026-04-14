@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
@@ -61,9 +62,14 @@ func newTestContext() (*gin.Context, *httptest.ResponseRecorder) {
 
 type openAIAccountTestRepo struct {
 	mockAccountRepoForGemini
-	updatedExtra  map[string]any
-	rateLimitedID int64
-	rateLimitedAt *time.Time
+	updatedExtra      map[string]any
+	rateLimitedID     int64
+	rateLimitedAt     *time.Time
+	errorID           int64
+	errorMessage      string
+	tempUnschedID     int64
+	tempUnschedUntil  *time.Time
+	tempUnschedReason string
 }
 
 func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -74,6 +80,19 @@ func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates 
 func (r *openAIAccountTestRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitedID = id
 	r.rateLimitedAt = &resetAt
+	return nil
+}
+
+func (r *openAIAccountTestRepo) SetError(_ context.Context, id int64, errorMsg string) error {
+	r.errorID = id
+	r.errorMessage = errorMsg
+	return nil
+}
+
+func (r *openAIAccountTestRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedID = id
+	r.tempUnschedUntil = &until
+	r.tempUnschedReason = reason
 	return nil
 }
 
@@ -125,7 +144,8 @@ func TestAccountTestService_OpenAI429PersistsSnapshotWithoutRateLimit(t *testing
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
 	account := &Account{
 		ID:          88,
 		Platform:    PlatformOpenAI,
@@ -138,7 +158,117 @@ func TestAccountTestService_OpenAI429PersistsSnapshotWithoutRateLimit(t *testing
 	require.Error(t, err)
 	require.NotEmpty(t, repo.updatedExtra)
 	require.Equal(t, 100.0, repo.updatedExtra["codex_5h_used_percent"])
+	require.Equal(t, int64(88), repo.rateLimitedID)
+	require.NotNil(t, repo.rateLimitedAt)
+	require.NotNil(t, account.RateLimitResetAt)
+	require.Zero(t, repo.errorID)
+	require.Zero(t, repo.tempUnschedID)
+	if account.RateLimitResetAt != nil && repo.rateLimitedAt != nil {
+		require.WithinDuration(t, *repo.rateLimitedAt, *account.RateLimitResetAt, time.Second)
+	}
+}
+
+func TestAccountTestService_OpenAI401TokenRevokedMarksError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusUnauthorized, `{"error":{"code":"token_revoked","message":"revoked by upstream"}}`)
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
+	account := &Account{
+		ID:          77,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Equal(t, int64(77), repo.errorID)
+	require.Contains(t, repo.errorMessage, "revoked by upstream")
+	require.Zero(t, repo.tempUnschedID)
 	require.Zero(t, repo.rateLimitedID)
-	require.Nil(t, repo.rateLimitedAt)
-	require.Nil(t, account.RateLimitResetAt)
+}
+
+func TestAccountTestService_OpenAI401OAuthMarksTempUnschedulable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusUnauthorized, `{"error":{"message":"session expired"}}`)
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
+	account := &Account{
+		ID:          66,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Zero(t, repo.errorID)
+	require.Equal(t, int64(66), repo.tempUnschedID)
+	require.NotNil(t, repo.tempUnschedUntil)
+	require.Contains(t, repo.tempUnschedReason, "session expired")
+	require.Zero(t, repo.rateLimitedID)
+}
+
+func TestAccountTestService_OpenAI401AccountDeactivatedMarksError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusUnauthorized, `{"error":{"code":"account_deactivated","message":"account disabled by upstream"}}`)
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
+	account := &Account{
+		ID:          56,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Equal(t, int64(56), repo.errorID)
+	require.Equal(t, "Account deactivated (401): account disabled by upstream", repo.errorMessage)
+	require.Zero(t, repo.tempUnschedID)
+	require.Zero(t, repo.rateLimitedID)
+}
+
+func TestAccountTestService_OpenAI403MarksError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusForbidden, `{"error":{"message":"workspace forbidden"}}`)
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
+	account := &Account{
+		ID:          55,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.Equal(t, int64(55), repo.errorID)
+	require.Contains(t, repo.errorMessage, "workspace forbidden")
+	require.Zero(t, repo.tempUnschedID)
+	require.Zero(t, repo.rateLimitedID)
 }

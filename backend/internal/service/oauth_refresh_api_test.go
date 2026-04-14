@@ -600,6 +600,7 @@ func TestNewOAuthRefreshAPI_ZeroTTLUsesDefault(t *testing.T) {
 func TestIsInvalidGrantError(t *testing.T) {
 	require.True(t, isInvalidGrantError(errors.New("invalid_grant: token revoked")))
 	require.True(t, isInvalidGrantError(errors.New("INVALID_GRANT")))
+	require.True(t, isInvalidGrantError(errors.New("refresh_token_reused")))
 	require.False(t, isInvalidGrantError(errors.New("invalid_client")))
 	require.False(t, isInvalidGrantError(nil))
 }

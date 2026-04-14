@@ -160,16 +160,28 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
-		// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
+		// OpenAI: token_invalidated / token_revoked / account_deactivated 表示账号已永久失效，直接标记 error
 		openai401Code := extractUpstreamErrorCode(responseBody)
-		if account.Platform == PlatformOpenAI && (openai401Code == "token_invalidated" || openai401Code == "token_revoked") {
-			msg := "Token revoked (401): account authentication permanently revoked"
-			if upstreamMsg != "" {
-				msg = "Token revoked (401): " + upstreamMsg
+		if account.Platform == PlatformOpenAI {
+			switch openai401Code {
+			case "token_invalidated", "token_revoked":
+				msg := "Token revoked (401): account authentication permanently revoked"
+				if upstreamMsg != "" {
+					msg = "Token revoked (401): " + upstreamMsg
+				}
+				s.handleAuthError(ctx, account, msg)
+				shouldDisable = true
+			case "account_deactivated":
+				msg := "Account deactivated (401): account has been deactivated"
+				if upstreamMsg != "" {
+					msg = "Account deactivated (401): " + upstreamMsg
+				}
+				s.handleAuthError(ctx, account, msg)
+				shouldDisable = true
 			}
-			s.handleAuthError(ctx, account, msg)
-			shouldDisable = true
-			break
+			if shouldDisable {
+				break
+			}
 		}
 		// OpenAI: {"detail":"Unauthorized"} 表示 token 完全无效（非标准 OpenAI 错误格式），直接标记 error
 		if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail").String() == "Unauthorized" {
