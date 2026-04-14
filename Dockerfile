@@ -36,15 +36,14 @@ RUN pnpm run build
 # -----------------------------------------------------------------------------
 FROM ${GOLANG_IMAGE} AS backend-builder
 
-# Build arguments for version info (set by CI)
-ARG VERSION=
-ARG COMMIT=docker
-ARG DATE
+# Build arguments for module resolution
 ARG GOPROXY
 ARG GOSUMDB
 
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
+ENV GOMODCACHE=/go/pkg/mod
+ENV GOCACHE=/root/.cache/go-build
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -53,7 +52,9 @@ WORKDIR /app/backend
 
 # Copy go mod files first (better caching)
 COPY backend/go.mod backend/go.sum ./
-RUN go mod download
+RUN --mount=type=cache,id=sub2api-gomodcache,target=/go/pkg/mod \
+    --mount=type=cache,id=sub2api-gobuildcache,target=/root/.cache/go-build \
+    go mod download
 
 # Copy backend source first
 COPY backend/ ./
@@ -62,8 +63,15 @@ COPY backend/ ./
 COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 
 # Build the binary (BuildType=release for CI builds, embed frontend)
+# Keep volatile metadata args right before the compile step so DATE/COMMIT
+# changes only invalidate the final go build layer instead of apk/go mod cache.
+ARG VERSION=
+ARG COMMIT=docker
+ARG DATE
 # Version precedence: build arg VERSION > cmd/server/VERSION
-RUN VERSION_VALUE="${VERSION}" && \
+RUN --mount=type=cache,id=sub2api-gomodcache,target=/go/pkg/mod \
+    --mount=type=cache,id=sub2api-gobuildcache,target=/root/.cache/go-build \
+    VERSION_VALUE="${VERSION}" && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(tr -d '\r\n' < ./cmd/server/VERSION)"; fi && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
     CGO_ENABLED=0 GOOS=linux go build \
