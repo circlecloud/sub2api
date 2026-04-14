@@ -68,6 +68,7 @@ type AuthService struct {
 	settingService     *SettingService
 	emailService       *EmailService
 	turnstileService   *TurnstileService
+	geeTestService     *GeeTestService
 	emailQueueService  *EmailQueueService
 	promoService       *PromoService
 	defaultSubAssigner DefaultSubscriptionAssigner
@@ -87,6 +88,7 @@ func NewAuthService(
 	settingService *SettingService,
 	emailService *EmailService,
 	turnstileService *TurnstileService,
+	geeTestService *GeeTestService,
 	emailQueueService *EmailQueueService,
 	promoService *PromoService,
 	defaultSubAssigner DefaultSubscriptionAssigner,
@@ -100,6 +102,7 @@ func NewAuthService(
 		settingService:     settingService,
 		emailService:       emailService,
 		turnstileService:   turnstileService,
+		geeTestService:     geeTestService,
 		emailQueueService:  emailQueueService,
 		promoService:       promoService,
 		defaultSubAssigner: defaultSubAssigner,
@@ -332,55 +335,120 @@ func (s *AuthService) SendVerifyCodeAsync(ctx context.Context, email string) (*S
 	}, nil
 }
 
-// VerifyTurnstileForRegister 在注册场景下验证 Turnstile。
-// 当邮箱验证开启且已提交验证码时，说明验证码发送阶段已完成 Turnstile 校验，
+type captchaProvider string
+
+const (
+	captchaProviderNone      captchaProvider = "none"
+	captchaProviderTurnstile captchaProvider = "turnstile"
+	captchaProviderGeeTest   captchaProvider = "geetest"
+)
+
+// VerifyCaptchaForRegister 在注册场景下验证验证码。
+// 当邮箱验证开启且已提交验证码时，说明验证码发送阶段已完成一次校验，
 // 此处跳过二次校验，避免一次性 token 在注册提交时重复使用导致误报失败。
-func (s *AuthService) VerifyTurnstileForRegister(ctx context.Context, token, remoteIP, verifyCode string) error {
+func (s *AuthService) VerifyCaptchaForRegister(ctx context.Context, token, remoteIP, verifyCode string) error {
 	if s.IsEmailVerifyEnabled(ctx) && strings.TrimSpace(verifyCode) != "" {
-		logger.LegacyPrintf("service.auth", "%s", "[Auth] Email verify flow detected, skip duplicate Turnstile check on register")
+		logger.LegacyPrintf("service.auth", "%s", "[Auth] Email verify flow detected, skip duplicate captcha check on register")
 		return nil
 	}
-	return s.VerifyTurnstile(ctx, token, remoteIP)
+	return s.VerifyCaptcha(ctx, token, remoteIP)
 }
 
-// VerifyTurnstile 验证Turnstile token
+// VerifyTurnstileForRegister 保留旧方法名，内部复用统一验证码逻辑。
+func (s *AuthService) VerifyTurnstileForRegister(ctx context.Context, token, remoteIP, verifyCode string) error {
+	return s.VerifyCaptchaForRegister(ctx, token, remoteIP, verifyCode)
+}
+
+// VerifyCaptcha 验证当前启用的验证码提供商。
+func (s *AuthService) VerifyCaptcha(ctx context.Context, token string, remoteIP string) error {
+	if err := s.ensureRequiredCaptchaProvidersConfigured(ctx); err != nil {
+		return err
+	}
+
+	switch s.selectCaptchaProvider(ctx) {
+	case captchaProviderGeeTest:
+		if s.geeTestService == nil {
+			logger.LegacyPrintf("service.auth", "%s", "[Auth] GeeTest selected but service not configured")
+			return ErrGeeTestNotConfigured
+		}
+		return s.geeTestService.VerifyToken(ctx, token, remoteIP)
+	case captchaProviderTurnstile:
+		if s.turnstileService == nil {
+			logger.LegacyPrintf("service.auth", "%s", "[Auth] Turnstile selected but service not configured")
+			return ErrTurnstileNotConfigured
+		}
+		return s.turnstileService.VerifyToken(ctx, token, remoteIP)
+	default:
+		return nil
+	}
+}
+
+// VerifyTurnstile 保留旧方法名，内部复用统一验证码逻辑。
 func (s *AuthService) VerifyTurnstile(ctx context.Context, token string, remoteIP string) error {
-	required := s.cfg != nil && s.cfg.Server.Mode == "release" && s.cfg.Turnstile.Required
-
-	if required {
-		if s.settingService == nil {
-			logger.LegacyPrintf("service.auth", "%s", "[Auth] Turnstile required but settings service is not configured")
-			return ErrTurnstileNotConfigured
-		}
-		enabled := s.settingService.IsTurnstileEnabled(ctx)
-		secretConfigured := s.settingService.GetTurnstileSecretKey(ctx) != ""
-		if !enabled || !secretConfigured {
-			logger.LegacyPrintf("service.auth", "[Auth] Turnstile required but not configured (enabled=%v, secret_configured=%v)", enabled, secretConfigured)
-			return ErrTurnstileNotConfigured
-		}
-	}
-
-	if s.turnstileService == nil {
-		if required {
-			logger.LegacyPrintf("service.auth", "%s", "[Auth] Turnstile required but service not configured")
-			return ErrTurnstileNotConfigured
-		}
-		return nil // 服务未配置则跳过验证
-	}
-
-	if !required && s.settingService != nil && s.settingService.IsTurnstileEnabled(ctx) && s.settingService.GetTurnstileSecretKey(ctx) == "" {
-		logger.LegacyPrintf("service.auth", "%s", "[Auth] Turnstile enabled but secret key not configured")
-	}
-
-	return s.turnstileService.VerifyToken(ctx, token, remoteIP)
+	return s.VerifyCaptcha(ctx, token, remoteIP)
 }
 
-// IsTurnstileEnabled 检查是否启用Turnstile验证
-func (s *AuthService) IsTurnstileEnabled(ctx context.Context) bool {
-	if s.turnstileService == nil {
+func (s *AuthService) ensureRequiredCaptchaProvidersConfigured(ctx context.Context) error {
+	if !s.isReleaseMode() {
+		return nil
+	}
+	if s.cfg != nil && s.cfg.Geetest.Required && !s.hasGeeTestConfig(ctx) {
+		logger.LegacyPrintf("service.auth", "%s", "[Auth] GeeTest required but not configured")
+		return ErrGeeTestNotConfigured
+	}
+	if s.cfg != nil && s.cfg.Turnstile.Required && !s.hasTurnstileConfig(ctx) {
+		logger.LegacyPrintf("service.auth", "%s", "[Auth] Turnstile required but not configured")
+		return ErrTurnstileNotConfigured
+	}
+	return nil
+}
+
+func (s *AuthService) selectCaptchaProvider(ctx context.Context) captchaProvider {
+	if s.hasGeeTestConfig(ctx) {
+		return captchaProviderGeeTest
+	}
+	if s.hasTurnstileConfig(ctx) {
+		return captchaProviderTurnstile
+	}
+	if s.settingService != nil {
+		if s.settingService.IsGeetestEnabled(ctx) {
+			logger.LegacyPrintf("service.auth", "%s", "[Auth] GeeTest enabled but captcha credentials are incomplete")
+		}
+		if s.settingService.IsTurnstileEnabled(ctx) {
+			if s.settingService.GetTurnstileSecretKey(ctx) == "" {
+				logger.LegacyPrintf("service.auth", "%s", "[Auth] Turnstile enabled but secret key not configured")
+			}
+		}
+	}
+	return captchaProviderNone
+}
+
+func (s *AuthService) hasGeeTestConfig(ctx context.Context) bool {
+	if s.geeTestService == nil || s.settingService == nil {
 		return false
 	}
-	return s.turnstileService.IsEnabled(ctx)
+	return s.settingService.IsGeetestEnabled(ctx) && s.geeTestService.HasValidConfig(ctx)
+}
+
+func (s *AuthService) hasTurnstileConfig(ctx context.Context) bool {
+	if s.turnstileService == nil || s.settingService == nil {
+		return false
+	}
+	return s.settingService.IsTurnstileEnabled(ctx) && strings.TrimSpace(s.settingService.GetTurnstileSecretKey(ctx)) != ""
+}
+
+func (s *AuthService) isReleaseMode() bool {
+	return s.cfg != nil && s.cfg.Server.Mode == "release"
+}
+
+// IsTurnstileEnabled 检查是否启用 Turnstile 验证
+func (s *AuthService) IsTurnstileEnabled(ctx context.Context) bool {
+	return s.hasTurnstileConfig(ctx)
+}
+
+// IsGeeTestEnabled 检查是否启用 GeeTest 验证
+func (s *AuthService) IsGeeTestEnabled(ctx context.Context) bool {
+	return s.hasGeeTestConfig(ctx)
 }
 
 // IsRegistrationEnabled 检查是否开放注册

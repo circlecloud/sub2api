@@ -22,6 +22,30 @@ const (
 	StripeDomain = "https://*.stripe.com"
 )
 
+type cspDirectiveValue struct {
+	directive string
+	value     string
+}
+
+var geeTestCSPDirectiveValues = []cspDirectiveValue{
+	{directive: "script-src", value: "https://*.geetest.com"},
+	{directive: "script-src", value: "https://*.geevisit.com"},
+	{directive: "script-src", value: "https://*.gsensebot.com"},
+	{directive: "script-src", value: "https://dn-staticdown.qbox.me"},
+	{directive: "style-src", value: "https://*.geetest.com"},
+	{directive: "style-src", value: "https://*.geevisit.com"},
+	{directive: "style-src", value: "https://dn-staticdown.qbox.me"},
+	{directive: "frame-src", value: "https://*.geetest.com"},
+	{directive: "frame-src", value: "https://*.geevisit.com"},
+	{directive: "connect-src", value: "https://*.geetest.com"},
+	{directive: "connect-src", value: "https://*.geevisit.com"},
+	{directive: "connect-src", value: "https://*.gsensebot.com"},
+	{directive: "img-src", value: "https://*.geetest.com"},
+	{directive: "img-src", value: "https://*.geevisit.com"},
+	{directive: "img-src", value: "https://*.gsensebot.com"},
+	{directive: "img-src", value: "https://dn-staticdown.qbox.me"},
+}
+
 // GenerateNonce generates a cryptographically secure random nonce.
 // 返回 error 以确保调用方在 crypto/rand 失败时能正确降级。
 func GenerateNonce() (string, error) {
@@ -100,8 +124,8 @@ func isAPIRoutePath(c *gin.Context) bool {
 }
 
 // enhanceCSPPolicy ensures the CSP policy includes nonce support, Cloudflare Insights,
-// and Stripe.js domains. This allows the application to work correctly even if the
-// config file has an older CSP policy.
+// and the GeeTest domains required by the official browser allowlist guidance.
+// This allows the application to work correctly even if the config file has an older CSP policy.
 func enhanceCSPPolicy(policy string) string {
 	// Add nonce placeholder to script-src if not present
 	if !strings.Contains(policy, NonceTemplate) && !strings.Contains(policy, "'nonce-") {
@@ -113,13 +137,28 @@ func enhanceCSPPolicy(policy string) string {
 		policy = addToDirective(policy, "script-src", CloudflareInsightsDomain)
 	}
 
-	// Add Stripe.js domain to script-src and frame-src if not present
-	if !strings.Contains(policy, "stripe.com") {
-		policy = addToDirective(policy, "script-src", StripeDomain)
-		policy = addToDirective(policy, "frame-src", StripeDomain)
+	for _, entry := range geeTestCSPDirectiveValues {
+		if directiveHasValue(policy, entry.directive, entry.value) {
+			continue
+		}
+		policy = addToDirective(policy, entry.directive, entry.value)
 	}
 
 	return policy
+}
+
+func directiveHasValue(policy, directive, value string) bool {
+	directivePrefix := directive + " "
+	idx := strings.Index(policy, directivePrefix)
+	if idx == -1 {
+		return false
+	}
+
+	segment := policy[idx:]
+	if endIdx := strings.Index(segment, ";"); endIdx != -1 {
+		segment = segment[:endIdx]
+	}
+	return strings.Contains(segment, value)
 }
 
 // addToDirective adds a value to a specific CSP directive.

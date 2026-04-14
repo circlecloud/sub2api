@@ -486,6 +486,7 @@ gateway:
 - `billing.circuit_breaker` 计费异常时 fail-closed
 - `server.trusted_proxies` 启用可信代理解析 X-Forwarded-For
 - `turnstile.required` 在 release 模式强制启用 Turnstile
+- `geetest.required` 在 release 模式强制启用 GeeTest
 
 **网关防御纵深建议（重点）**
 

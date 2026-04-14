@@ -1025,6 +1025,88 @@
           </div>
         </div>
 
+        <!-- GeeTest Settings -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.geetest.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.geetest.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="font-medium text-gray-900 dark:text-white">{{
+                  t('admin.settings.geetest.enable')
+                }}</label>
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.geetest.enableHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.geetest_enabled" />
+            </div>
+
+            <div v-if="form.geetest_enabled" class="border-t border-gray-100 pt-4 dark:border-dark-700">
+              <div class="grid grid-cols-1 gap-6">
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.geetest.captchaId') }}
+                  </label>
+                  <input
+                    v-model="form.geetest_captcha_id"
+                    type="text"
+                    class="input font-mono text-sm"
+                    placeholder="7881246ba509f7e3c5385b792cb1d03c"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.geetest.captchaIdHint') }}
+                    <a
+                      href="https://auth.geetest.com/"
+                      target="_blank"
+                      class="text-primary-600 hover:text-primary-500"
+                      >{{ t('admin.settings.geetest.geetestDashboard') }}</a
+                    >
+                  </p>
+                </div>
+                <div>
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.geetest.captchaKey') }}
+                  </label>
+                  <input
+                    v-model="form.geetest_captcha_key"
+                    type="password"
+                    class="input font-mono text-sm"
+                    placeholder="********"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      form.geetest_captcha_key_configured
+                        ? t('admin.settings.geetest.captchaKeyConfiguredHint')
+                        : t('admin.settings.geetest.captchaKeyHint')
+                    }}
+                  </p>
+                </div>
+                <div class="flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3 dark:border-dark-600">
+                  <div class="pr-4">
+                    <label class="font-medium text-gray-900 dark:text-white">{{
+                      t('admin.settings.geetest.popupOnSubmit')
+                    }}</label>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.geetest.popupOnSubmitHint') }}
+                    </p>
+                  </div>
+                  <Toggle v-model="form.geetest_popup_on_submit" />
+                </div>
+              </div>
+              <p class="mt-4 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.geetest.priorityHint') }}
+              </p>
+            </div>
+          </div>
+        </div>
+
         <!-- LinuxDo Connect OAuth 登录 -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -2958,6 +3040,7 @@ interface DefaultSubscriptionGroupOption {
 type SettingsForm = SystemSettings & {
   smtp_password: string
   turnstile_secret_key: string
+  geetest_captcha_key: string
   linuxdo_connect_client_secret: string
   oidc_connect_client_secret: string
 }
@@ -3002,6 +3085,12 @@ const form = reactive<SettingsForm>({
   turnstile_site_key: '',
   turnstile_secret_key: '',
   turnstile_secret_key_configured: false,
+  // GeeTest
+  geetest_enabled: false,
+  geetest_captcha_id: '',
+  geetest_captcha_key: '',
+  geetest_captcha_key_configured: false,
+  geetest_popup_on_submit: false,
   // LinuxDo Connect OAuth 登录
   linuxdo_connect_enabled: false,
   linuxdo_connect_client_id: '',
@@ -3447,6 +3536,7 @@ async function loadSettings() {
     form.smtp_password = ''
     smtpPasswordManuallyEdited.value = false
     form.turnstile_secret_key = ''
+    form.geetest_captcha_key = ''
     form.linuxdo_connect_client_secret = ''
     form.oidc_connect_client_secret = ''
 
@@ -3595,6 +3685,10 @@ async function saveSettings() {
       turnstile_enabled: form.turnstile_enabled,
       turnstile_site_key: form.turnstile_site_key,
       turnstile_secret_key: form.turnstile_secret_key || undefined,
+      geetest_enabled: form.geetest_enabled,
+      geetest_captcha_id: form.geetest_captcha_id,
+      geetest_captcha_key: form.geetest_captcha_key || undefined,
+      geetest_popup_on_submit: form.geetest_popup_on_submit,
       linuxdo_connect_enabled: form.linuxdo_connect_enabled,
       linuxdo_connect_client_id: form.linuxdo_connect_client_id,
       linuxdo_connect_client_secret: form.linuxdo_connect_client_secret || undefined,
@@ -3679,6 +3773,7 @@ async function saveSettings() {
     form.smtp_password = ''
     smtpPasswordManuallyEdited.value = false
     form.turnstile_secret_key = ''
+    form.geetest_captcha_key = ''
     form.linuxdo_connect_client_secret = ''
     form.oidc_connect_client_secret = ''
     // Save web search emulation config separately (errors handled internally)

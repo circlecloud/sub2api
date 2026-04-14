@@ -163,6 +163,10 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyTotpEnabled,
 		SettingKeyTurnstileEnabled,
 		SettingKeyTurnstileSiteKey,
+		SettingKeyGeetestEnabled,
+		SettingKeyGeetestCaptchaID,
+		SettingKeyGeetestCaptchaKey,
+		SettingKeyGeetestPopupOnSubmit,
 		SettingKeySiteName,
 		SettingKeySiteLogo,
 		SettingKeySiteSubtitle,
@@ -239,6 +243,9 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
 		TurnstileEnabled:                 settings[SettingKeyTurnstileEnabled] == "true",
 		TurnstileSiteKey:                 settings[SettingKeyTurnstileSiteKey],
+		GeetestEnabled:                   settings[SettingKeyGeetestEnabled] == "true" && settings[SettingKeyGeetestCaptchaID] != "" && settings[SettingKeyGeetestCaptchaKey] != "",
+		GeetestCaptchaID:                 settings[SettingKeyGeetestCaptchaID],
+		GeetestPopupOnSubmit:             settings[SettingKeyGeetestPopupOnSubmit] == "true",
 		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
 		SiteLogo:                         settings[SettingKeySiteLogo],
 		SiteSubtitle:                     s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
@@ -295,6 +302,9 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		TotpEnabled                      bool            `json:"totp_enabled"`
 		TurnstileEnabled                 bool            `json:"turnstile_enabled"`
 		TurnstileSiteKey                 string          `json:"turnstile_site_key,omitempty"`
+		GeetestEnabled                   bool            `json:"geetest_enabled"`
+		GeetestCaptchaID                 string          `json:"geetest_captcha_id,omitempty"`
+		GeetestPopupOnSubmit             bool            `json:"geetest_popup_on_submit"`
 		SiteName                         string          `json:"site_name"`
 		SiteLogo                         string          `json:"site_logo,omitempty"`
 		SiteSubtitle                     string          `json:"site_subtitle,omitempty"`
@@ -329,6 +339,9 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		TotpEnabled:                      settings.TotpEnabled,
 		TurnstileEnabled:                 settings.TurnstileEnabled,
 		TurnstileSiteKey:                 settings.TurnstileSiteKey,
+		GeetestEnabled:                   settings.GeetestEnabled,
+		GeetestCaptchaID:                 settings.GeetestCaptchaID,
+		GeetestPopupOnSubmit:             settings.GeetestPopupOnSubmit,
 		SiteName:                         settings.SiteName,
 		SiteLogo:                         settings.SiteLogo,
 		SiteSubtitle:                     settings.SiteSubtitle,
@@ -524,6 +537,14 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	updates[SettingKeyTurnstileSiteKey] = settings.TurnstileSiteKey
 	if settings.TurnstileSecretKey != "" {
 		updates[SettingKeyTurnstileSecretKey] = settings.TurnstileSecretKey
+	}
+
+	// GeeTest 设置（只有非空才更新密钥）
+	updates[SettingKeyGeetestEnabled] = strconv.FormatBool(settings.GeetestEnabled)
+	updates[SettingKeyGeetestCaptchaID] = settings.GeetestCaptchaID
+	updates[SettingKeyGeetestPopupOnSubmit] = strconv.FormatBool(settings.GeetestPopupOnSubmit)
+	if settings.GeetestCaptchaKey != "" {
+		updates[SettingKeyGeetestCaptchaKey] = settings.GeetestCaptchaKey
 	}
 
 	// LinuxDo Connect OAuth 登录
@@ -1000,6 +1021,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		TurnstileEnabled:                 settings[SettingKeyTurnstileEnabled] == "true",
 		TurnstileSiteKey:                 settings[SettingKeyTurnstileSiteKey],
 		TurnstileSecretKeyConfigured:     settings[SettingKeyTurnstileSecretKey] != "",
+		GeetestEnabled:                   settings[SettingKeyGeetestEnabled] == "true",
+		GeetestCaptchaID:                 settings[SettingKeyGeetestCaptchaID],
+		GeetestCaptchaKeyConfigured:      settings[SettingKeyGeetestCaptchaKey] != "",
+		GeetestPopupOnSubmit:             settings[SettingKeyGeetestPopupOnSubmit] == "true",
 		SiteName:                         s.getStringOrDefault(settings, SettingKeySiteName, "Sub2API"),
 		SiteLogo:                         settings[SettingKeySiteLogo],
 		SiteSubtitle:                     s.getStringOrDefault(settings, SettingKeySiteSubtitle, "Subscription to API Conversion Platform"),
@@ -1043,6 +1068,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// 敏感信息直接返回，方便测试连接时使用
 	result.SMTPPassword = settings[SettingKeySMTPPassword]
 	result.TurnstileSecretKey = settings[SettingKeyTurnstileSecretKey]
+	result.GeetestCaptchaKey = settings[SettingKeyGeetestCaptchaKey]
 
 	// LinuxDo Connect 设置：
 	// - 兼容 config.yaml/env（避免老部署因为未迁移到数据库设置而被意外关闭）
@@ -1381,6 +1407,33 @@ func (s *SettingService) IsTurnstileEnabled(ctx context.Context) bool {
 // GetTurnstileSecretKey 获取 Turnstile Secret Key
 func (s *SettingService) GetTurnstileSecretKey(ctx context.Context) string {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeyTurnstileSecretKey)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+// IsGeetestEnabled 检查是否启用 GeeTest 验证
+func (s *SettingService) IsGeetestEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyGeetestEnabled)
+	if err != nil {
+		return false
+	}
+	return value == "true"
+}
+
+// GetGeetestCaptchaID 获取 GeeTest captcha ID
+func (s *SettingService) GetGeetestCaptchaID(ctx context.Context) string {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyGeetestCaptchaID)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+// GetGeetestCaptchaKey 获取 GeeTest captcha Key
+func (s *SettingService) GetGeetestCaptchaKey(ctx context.Context) string {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyGeetestCaptchaKey)
 	if err != nil {
 		return ""
 	}

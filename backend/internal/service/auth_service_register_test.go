@@ -157,8 +157,9 @@ func newAuthService(repo *userRepoStub, settings map[string]string, emailCache E
 		cfg,
 		settingService,
 		emailService,
-		nil,
-		nil,
+		nil, // turnstileService
+		nil, // geeTestService
+		nil, // emailQueueService
 		nil, // promoService
 		nil, // defaultSubAssigner
 	)

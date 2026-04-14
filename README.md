@@ -454,6 +454,7 @@ Additional security-related options are available in `config.yaml`:
 - `billing.circuit_breaker` to fail closed on billing errors
 - `server.trusted_proxies` to enable X-Forwarded-For parsing
 - `turnstile.required` to require Turnstile in release mode
+- `geetest.required` to require GeeTest in release mode
 
 **⚠️ Security Warning: HTTP URL Configuration**
 

@@ -400,6 +400,7 @@ export default {
     reloginRequired: 'Session expired. Please log in again.',
     turnstileExpired: 'Verification expired, please try again',
     turnstileFailed: 'Verification failed, please try again',
+    captchaNotReady: 'Verification is still loading, please try again shortly',
     completeVerification: 'Please complete the verification',
     verifyYourEmail: 'Verify Your Email',
     sessionExpired: 'Session expired',
@@ -4309,7 +4310,23 @@ export default {
         siteKeyHint: 'Get this from your Cloudflare Dashboard',
         cloudflareDashboard: 'Cloudflare Dashboard',
         secretKeyHint: 'Server-side verification key (keep this secret)',
-        secretKeyConfiguredHint: 'Secret key configured. Leave empty to keep the current value.'      },
+        secretKeyConfiguredHint: 'Secret key configured. Leave empty to keep the current value.'
+      },
+      geetest: {
+        title: 'GeeTest v4',
+        description: 'Bot protection for login, registration, and verification flows',
+        enable: 'Enable GeeTest',
+        enableHint: 'Use GeeTest v4 on public auth pages',
+        captchaId: 'Captcha ID',
+        captchaKey: 'Captcha Key',
+        captchaIdHint: 'Get this from the GeeTest dashboard',
+        geetestDashboard: 'GeeTest Dashboard',
+        captchaKeyHint: 'Server-side signing key (keep this secret)',
+        captchaKeyConfiguredHint: 'Captcha key configured. Leave empty to keep the current value.',
+        popupOnSubmit: 'Popup on submit',
+        popupOnSubmitHint: 'When enabled, login/register/reset actions will open the GeeTest popup first and continue submission after verification.',
+        priorityHint: 'When GeeTest is fully configured, public pages will prefer GeeTest and fall back to Turnstile only if GeeTest is unavailable.'
+      },
       linuxdo: {
         title: 'LinuxDo Connect Login',
         description: 'Configure LinuxDo Connect OAuth for Sub2API end-user login',

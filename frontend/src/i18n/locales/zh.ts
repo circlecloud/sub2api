@@ -399,6 +399,7 @@ export default {
     reloginRequired: '会话已过期，请重新登录。',
     turnstileExpired: '验证已过期，请重试',
     turnstileFailed: '验证失败，请重试',
+    captchaNotReady: '验证组件加载中，请稍后重试',
     completeVerification: '请完成验证',
     verifyYourEmail: '验证您的邮箱',
     sessionExpired: '会话已过期',
@@ -4475,6 +4476,21 @@ export default {
         cloudflareDashboard: 'Cloudflare Dashboard',
         secretKeyHint: '服务端验证密钥（请保密）',
         secretKeyConfiguredHint: '密钥已配置，留空以保留当前值。'
+      },
+      geetest: {
+        title: 'GeeTest v4',
+        description: '登录、注册与验证码流程的机器人防护',
+        enable: '启用 GeeTest',
+        enableHint: '在公开认证页面使用 GeeTest v4',
+        captchaId: 'Captcha ID',
+        captchaKey: 'Captcha Key',
+        captchaIdHint: '从 GeeTest 控制台获取',
+        geetestDashboard: 'GeeTest 控制台',
+        captchaKeyHint: '服务端签名密钥（请保密）',
+        captchaKeyConfiguredHint: 'Captcha Key 已配置，留空以保留当前值。',
+        popupOnSubmit: '提交时弹窗验证',
+        popupOnSubmitHint: '启用后，登录、注册、找回密码等操作会先弹出 GeeTest 验证，通过后再继续提交。',
+        priorityHint: 'GeeTest 配置完整时，公开页面会优先使用 GeeTest；仅当 GeeTest 不可用时才回退到 Turnstile。'
       },
       linuxdo: {
         title: 'LinuxDo Connect 登录',

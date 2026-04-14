@@ -977,6 +977,15 @@ turnstile:
   required: false
 
 # =============================================================================
+# GeeTest Configuration
+# GeeTest 人机验证配置
+# =============================================================================
+geetest:
+  # Require GeeTest in release mode (when enabled, login/register will fail if not configured)
+  # 在 release 模式下要求 GeeTest 验证（启用后，若未配置则登录/注册会失败）
+  required: false
+
+# =============================================================================
 # Gemini OAuth (Required for Gemini accounts)
 # Gemini OAuth 配置（Gemini 账户必需）
 # =============================================================================

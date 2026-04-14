@@ -99,6 +99,12 @@ const (
 	SettingKeyTurnstileSiteKey   = "turnstile_site_key"   // Turnstile Site Key
 	SettingKeyTurnstileSecretKey = "turnstile_secret_key" // Turnstile Secret Key
 
+	// GeeTest 设置
+	SettingKeyGeetestEnabled       = "geetest_enabled"         // 是否启用 GeeTest 验证
+	SettingKeyGeetestCaptchaID     = "geetest_captcha_id"      // GeeTest captcha ID
+	SettingKeyGeetestCaptchaKey    = "geetest_captcha_key"     // GeeTest captcha Key
+	SettingKeyGeetestPopupOnSubmit = "geetest_popup_on_submit" // 点击提交时弹出 GeeTest 验证框
+
 	// TOTP 双因素认证设置
 	SettingKeyTotpEnabled = "totp_enabled" // 是否启用 TOTP 2FA 功能
 

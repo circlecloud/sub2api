@@ -43,6 +43,7 @@ type RegisterRequest struct {
 	Email          string `json:"email" binding:"required,email"`
 	Password       string `json:"password" binding:"required,min=6"`
 	VerifyCode     string `json:"verify_code"`
+	CaptchaToken   string `json:"captcha_token"`
 	TurnstileToken string `json:"turnstile_token"`
 	PromoCode      string `json:"promo_code"`      // 注册优惠码
 	InvitationCode string `json:"invitation_code"` // 邀请码
@@ -51,6 +52,7 @@ type RegisterRequest struct {
 // SendVerifyCodeRequest 发送验证码请求
 type SendVerifyCodeRequest struct {
 	Email          string `json:"email" binding:"required,email"`
+	CaptchaToken   string `json:"captcha_token"`
 	TurnstileToken string `json:"turnstile_token"`
 }
 
@@ -64,6 +66,7 @@ type SendVerifyCodeResponse struct {
 type LoginRequest struct {
 	Email          string `json:"email" binding:"required,email"`
 	Password       string `json:"password" binding:"required"`
+	CaptchaToken   string `json:"captcha_token"`
 	TurnstileToken string `json:"turnstile_token"`
 }
 
@@ -74,6 +77,13 @@ type AuthResponse struct {
 	ExpiresIn    int       `json:"expires_in,omitempty"`    // 新增：Access Token有效期（秒）
 	TokenType    string    `json:"token_type"`
 	User         *dto.User `json:"user"`
+}
+
+func resolveCaptchaToken(primary, legacy string) string {
+	if strings.TrimSpace(primary) != "" {
+		return strings.TrimSpace(primary)
+	}
+	return strings.TrimSpace(legacy)
 }
 
 // respondWithTokenPair 生成 Token 对并返回认证响应
@@ -113,8 +123,9 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Turnstile 验证（邮箱验证码注册场景避免重复校验一次性 token）
-	if err := h.authService.VerifyTurnstileForRegister(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c), req.VerifyCode); err != nil {
+	// 验证码验证（邮箱验证码注册场景避免重复校验一次性 token）
+	captchaToken := resolveCaptchaToken(req.CaptchaToken, req.TurnstileToken)
+	if err := h.authService.VerifyCaptchaForRegister(c.Request.Context(), captchaToken, ip.GetClientIP(c), req.VerifyCode); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -137,8 +148,9 @@ func (h *AuthHandler) SendVerifyCode(c *gin.Context) {
 		return
 	}
 
-	// Turnstile 验证
-	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c)); err != nil {
+	// 验证码验证
+	captchaToken := resolveCaptchaToken(req.CaptchaToken, req.TurnstileToken)
+	if err := h.authService.VerifyCaptcha(c.Request.Context(), captchaToken, ip.GetClientIP(c)); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -164,8 +176,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Turnstile 验证
-	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c)); err != nil {
+	// 验证码验证
+	captchaToken := resolveCaptchaToken(req.CaptchaToken, req.TurnstileToken)
+	if err := h.authService.VerifyCaptcha(c.Request.Context(), captchaToken, ip.GetClientIP(c)); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -436,6 +449,7 @@ func (h *AuthHandler) ValidateInvitationCode(c *gin.Context) {
 // ForgotPasswordRequest 忘记密码请求
 type ForgotPasswordRequest struct {
 	Email          string `json:"email" binding:"required,email"`
+	CaptchaToken   string `json:"captcha_token"`
 	TurnstileToken string `json:"turnstile_token"`
 }
 
@@ -453,8 +467,9 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	// Turnstile 验证
-	if err := h.authService.VerifyTurnstile(c.Request.Context(), req.TurnstileToken, ip.GetClientIP(c)); err != nil {
+	// 验证码验证
+	captchaToken := resolveCaptchaToken(req.CaptchaToken, req.TurnstileToken)
+	if err := h.authService.VerifyCaptcha(c.Request.Context(), captchaToken, ip.GetClientIP(c)); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}

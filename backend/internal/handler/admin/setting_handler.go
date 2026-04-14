@@ -113,6 +113,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		TurnstileEnabled:                     settings.TurnstileEnabled,
 		TurnstileSiteKey:                     settings.TurnstileSiteKey,
 		TurnstileSecretKeyConfigured:         settings.TurnstileSecretKeyConfigured,
+		GeetestEnabled:                       settings.GeetestEnabled,
+		GeetestCaptchaID:                     settings.GeetestCaptchaID,
+		GeetestCaptchaKeyConfigured:          settings.GeetestCaptchaKeyConfigured,
+		GeetestPopupOnSubmit:                 settings.GeetestPopupOnSubmit,
 		LinuxDoConnectEnabled:                settings.LinuxDoConnectEnabled,
 		LinuxDoConnectClientID:               settings.LinuxDoConnectClientID,
 		LinuxDoConnectClientSecretConfigured: settings.LinuxDoConnectClientSecretConfigured,
@@ -228,6 +232,12 @@ type UpdateSettingsRequest struct {
 	TurnstileEnabled   bool   `json:"turnstile_enabled"`
 	TurnstileSiteKey   string `json:"turnstile_site_key"`
 	TurnstileSecretKey string `json:"turnstile_secret_key"`
+
+	// GeeTest v4 设置
+	GeetestEnabled       bool   `json:"geetest_enabled"`
+	GeetestCaptchaID     string `json:"geetest_captcha_id"`
+	GeetestCaptchaKey    string `json:"geetest_captcha_key"`
+	GeetestPopupOnSubmit bool   `json:"geetest_popup_on_submit"`
 
 	// LinuxDo Connect OAuth 登录
 	LinuxDoConnectEnabled      bool   `json:"linuxdo_connect_enabled"`
@@ -417,6 +427,21 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				response.ErrorFrom(c, err)
 				return
 			}
+		}
+	}
+
+	// GeeTest 参数验证
+	if req.GeetestEnabled {
+		if req.GeetestCaptchaID == "" {
+			response.BadRequest(c, "GeeTest Captcha ID is required when enabled")
+			return
+		}
+		if req.GeetestCaptchaKey == "" {
+			if previousSettings.GeetestCaptchaKey == "" {
+				response.BadRequest(c, "GeeTest Captcha Key is required when enabled")
+				return
+			}
+			req.GeetestCaptchaKey = previousSettings.GeetestCaptchaKey
 		}
 	}
 
@@ -801,6 +826,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		TurnstileEnabled:                 req.TurnstileEnabled,
 		TurnstileSiteKey:                 req.TurnstileSiteKey,
 		TurnstileSecretKey:               req.TurnstileSecretKey,
+		GeetestEnabled:                   req.GeetestEnabled,
+		GeetestCaptchaID:                 req.GeetestCaptchaID,
+		GeetestCaptchaKey:                req.GeetestCaptchaKey,
+		GeetestPopupOnSubmit:             req.GeetestPopupOnSubmit,
 		LinuxDoConnectEnabled:            req.LinuxDoConnectEnabled,
 		LinuxDoConnectClientID:           req.LinuxDoConnectClientID,
 		LinuxDoConnectClientSecret:       req.LinuxDoConnectClientSecret,
@@ -1014,6 +1043,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		TurnstileEnabled:                     updatedSettings.TurnstileEnabled,
 		TurnstileSiteKey:                     updatedSettings.TurnstileSiteKey,
 		TurnstileSecretKeyConfigured:         updatedSettings.TurnstileSecretKeyConfigured,
+		GeetestEnabled:                       updatedSettings.GeetestEnabled,
+		GeetestCaptchaID:                     updatedSettings.GeetestCaptchaID,
+		GeetestCaptchaKeyConfigured:          updatedSettings.GeetestCaptchaKeyConfigured,
+		GeetestPopupOnSubmit:                 updatedSettings.GeetestPopupOnSubmit,
 		LinuxDoConnectEnabled:                updatedSettings.LinuxDoConnectEnabled,
 		LinuxDoConnectClientID:               updatedSettings.LinuxDoConnectClientID,
 		LinuxDoConnectClientSecretConfigured: updatedSettings.LinuxDoConnectClientSecretConfigured,

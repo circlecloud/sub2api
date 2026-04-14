@@ -69,14 +69,18 @@
           </p>
         </div>
 
-        <!-- Turnstile Widget -->
-        <div v-if="turnstileEnabled && turnstileSiteKey">
-          <TurnstileWidget
-            ref="turnstileRef"
-            :site-key="turnstileSiteKey"
-            @verify="onTurnstileVerify"
-            @expire="onTurnstileExpire"
-            @error="onTurnstileError"
+        <!-- Captcha Widget -->
+        <div v-if="captchaEnabled">
+          <CaptchaWidget
+            ref="captchaRef"
+            :provider="captchaProvider"
+            :turnstile-site-key="turnstileSiteKey"
+            :geetest-captcha-id="geetestCaptchaId"
+            :geetest-mode="geetestCaptchaMode"
+            :geetest-bind-element="'#forgot-password-submit-button'"
+            @verify="onCaptchaVerify"
+            @expire="onCaptchaExpire"
+            @error="onCaptchaError"
           />
           <p v-if="errors.turnstile" class="input-error-text mt-2 text-center">
             {{ errors.turnstile }}
@@ -102,8 +106,9 @@
 
         <!-- Submit Button -->
         <button
+          id="forgot-password-submit-button"
           type="submit"
-          :disabled="isLoading || (turnstileEnabled && !turnstileToken)"
+          :disabled="isLoading || captchaTokenRequiredBeforeSubmit"
           class="btn btn-primary w-full"
         >
           <svg
@@ -148,11 +153,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AuthLayout } from '@/components/layout'
 import Icon from '@/components/icons/Icon.vue'
-import TurnstileWidget from '@/components/TurnstileWidget.vue'
+import CaptchaWidget from '@/components/CaptchaWidget.vue'
 import { useAppStore } from '@/stores'
 import { getPublicSettings, forgotPassword } from '@/api/auth'
 
@@ -171,10 +176,35 @@ const errorMessage = ref<string>('')
 // Public settings
 const turnstileEnabled = ref<boolean>(false)
 const turnstileSiteKey = ref<string>('')
+const geetestEnabled = ref<boolean>(false)
+const geetestCaptchaId = ref<string>('')
+const geetestPopupOnSubmit = ref<boolean>(false)
 
-// Turnstile
-const turnstileRef = ref<InstanceType<typeof TurnstileWidget> | null>(null)
-const turnstileToken = ref<string>('')
+const captchaProvider = computed<'turnstile' | 'geetest' | null>(() => {
+  if (geetestEnabled.value && geetestCaptchaId.value) {
+    return 'geetest'
+  }
+  if (turnstileEnabled.value && turnstileSiteKey.value) {
+    return 'turnstile'
+  }
+  return null
+})
+
+const captchaEnabled = computed(() => captchaProvider.value !== null)
+const useGeetestPopupOnSubmit = computed(
+  () => captchaProvider.value === 'geetest' && geetestPopupOnSubmit.value
+)
+const geetestCaptchaMode = computed<'float' | 'bind'>(() =>
+  useGeetestPopupOnSubmit.value ? 'bind' : 'float'
+)
+const captchaTokenRequiredBeforeSubmit = computed(
+  () => captchaEnabled.value && !useGeetestPopupOnSubmit.value && !captchaToken.value
+)
+
+// Captcha
+const captchaRef = ref<InstanceType<typeof CaptchaWidget> | null>(null)
+const captchaToken = ref<string>('')
+const pendingForgotPasswordAfterCaptcha = ref<boolean>(false)
 
 const formData = reactive({
   email: ''
@@ -192,26 +222,49 @@ onMounted(async () => {
     const settings = await getPublicSettings()
     turnstileEnabled.value = settings.turnstile_enabled
     turnstileSiteKey.value = settings.turnstile_site_key || ''
+    geetestEnabled.value = settings.geetest_enabled
+    geetestCaptchaId.value = settings.geetest_captcha_id || ''
+    geetestPopupOnSubmit.value = settings.geetest_popup_on_submit
   } catch (error) {
     console.error('Failed to load public settings:', error)
   }
 })
 
-// ==================== Turnstile Handlers ====================
+// ==================== Captcha Handlers ====================
 
-function onTurnstileVerify(token: string): void {
-  turnstileToken.value = token
+function onCaptchaVerify(token: string): void {
+  captchaToken.value = token
   errors.turnstile = ''
+
+  if (pendingForgotPasswordAfterCaptcha.value) {
+    pendingForgotPasswordAfterCaptcha.value = false
+    void submitForgotPassword()
+  }
 }
 
-function onTurnstileExpire(): void {
-  turnstileToken.value = ''
+function onCaptchaExpire(): void {
+  pendingForgotPasswordAfterCaptcha.value = false
+  captchaToken.value = ''
   errors.turnstile = t('auth.turnstileExpired')
 }
 
-function onTurnstileError(): void {
-  turnstileToken.value = ''
+function onCaptchaError(): void {
+  pendingForgotPasswordAfterCaptcha.value = false
+  captchaToken.value = ''
   errors.turnstile = t('auth.turnstileFailed')
+}
+
+function requestCaptchaForForgotPassword(): boolean {
+  pendingForgotPasswordAfterCaptcha.value = true
+  errors.turnstile = ''
+
+  if (captchaRef.value?.showCaptcha()) {
+    return true
+  }
+
+  pendingForgotPasswordAfterCaptcha.value = false
+  errors.turnstile = t('auth.captchaNotReady')
+  return false
 }
 
 // ==================== Validation ====================
@@ -232,7 +285,7 @@ function validateForm(): boolean {
   }
 
   // Turnstile validation
-  if (turnstileEnabled.value && !turnstileToken.value) {
+  if (captchaEnabled.value && !captchaToken.value) {
     errors.turnstile = t('auth.completeVerification')
     isValid = false
   }
@@ -242,28 +295,22 @@ function validateForm(): boolean {
 
 // ==================== Form Handlers ====================
 
-async function handleSubmit(): Promise<void> {
-  errorMessage.value = ''
-
-  if (!validateForm()) {
-    return
-  }
-
+async function submitForgotPassword(): Promise<void> {
   isLoading.value = true
 
   try {
     await forgotPassword({
       email: formData.email,
-      turnstile_token: turnstileEnabled.value ? turnstileToken.value : undefined
+      captcha_token: captchaEnabled.value ? captchaToken.value : undefined
     })
 
     isSubmitted.value = true
     appStore.showSuccess(t('auth.resetEmailSent'))
   } catch (error: unknown) {
     // Reset Turnstile on error
-    if (turnstileRef.value) {
-      turnstileRef.value.reset()
-      turnstileToken.value = ''
+    if (captchaRef.value) {
+      captchaRef.value.reset()
+      captchaToken.value = ''
     }
 
     const err = error as { message?: string; response?: { data?: { detail?: string } } }
@@ -280,6 +327,21 @@ async function handleSubmit(): Promise<void> {
   } finally {
     isLoading.value = false
   }
+}
+
+async function handleSubmit(): Promise<void> {
+  errorMessage.value = ''
+
+  if (!validateForm()) {
+    return
+  }
+
+  if (useGeetestPopupOnSubmit.value && !captchaToken.value) {
+    requestCaptchaForForgotPassword()
+    return
+  }
+
+  await submitForgotPassword()
 }
 </script>
 

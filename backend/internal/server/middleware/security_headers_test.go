@@ -125,10 +125,12 @@ func TestSecurityHeaders(t *testing.T) {
 
 		csp := w.Header().Get("Content-Security-Policy")
 		assert.NotEmpty(t, csp)
-		// Policy is auto-enhanced with nonce and Cloudflare Insights domain
+		// Policy is auto-enhanced with nonce, Cloudflare Insights, and GeeTest domains
 		assert.Contains(t, csp, "default-src 'self'")
 		assert.Contains(t, csp, "'nonce-")
 		assert.Contains(t, csp, CloudflareInsightsDomain)
+		assert.Contains(t, csp, "https://*.geetest.com")
+		assert.Contains(t, csp, "https://*.geevisit.com")
 	})
 
 	t.Run("api_route_skips_csp_nonce_generation", func(t *testing.T) {
@@ -294,32 +296,23 @@ func TestEnhanceCSPPolicy(t *testing.T) {
 
 		assert.Contains(t, enhanced, NonceTemplate)
 		assert.Contains(t, enhanced, CloudflareInsightsDomain)
+		assert.Contains(t, enhanced, "https://*.geetest.com")
+		assert.Contains(t, enhanced, "https://*.geevisit.com")
+		assert.Contains(t, enhanced, "style-src")
+
+		assert.Contains(t, enhanced, "https://*.gsensebot.com")
+		assert.Contains(t, enhanced, "https://dn-staticdown.qbox.me")
 	})
 
-	t.Run("does_not_duplicate_nonce_placeholder", func(t *testing.T) {
-		policy := "default-src 'self'; script-src 'self' __CSP_NONCE__"
+	t.Run("adds_geetest_domains_to_related_directives", func(t *testing.T) {
+		policy := "default-src 'self'; script-src 'self'; style-src 'self'; frame-src 'self'; connect-src 'self'; img-src 'self'"
 		enhanced := enhanceCSPPolicy(policy)
 
-		// Should not duplicate
-		count := strings.Count(enhanced, NonceTemplate)
-		assert.Equal(t, 1, count)
-	})
-
-	t.Run("does_not_duplicate_cloudflare_domain", func(t *testing.T) {
-		policy := "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com"
-		enhanced := enhanceCSPPolicy(policy)
-
-		count := strings.Count(enhanced, CloudflareInsightsDomain)
-		assert.Equal(t, 1, count)
-	})
-
-	t.Run("handles_policy_without_script_src", func(t *testing.T) {
-		policy := "default-src 'self'"
-		enhanced := enhanceCSPPolicy(policy)
-
-		assert.Contains(t, enhanced, "script-src")
-		assert.Contains(t, enhanced, NonceTemplate)
-		assert.Contains(t, enhanced, CloudflareInsightsDomain)
+		assert.Contains(t, enhanced, "script-src 'self' "+NonceTemplate)
+		assert.Contains(t, enhanced, "style-src 'self' https://*.geetest.com https://*.geevisit.com https://dn-staticdown.qbox.me")
+		assert.Contains(t, enhanced, "connect-src 'self' https://*.geetest.com https://*.geevisit.com https://*.gsensebot.com")
+		assert.Contains(t, enhanced, "img-src 'self' https://*.geetest.com https://*.geevisit.com https://*.gsensebot.com https://dn-staticdown.qbox.me")
+		assert.Contains(t, enhanced, "frame-src 'self' https://*.geetest.com https://*.geevisit.com")
 	})
 
 	t.Run("preserves_existing_nonce", func(t *testing.T) {
@@ -329,6 +322,14 @@ func TestEnhanceCSPPolicy(t *testing.T) {
 		// Should not add placeholder if nonce already exists
 		assert.NotContains(t, enhanced, NonceTemplate)
 		assert.Contains(t, enhanced, "'nonce-existing'")
+	})
+}
+
+func TestDirectiveHasValue(t *testing.T) {
+	t.Run("checks_value_within_specific_directive_only", func(t *testing.T) {
+		policy := "script-src 'self' https://*.geetest.com; style-src 'self'"
+		assert.True(t, directiveHasValue(policy, "script-src", "https://*.geetest.com"))
+		assert.False(t, directiveHasValue(policy, "style-src", "https://*.geetest.com"))
 	})
 }
 

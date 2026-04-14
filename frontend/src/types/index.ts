@@ -63,6 +63,7 @@ export interface AdminUser extends User {
 export interface LoginRequest {
   email: string
   password: string
+  captcha_token?: string
   turnstile_token?: string
 }
 
@@ -70,6 +71,7 @@ export interface RegisterRequest {
   email: string
   password: string
   verify_code?: string
+  captcha_token?: string
   turnstile_token?: string
   promo_code?: string
   invitation_code?: string
@@ -77,6 +79,7 @@ export interface RegisterRequest {
 
 export interface SendVerifyCodeRequest {
   email: string
+  captcha_token?: string
   turnstile_token?: string
 }
 
@@ -109,6 +112,9 @@ export interface PublicSettings {
   invitation_code_enabled: boolean
   turnstile_enabled: boolean
   turnstile_site_key: string
+  geetest_enabled: boolean
+  geetest_captcha_id: string
+  geetest_popup_on_submit: boolean
   site_name: string
   site_logo: string
   site_subtitle: string

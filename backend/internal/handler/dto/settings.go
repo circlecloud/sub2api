@@ -45,6 +45,10 @@ type SystemSettings struct {
 	TurnstileEnabled             bool   `json:"turnstile_enabled"`
 	TurnstileSiteKey             string `json:"turnstile_site_key"`
 	TurnstileSecretKeyConfigured bool   `json:"turnstile_secret_key_configured"`
+	GeetestEnabled               bool   `json:"geetest_enabled"`
+	GeetestCaptchaID             string `json:"geetest_captcha_id"`
+	GeetestCaptchaKeyConfigured  bool   `json:"geetest_captcha_key_configured"`
+	GeetestPopupOnSubmit         bool   `json:"geetest_popup_on_submit"`
 
 	LinuxDoConnectEnabled                bool   `json:"linuxdo_connect_enabled"`
 	LinuxDoConnectClientID               string `json:"linuxdo_connect_client_id"`
@@ -174,6 +178,9 @@ type PublicSettings struct {
 	TotpEnabled                      bool             `json:"totp_enabled"` // TOTP 双因素认证
 	TurnstileEnabled                 bool             `json:"turnstile_enabled"`
 	TurnstileSiteKey                 string           `json:"turnstile_site_key"`
+	GeetestEnabled                   bool             `json:"geetest_enabled"`
+	GeetestCaptchaID                 string           `json:"geetest_captcha_id"`
+	GeetestPopupOnSubmit             bool             `json:"geetest_popup_on_submit"`
 	SiteName                         string           `json:"site_name"`
 	SiteLogo                         string           `json:"site_logo"`
 	SiteSubtitle                     string           `json:"site_subtitle"`

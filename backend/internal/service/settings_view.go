@@ -24,6 +24,12 @@ type SystemSettings struct {
 	TurnstileSecretKey           string
 	TurnstileSecretKeyConfigured bool
 
+	GeetestEnabled              bool
+	GeetestCaptchaID            string
+	GeetestCaptchaKey           string
+	GeetestCaptchaKeyConfigured bool
+	GeetestPopupOnSubmit        bool
+
 	// LinuxDo Connect OAuth 登录
 	LinuxDoConnectEnabled                bool
 	LinuxDoConnectClientID               string
@@ -135,6 +141,9 @@ type PublicSettings struct {
 	TotpEnabled                      bool // TOTP 双因素认证
 	TurnstileEnabled                 bool
 	TurnstileSiteKey                 string
+	GeetestEnabled                   bool
+	GeetestCaptchaID                 string
+	GeetestPopupOnSubmit             bool
 	SiteName                         string
 	SiteLogo                         string
 	SiteSubtitle                     string
