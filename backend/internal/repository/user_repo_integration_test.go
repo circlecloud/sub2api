@@ -252,6 +252,18 @@ func (s *UserRepoSuite) TestListWithFilters_CombinedFilters() {
 	s.Require().Equal(target.ID, users[0].ID, "ListWithFilters result mismatch")
 }
 
+func (s *UserRepoSuite) TestListWithFilters_SortByBalanceAsc() {
+	middle := s.mustCreateUser(&service.User{Email: "middle-balance@example.com", Balance: 10})
+	lowest := s.mustCreateUser(&service.User{Email: "lowest-balance@example.com", Balance: 1})
+	highest := s.mustCreateUser(&service.User{Email: "highest-balance@example.com", Balance: 50})
+
+	users, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10, SortBy: "balance", SortOrder: "asc"}, service.UserListFilters{})
+	s.Require().NoError(err, "ListWithFilters sort by balance asc")
+	s.Require().Equal(int64(3), page.Total)
+	s.Require().Len(users, 3)
+	s.Require().Equal([]int64{lowest.ID, middle.ID, highest.ID}, []int64{users[0].ID, users[1].ID, users[2].ID})
+}
+
 // --- Balance operations ---
 
 func (s *UserRepoSuite) TestUpdateBalance() {

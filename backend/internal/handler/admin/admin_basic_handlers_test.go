@@ -62,6 +62,19 @@ func setupAdminRouter() (*gin.Engine, *stubAdminService) {
 	return router, adminSvc
 }
 
+func TestUserHandlerList_PassesSortParamsAndFilterFlags(t *testing.T) {
+	router, adminSvc := setupAdminRouter()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users?page=1&page_size=20&sort_by=balance&sort_order=asc&include_subscriptions=false", nil)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "balance", adminSvc.lastUserListSortBy)
+	require.Equal(t, "asc", adminSvc.lastUserListSortOrder)
+	require.NotNil(t, adminSvc.lastUserListFilters.IncludeSubscriptions)
+	require.False(t, *adminSvc.lastUserListFilters.IncludeSubscriptions)
+}
+
 func TestUserHandlerEndpoints(t *testing.T) {
 	router, _ := setupAdminRouter()
 

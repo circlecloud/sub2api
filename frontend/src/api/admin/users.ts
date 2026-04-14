@@ -10,7 +10,7 @@ import type { AdminUser, UpdateUserRequest, PaginatedResponse, ApiKey } from '@/
  * List all users with pagination
  * @param page - Page number (default: 1)
  * @param pageSize - Items per page (default: 20)
- * @param filters - Optional filters (status, role, search, attributes)
+ * @param filters - Optional filters (status, role, search, attributes, sort)
  * @param options - Optional request options (signal)
  * @returns Paginated list of users
  */
@@ -21,11 +21,11 @@ export async function list(
     status?: 'active' | 'disabled'
     role?: 'admin' | 'user'
     search?: string
-    group_name?: string         // fuzzy filter by allowed group name
-    attributes?: Record<number, string>  // attributeId -> value
-    include_subscriptions?: boolean
+    group_name?: string // fuzzy filter by allowed group name
+    attributes?: Record<number, string> // attributeId -> value
     sort_by?: string
     sort_order?: 'asc' | 'desc'
+    include_subscriptions?: boolean
   },
   options?: {
     signal?: AbortSignal
@@ -39,9 +39,9 @@ export async function list(
     role: filters?.role,
     search: filters?.search,
     group_name: filters?.group_name,
-    include_subscriptions: filters?.include_subscriptions,
     sort_by: filters?.sort_by,
-    sort_order: filters?.sort_order
+    sort_order: filters?.sort_order,
+    include_subscriptions: filters?.include_subscriptions
   }
 
   // Add attribute filters as attr[id]=value

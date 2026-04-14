@@ -1154,9 +1154,9 @@ const loadUsers = async () => {
         search: searchQuery.value || undefined,
         group_name: filters.group || undefined,
         attributes: Object.keys(attrFilters).length > 0 ? attrFilters : undefined,
-        include_subscriptions: hasVisibleSubscriptionsColumn.value,
         sort_by: sortState.sort_by,
-        sort_order: sortState.sort_order
+        sort_order: sortState.sort_order,
+        include_subscriptions: hasVisibleSubscriptionsColumn.value
       },
       { signal }
     )

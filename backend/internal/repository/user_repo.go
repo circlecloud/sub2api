@@ -188,6 +188,69 @@ func (r *userRepository) List(ctx context.Context, params pagination.PaginationP
 	return r.ListWithFilters(ctx, params, service.UserListFilters{})
 }
 
+func buildUserOrderOptions(sortBy, sortOrder string) []dbuser.OrderOption {
+	fieldMap := map[string]string{
+		"id":          dbuser.FieldID,
+		"email":       dbuser.FieldEmail,
+		"username":    dbuser.FieldUsername,
+		"role":        dbuser.FieldRole,
+		"balance":     dbuser.FieldBalance,
+		"concurrency": dbuser.FieldConcurrency,
+		"status":      dbuser.FieldStatus,
+		"created_at":  dbuser.FieldCreatedAt,
+	}
+
+	parseList := func(raw string) []string {
+		parts := strings.Split(raw, ",")
+		result := make([]string, 0, len(parts))
+		for _, part := range parts {
+			trimmed := strings.ToLower(strings.TrimSpace(part))
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		return result
+	}
+
+	sortFields := parseList(sortBy)
+	sortOrders := parseList(sortOrder)
+	options := make([]dbuser.OrderOption, 0, len(sortFields)+1)
+	seen := make(map[string]struct{}, len(sortFields))
+	idIncluded := false
+
+	for index, sortField := range sortFields {
+		field, ok := fieldMap[sortField]
+		if !ok {
+			continue
+		}
+		if _, exists := seen[sortField]; exists {
+			continue
+		}
+		seen[sortField] = struct{}{}
+		if sortField == "id" {
+			idIncluded = true
+		}
+
+		order := "asc"
+		if index < len(sortOrders) && sortOrders[index] == "desc" {
+			order = "desc"
+		}
+		if order == "desc" {
+			options = append(options, dbent.Desc(field))
+		} else {
+			options = append(options, dbent.Asc(field))
+		}
+	}
+
+	if len(options) == 0 {
+		return []dbuser.OrderOption{dbent.Desc(dbuser.FieldID)}
+	}
+	if !idIncluded {
+		options = append(options, dbent.Desc(dbuser.FieldID))
+	}
+	return options
+}
+
 func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.UserListFilters) ([]service.User, *pagination.PaginationResult, error) {
 	q := r.client.User.Query()
 
