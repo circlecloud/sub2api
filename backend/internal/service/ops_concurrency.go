@@ -16,6 +16,7 @@ const (
 	opsConcurrencyBatchChunkSize = 10000
 	opsRealtimeSnapshotCacheTTL  = 3 * time.Second
 	opsRealtimeResultCacheTTL    = 5 * time.Second
+	opsUserConcurrencyCacheKey   = "ops_user_concurrency"
 )
 
 type opsRealtimeConcurrencyCacheEntry struct {
@@ -23,7 +24,13 @@ type opsRealtimeConcurrencyCacheEntry struct {
 	group       map[int64]*GroupConcurrencyInfo
 	account     map[int64]*AccountConcurrencyInfo
 	collectedAt *time.Time
-	expiresAt   time.Time
+}
+
+type opsRealtimeAvailabilityCacheEntry struct {
+	platform    map[string]*PlatformAvailability
+	group       map[int64]*GroupAvailability
+	account     map[int64]*AccountAvailability
+	collectedAt *time.Time
 }
 
 type OpsRealtimeScope string
@@ -34,18 +41,17 @@ const (
 	opsRealtimeScopeAccount  OpsRealtimeScope = "account"
 )
 
-type opsRealtimeAccountsCacheEntry struct {
-	accounts  []Account
-	expiresAt time.Time
-}
-
-type opsRealtimeUsersCacheEntry struct {
-	users     []User
-	expiresAt time.Time
+type opsRealtimeUserConcurrencyCacheEntry struct {
+	users       map[int64]*UserConcurrencyInfo
+	collectedAt *time.Time
 }
 
 type opsRealtimeAccountLister interface {
 	ListOpsRealtimeAccounts(ctx context.Context, platformFilter string, groupIDFilter *int64) ([]Account, error)
+}
+
+type opsRealtimeActiveUserLister interface {
+	ListOpsRealtimeUsers(ctx context.Context) ([]User, error)
 }
 
 func NormalizeOpsRealtimeScope(raw string, platformFilter string, groupIDFilter *int64, includeAccount bool) OpsRealtimeScope {
@@ -91,9 +97,6 @@ func (s *OpsService) initRealtimeSnapshotCache() {
 		return
 	}
 	s.realtimeSnapshotOnce.Do(func() {
-		s.realtimeAccountsCache = make(map[string]opsRealtimeAccountsCacheEntry)
-		s.realtimeConcurrencyCache = make(map[string]opsRealtimeConcurrencyCacheEntry)
-		s.realtimeWarmPoolCache = make(map[string]opsWarmPoolResultCacheEntry)
 		s.realtimeCacheMissLogAt = make(map[string]time.Time)
 	})
 }
@@ -102,64 +105,28 @@ func (s *OpsService) getCachedRealtimeAccounts(key string) ([]Account, bool) {
 	if s == nil || key == "" {
 		return nil, false
 	}
-	s.initRealtimeSnapshotCache()
-	now := time.Now()
-	s.realtimeSnapshotMu.RLock()
-	entry, ok := s.realtimeAccountsCache[key]
-	s.realtimeSnapshotMu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	if now.After(entry.expiresAt) {
-		s.realtimeSnapshotMu.Lock()
-		delete(s.realtimeAccountsCache, key)
-		s.realtimeSnapshotMu.Unlock()
-		return nil, false
-	}
-	return entry.accounts, true
+	return s.realtimeAccountsCache.get(key, time.Now())
 }
 
 func (s *OpsService) setCachedRealtimeAccounts(key string, accounts []Account) []Account {
 	if s == nil || key == "" {
 		return accounts
 	}
-	s.initRealtimeSnapshotCache()
-	s.realtimeSnapshotMu.Lock()
-	s.realtimeAccountsCache[key] = opsRealtimeAccountsCacheEntry{accounts: accounts, expiresAt: time.Now().Add(opsRealtimeSnapshotCacheTTL)}
-	s.realtimeSnapshotMu.Unlock()
-	return accounts
+	return s.realtimeAccountsCache.set(key, accounts, opsRealtimeSnapshotCacheTTL, time.Now())
 }
 
 func (s *OpsService) getCachedRealtimeUsers() ([]User, bool) {
 	if s == nil {
 		return nil, false
 	}
-	s.initRealtimeSnapshotCache()
-	now := time.Now()
-	s.realtimeSnapshotMu.RLock()
-	entry := s.realtimeUsersCache
-	s.realtimeSnapshotMu.RUnlock()
-	if entry == nil {
-		return nil, false
-	}
-	if now.After(entry.expiresAt) {
-		s.realtimeSnapshotMu.Lock()
-		s.realtimeUsersCache = nil
-		s.realtimeSnapshotMu.Unlock()
-		return nil, false
-	}
-	return entry.users, true
+	return s.realtimeUsersCache.get(time.Now())
 }
 
 func (s *OpsService) setCachedRealtimeUsers(users []User) []User {
 	if s == nil {
 		return users
 	}
-	s.initRealtimeSnapshotCache()
-	s.realtimeSnapshotMu.Lock()
-	s.realtimeUsersCache = &opsRealtimeUsersCacheEntry{users: users, expiresAt: time.Now().Add(opsRealtimeSnapshotCacheTTL)}
-	s.realtimeSnapshotMu.Unlock()
-	return users
+	return s.realtimeUsersCache.set(users, opsRealtimeSnapshotCacheTTL, time.Now())
 }
 
 func buildOpsRealtimeConcurrencyCacheKey(platformFilter string, groupIDFilter *int64, scope OpsRealtimeScope) string {
@@ -170,22 +137,16 @@ func buildOpsRealtimeConcurrencyCacheKey(platformFilter string, groupIDFilter *i
 	return fmt.Sprintf("%s|%d|%s", strings.ToLower(strings.TrimSpace(platformFilter)), groupID, scope)
 }
 
+func buildOpsRealtimeAvailabilityCacheKey(platformFilter string, groupIDFilter *int64, scope OpsRealtimeScope) string {
+	return buildOpsRealtimeConcurrencyCacheKey(platformFilter, groupIDFilter, scope)
+}
+
 func (s *OpsService) getCachedRealtimeConcurrencyStats(key string) (map[string]*PlatformConcurrencyInfo, map[int64]*GroupConcurrencyInfo, map[int64]*AccountConcurrencyInfo, *time.Time, bool) {
 	if s == nil || key == "" {
 		return nil, nil, nil, nil, false
 	}
-	s.initRealtimeSnapshotCache()
-	now := time.Now()
-	s.realtimeSnapshotMu.RLock()
-	entry, ok := s.realtimeConcurrencyCache[key]
-	s.realtimeSnapshotMu.RUnlock()
+	entry, ok := s.realtimeConcurrencyCache.get(key, time.Now())
 	if !ok {
-		return nil, nil, nil, nil, false
-	}
-	if now.After(entry.expiresAt) {
-		s.realtimeSnapshotMu.Lock()
-		delete(s.realtimeConcurrencyCache, key)
-		s.realtimeSnapshotMu.Unlock()
 		return nil, nil, nil, nil, false
 	}
 	return entry.platform, entry.group, entry.account, entry.collectedAt, true
@@ -195,16 +156,57 @@ func (s *OpsService) setCachedRealtimeConcurrencyStats(key string, platform map[
 	if s == nil || key == "" {
 		return
 	}
-	s.initRealtimeSnapshotCache()
-	s.realtimeSnapshotMu.Lock()
-	s.realtimeConcurrencyCache[key] = opsRealtimeConcurrencyCacheEntry{
+	s.realtimeConcurrencyCache.set(key, opsRealtimeConcurrencyCacheEntry{
 		platform:    platform,
 		group:       group,
 		account:     account,
 		collectedAt: collectedAt,
-		expiresAt:   time.Now().Add(opsRealtimeResultCacheTTL),
+	}, opsRealtimeResultCacheTTL, time.Now())
+}
+
+func (s *OpsService) getCachedRealtimeAccountAvailabilityStats(key string) (map[string]*PlatformAvailability, map[int64]*GroupAvailability, map[int64]*AccountAvailability, *time.Time, bool) {
+	if s == nil || key == "" {
+		return nil, nil, nil, nil, false
 	}
-	s.realtimeSnapshotMu.Unlock()
+	entry, ok := s.realtimeAccountAvailabilityCache.get(key, time.Now())
+	if !ok {
+		return nil, nil, nil, nil, false
+	}
+	return entry.platform, entry.group, entry.account, entry.collectedAt, true
+}
+
+func (s *OpsService) setCachedRealtimeAccountAvailabilityStats(key string, platform map[string]*PlatformAvailability, group map[int64]*GroupAvailability, account map[int64]*AccountAvailability, collectedAt *time.Time) {
+	if s == nil || key == "" {
+		return
+	}
+	s.realtimeAccountAvailabilityCache.set(key, opsRealtimeAvailabilityCacheEntry{
+		platform:    platform,
+		group:       group,
+		account:     account,
+		collectedAt: collectedAt,
+	}, opsRealtimeResultCacheTTL, time.Now())
+}
+
+func (s *OpsService) getCachedRealtimeUserConcurrencyStats() (map[int64]*UserConcurrencyInfo, *time.Time, bool) {
+	if s == nil {
+		return nil, nil, false
+	}
+	entry, ok := s.realtimeUserConcurrencyCache.get(time.Now())
+	if !ok {
+		return nil, nil, false
+	}
+	return entry.users, entry.collectedAt, true
+}
+
+func (s *OpsService) setCachedRealtimeUserConcurrencyStats(users map[int64]*UserConcurrencyInfo, collectedAt *time.Time) map[int64]*UserConcurrencyInfo {
+	if s == nil {
+		return users
+	}
+	s.realtimeUserConcurrencyCache.set(opsRealtimeUserConcurrencyCacheEntry{
+		users:       users,
+		collectedAt: collectedAt,
+	}, opsRealtimeResultCacheTTL, time.Now())
+	return users
 }
 
 func (s *OpsService) listConcurrencyAccounts(ctx context.Context, platformFilter string, groupIDFilter *int64, scope OpsRealtimeScope) ([]Account, error) {
@@ -238,31 +240,13 @@ func (s *OpsService) listAllAccountsForOps(ctx context.Context, platformFilter s
 	if accounts, hit, err := s.listAllAccountsForOpsFromRealtimeCache(ctx, platformFilter, groupIDFilter); err != nil {
 		s.logRealtimeCacheMiss("ops_account_list", err)
 	} else if hit {
-
 		return accounts, nil
 	}
-	cacheKey := buildOpsRealtimeAccountsCacheKey(platformFilter, groupIDFilter)
-	if cached, ok := s.getCachedRealtimeAccounts(cacheKey); ok {
-		return cached, nil
+	result, err := s.loadSharedOpsRealtimeAccountsFromRepo(ctx, platformFilter, groupIDFilter)
+	if err != nil {
+		return nil, err
 	}
-	if cacheKey != "" {
-		value, err, _ := s.realtimeSnapshotFlight.Do("ops_accounts:"+cacheKey, func() (any, error) {
-			if cached, ok := s.getCachedRealtimeAccounts(cacheKey); ok {
-				return cached, nil
-			}
-			loaded, err := s.listAllAccountsForOpsUncached(ctx, platformFilter, groupIDFilter)
-			if err != nil {
-				return nil, err
-			}
-			return s.setCachedRealtimeAccounts(cacheKey, loaded), nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		accounts, _ := value.([]Account)
-		return accounts, nil
-	}
-	return s.listAllAccountsForOpsUncached(ctx, platformFilter, groupIDFilter)
+	return result.accounts, nil
 }
 
 func (s *OpsService) listAllAccountsForOpsUncached(ctx context.Context, platformFilter string, groupIDFilter *int64) ([]Account, error) {
@@ -350,7 +334,7 @@ func (s *OpsService) getAccountsLoadMapBestEffort(ctx context.Context, accounts 
 		if end > len(batch) {
 			end = len(batch)
 		}
-		part, err := s.concurrencyService.GetAccountsLoadBatch(ctx, batch[i:end])
+		part, err := s.concurrencyService.GetAccountsLoadBatchFast(ctx, batch[i:end])
 		if err != nil {
 			// Best-effort: return zeros rather than failing the ops UI.
 			log.Printf("[Ops] GetAccountsLoadBatch failed: %v", err)
@@ -387,12 +371,11 @@ func (s *OpsService) GetConcurrencyStatsWithOptions(
 		return nil, nil, nil, nil, err
 	}
 
-	cacheKey := ""
-	if !scope.includeAccount() {
-		cacheKey = buildOpsRealtimeConcurrencyCacheKey(platformFilter, groupIDFilter, scope)
-		if platform, group, account, collectedAt, ok := s.getCachedRealtimeConcurrencyStats(cacheKey); ok {
-			return platform, group, account, collectedAt, nil
-		}
+	start := time.Now()
+	cacheKey := buildOpsRealtimeConcurrencyCacheKey(platformFilter, groupIDFilter, scope)
+	if platform, group, account, collectedAt, ok := s.getCachedRealtimeConcurrencyStats(cacheKey); ok {
+		s.logRealtimeResultCache("ops_concurrency", cacheKey, true, time.Since(start))
+		return platform, group, account, collectedAt, nil
 	}
 
 	compute := func() (map[string]*PlatformConcurrencyInfo, map[int64]*GroupConcurrencyInfo, map[int64]*AccountConcurrencyInfo, *time.Time, error) {
@@ -566,6 +549,7 @@ func (s *OpsService) GetConcurrencyStatsWithOptions(
 		return nil, nil, nil, nil, err
 	}
 	entry, _ := value.(opsRealtimeConcurrencyCacheEntry)
+	s.logRealtimeResultCache("ops_concurrency", cacheKey, false, time.Since(start))
 	return entry.platform, entry.group, entry.account, entry.collectedAt, nil
 }
 
@@ -597,6 +581,9 @@ func (s *OpsService) listAllActiveUsersForOps(ctx context.Context) ([]User, erro
 func (s *OpsService) listAllActiveUsersForOpsUncached(ctx context.Context) ([]User, error) {
 	if s == nil || s.userRepo == nil {
 		return []User{}, nil
+	}
+	if lister, ok := s.userRepo.(opsRealtimeActiveUserLister); ok {
+		return lister.ListOpsRealtimeUsers(ctx)
 	}
 
 	out := make([]User, 0, 128)
@@ -667,7 +654,7 @@ func (s *OpsService) getUsersLoadMapBestEffort(ctx context.Context, users []User
 		if end > len(batch) {
 			end = len(batch)
 		}
-		part, err := s.concurrencyService.GetUsersLoadBatch(ctx, batch[i:end])
+		part, err := s.concurrencyService.GetUsersLoadBatchFast(ctx, batch[i:end])
 		if err != nil {
 			// Best-effort: return zeros rather than failing the ops UI.
 			log.Printf("[Ops] GetUsersLoadBatch failed: %v", err)
@@ -686,48 +673,62 @@ func (s *OpsService) GetUserConcurrencyStats(ctx context.Context) (map[int64]*Us
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return nil, nil, err
 	}
+	if users, collectedAt, ok := s.getCachedRealtimeUserConcurrencyStats(); ok {
+		return users, collectedAt, nil
+	}
 
-	users, err := s.listAllActiveUsersForOps(ctx)
+	value, err, _ := s.realtimeSnapshotFlight.Do(opsUserConcurrencyCacheKey, func() (any, error) {
+		if users, collectedAt, ok := s.getCachedRealtimeUserConcurrencyStats(); ok {
+			return opsRealtimeUserConcurrencyCacheEntry{users: users, collectedAt: collectedAt}, nil
+		}
+
+		activeUsers, err := s.listAllActiveUsersForOps(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		collectedAt := time.Now()
+		loadMap := s.getUsersLoadMapBestEffort(ctx, activeUsers)
+		result := make(map[int64]*UserConcurrencyInfo)
+
+		for _, u := range activeUsers {
+			if u.ID <= 0 {
+				continue
+			}
+
+			load := loadMap[u.ID]
+			currentInUse := int64(0)
+			waiting := int64(0)
+			if load != nil {
+				currentInUse = int64(load.CurrentConcurrency)
+				waiting = int64(load.WaitingCount)
+			}
+
+			// Skip users with no concurrency activity
+			if currentInUse == 0 && waiting == 0 {
+				continue
+			}
+
+			info := &UserConcurrencyInfo{
+				UserID:         u.ID,
+				UserEmail:      u.Email,
+				Username:       u.Username,
+				CurrentInUse:   currentInUse,
+				MaxCapacity:    int64(u.Concurrency),
+				WaitingInQueue: waiting,
+			}
+			if info.MaxCapacity > 0 {
+				info.LoadPercentage = float64(info.CurrentInUse) / float64(info.MaxCapacity) * 100
+			}
+			result[u.ID] = info
+		}
+
+		s.setCachedRealtimeUserConcurrencyStats(result, &collectedAt)
+		return opsRealtimeUserConcurrencyCacheEntry{users: result, collectedAt: &collectedAt}, nil
+	})
 	if err != nil {
 		return nil, nil, err
 	}
-
-	collectedAt := time.Now()
-	loadMap := s.getUsersLoadMapBestEffort(ctx, users)
-
-	result := make(map[int64]*UserConcurrencyInfo)
-
-	for _, u := range users {
-		if u.ID <= 0 {
-			continue
-		}
-
-		load := loadMap[u.ID]
-		currentInUse := int64(0)
-		waiting := int64(0)
-		if load != nil {
-			currentInUse = int64(load.CurrentConcurrency)
-			waiting = int64(load.WaitingCount)
-		}
-
-		// Skip users with no concurrency activity
-		if currentInUse == 0 && waiting == 0 {
-			continue
-		}
-
-		info := &UserConcurrencyInfo{
-			UserID:         u.ID,
-			UserEmail:      u.Email,
-			Username:       u.Username,
-			CurrentInUse:   currentInUse,
-			MaxCapacity:    int64(u.Concurrency),
-			WaitingInQueue: waiting,
-		}
-		if info.MaxCapacity > 0 {
-			info.LoadPercentage = float64(info.CurrentInUse) / float64(info.MaxCapacity) * 100
-		}
-		result[u.ID] = info
-	}
-
-	return result, &collectedAt, nil
+	entry, _ := value.(opsRealtimeUserConcurrencyCacheEntry)
+	return entry.users, entry.collectedAt, nil
 }

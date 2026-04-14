@@ -902,6 +902,9 @@ func (s *SettingService) getGatewayForwardingSettings(ctx context.Context) cache
 	var cfg *config.Config
 	if s != nil {
 		cfg = s.cfg
+		if cfg != nil {
+			defaultRectifierEnabled = cfg.Gateway.OpenAIStreamRectifierEnabled
+		}
 	}
 	defaults := cachedGatewayForwardingSettings{
 		fingerprintUnification:                  true,
@@ -1653,6 +1656,11 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		CustomMenuItems:                  settings[SettingKeyCustomMenuItems],
 		CustomEndpoints:                  settings[SettingKeyCustomEndpoints],
 		BackendModeEnabled:               settings[SettingKeyBackendModeEnabled] == "true",
+		WebSearchEmulationEnabled:        parseWebSearchConfigJSON(settings[SettingKeyWebSearchEmulationConfig]).Enabled,
+		BalanceLowNotifyEnabled:          settings[SettingKeyBalanceLowNotifyEnabled] == "true",
+		AccountQuotaNotifyEnabled:        settings[SettingKeyAccountQuotaNotifyEnabled] == "true",
+		BalanceLowNotifyRechargeURL:      settings[SettingKeyBalanceLowNotifyRechargeURL],
+		AccountQuotaNotifyEmails:         ParseNotifyEmails(settings[SettingKeyAccountQuotaNotifyEmails]),
 	}
 	result.TableDefaultPageSize, result.TablePageSizeOptions = parseTablePreferences(
 		settings[SettingKeyTableDefaultPageSize],
@@ -1677,6 +1685,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		result.DefaultBalance = balance
 	} else {
 		result.DefaultBalance = s.cfg.Default.UserBalance
+	}
+	if threshold, err := strconv.ParseFloat(settings[SettingKeyBalanceLowNotifyThreshold], 64); err == nil && threshold >= 0 {
+		result.BalanceLowNotifyThreshold = threshold
 	}
 	result.DefaultSubscriptions = parseDefaultSubscriptions(settings[SettingKeyDefaultSubscriptions])
 

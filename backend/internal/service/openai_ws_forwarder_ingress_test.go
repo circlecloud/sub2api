@@ -79,6 +79,26 @@ func TestOpenAIWSIngressPreviousResponseRecoveryEnabled(t *testing.T) {
 	require.True(t, svc.openAIWSIngressPreviousResponseRecoveryEnabled())
 }
 
+func TestIsOpenAIWSStoreDisabledInRequest_RespectsOpenAIStoreEnabled(t *testing.T) {
+	t.Parallel()
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	oauth := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	oauthStoreEnabled := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_store_enabled": true}}
+
+	require.True(t, svc.isOpenAIWSStoreDisabledInRequest(map[string]any{}, oauth))
+	require.True(t, svc.isOpenAIWSStoreDisabledInRequestRaw([]byte(`{}`), oauth))
+
+	require.False(t, svc.isOpenAIWSStoreDisabledInRequest(map[string]any{}, oauthStoreEnabled))
+	require.False(t, svc.isOpenAIWSStoreDisabledInRequestRaw([]byte(`{}`), oauthStoreEnabled))
+
+	require.False(t, svc.isOpenAIWSStoreDisabledInRequest(map[string]any{"store": true}, oauthStoreEnabled))
+	require.False(t, svc.isOpenAIWSStoreDisabledInRequestRaw([]byte(`{"store":true}`), oauthStoreEnabled))
+
+	require.True(t, svc.isOpenAIWSStoreDisabledInRequest(map[string]any{"store": false}, oauthStoreEnabled))
+	require.True(t, svc.isOpenAIWSStoreDisabledInRequestRaw([]byte(`{"store":false}`), oauthStoreEnabled))
+}
+
 func TestDropPreviousResponseIDFromRawPayload(t *testing.T) {
 	t.Parallel()
 

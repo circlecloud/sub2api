@@ -22,11 +22,13 @@ const (
 	OpsUpstreamRequestBodyKey = "ops_upstream_request_body"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
-	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
-	OpsRoutingLatencyMsKey   = "ops_routing_latency_ms"
-	OpsUpstreamLatencyMsKey  = "ops_upstream_latency_ms"
-	OpsResponseLatencyMsKey  = "ops_response_latency_ms"
-	OpsTimeToFirstTokenMsKey = "ops_time_to_first_token_ms"
+	OpsAuthLatencyMsKey             = "ops_auth_latency_ms"
+	OpsRoutingLatencyMsKey          = "ops_routing_latency_ms"
+	OpsGatewayPrepareLatencyMsKey   = "ops_gateway_prepare_latency_ms"
+	OpsUpstreamLatencyMsKey         = "ops_upstream_latency_ms"
+	OpsResponseLatencyMsKey         = "ops_response_latency_ms"
+	OpsTimeToFirstTokenMsKey        = "ops_time_to_first_token_ms"
+	OpsStreamFirstEventLatencyMsKey = "ops_stream_first_event_latency_ms"
 	// OpenAI WS 关键观测字段
 	OpsOpenAIWSQueueWaitMsKey = "ops_openai_ws_queue_wait_ms"
 	OpsOpenAIWSConnPickMsKey  = "ops_openai_ws_conn_pick_ms"
@@ -36,6 +38,12 @@ const (
 	// OpsSkipPassthroughKey 由 applyErrorPassthroughRule 在命中 skip_monitoring=true 的规则时设置。
 	// ops_error_logger 中间件检查此 key，为 true 时跳过错误记录。
 	OpsSkipPassthroughKey = "ops_skip_passthrough"
+	// OpsRectifierTimeoutExhaustedKey 标记请求最终因为 OpenAI 整流器 exhausted 返回错误。
+	// ops_error_logger 会结合 Ops 高级设置决定是否忽略该类错误记录。
+	OpsRectifierTimeoutExhaustedKey = "ops_rectifier_timeout_exhausted"
+	// OpsRectifierRetryCountKey 保存单个请求内真正发生的 rectifier retry 总次数。
+	// 仅在 advance 分支累加，不包含 reconnect / failover reset 等其他重试语义。
+	OpsRectifierRetryCountKey = "ops_rectifier_retry_count"
 )
 
 func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
@@ -53,11 +61,110 @@ func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
 	c.Set(key, value)
 }
 
+//nolint:unused // 预留给后续上下文指标序列化
+func getContextLatencyIntPtr(c *gin.Context, key string) *int {
+	if c == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	v, ok := c.Get(key)
+	if !ok {
+		return nil
+	}
+	var ms int64
+	switch t := v.(type) {
+	case int:
+		ms = int64(t)
+	case int32:
+		ms = int64(t)
+	case int64:
+		ms = t
+	case float64:
+		ms = int64(t)
+	default:
+		return nil
+	}
+	if ms < 0 {
+		return nil
+	}
+	value := int(ms)
+	return &value
+}
+
+//nolint:unused // 预留给后续上下文指标序列化
+func int64ToIntPtr(value int64) *int {
+	if value < 0 {
+		return nil
+	}
+	v := int(value)
+	return &v
+}
+
 // SetOpsUpstreamError is the exported wrapper for setOpsUpstreamError, used by
 // handler-layer code (e.g. failover-exhausted paths) that needs to record the
 // original upstream status code before mapping it to a client-facing code.
 func SetOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
 	setOpsUpstreamError(c, upstreamStatusCode, upstreamMessage, upstreamDetail)
+}
+
+func MarkOpsRectifierTimeoutExhausted(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(OpsRectifierTimeoutExhaustedKey, true)
+}
+
+func IsOpsRectifierTimeoutExhausted(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	v, ok := c.Get(OpsRectifierTimeoutExhaustedKey)
+	if !ok {
+		return false
+	}
+	flag, _ := v.(bool)
+	return flag
+}
+
+func GetOpsRectifierRetryCount(c *gin.Context) int {
+	if c == nil {
+		return 0
+	}
+	v, ok := c.Get(OpsRectifierRetryCountKey)
+	if !ok {
+		return 0
+	}
+	switch value := v.(type) {
+	case int:
+		if value > 0 {
+			return value
+		}
+	case int32:
+		if value > 0 {
+			return int(value)
+		}
+	case int64:
+		if value > 0 {
+			return int(value)
+		}
+	case float64:
+		if value > 0 {
+			return int(value)
+		}
+	}
+	return 0
+}
+
+func SetOpsRectifierRetryCount(c *gin.Context, count int) {
+	if c == nil || count < 0 {
+		return
+	}
+	c.Set(OpsRectifierRetryCountKey, count)
+}
+
+func IncrementOpsRectifierRetryCount(c *gin.Context) int {
+	count := GetOpsRectifierRetryCount(c) + 1
+	SetOpsRectifierRetryCount(c, count)
+	return count
 }
 
 func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {

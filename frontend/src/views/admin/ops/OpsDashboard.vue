@@ -8,10 +8,10 @@
         {{ errorMessage }}
       </div>
 
-      <OpsDashboardSkeleton v-if="loading && !hasLoadedOnce" :fullscreen="isFullscreen" />
+      <OpsDashboardSkeleton v-if="showInitialDashboardSkeleton" :fullscreen="isFullscreen" />
 
       <OpsDashboardHeader
-        v-else-if="opsEnabled"
+        v-else-if="canRenderOpsContent"
         :overview="overview"
         :platform="platform"
         :group-id="groupId"
@@ -40,35 +40,40 @@
       />
 
       <!-- Row: Concurrency + Throughput -->
-      <div v-if="opsEnabled && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6 xl:grid-cols-4">
-        <div class="lg:col-span-1 min-h-[360px]">
+      <div
+        v-if="canRenderOpsContent"
+        :class="['grid grid-cols-1 gap-6', showInitialDashboardSkeleton ? 'xl:grid-cols-1' : 'xl:grid-cols-4']"
+      >
+        <div :class="['min-h-[360px]', showInitialDashboardSkeleton ? '' : 'lg:col-span-1']">
           <OpsConcurrencyCard :platform-filter="platform" :group-id-filter="groupId" :refresh-token="dashboardRefreshToken" />
         </div>
-        <div class="lg:col-span-1 min-h-[360px]">
-          <OpsSwitchRateTrendChart
-            :points="switchTrend?.points ?? []"
-            :loading="loadingSwitchTrend"
-            :time-range="switchTrendTimeRange"
-            :fullscreen="isFullscreen"
-          />
-        </div>
-        <div class="lg:col-span-2 min-h-[360px]">
-          <OpsThroughputTrendChart
-            :points="throughputTrend?.points ?? []"
-            :by-platform="throughputTrend?.by_platform ?? []"
-            :top-groups="throughputTrend?.top_groups ?? []"
-            :loading="loadingTrend"
-            :time-range="timeRange"
-            :fullscreen="isFullscreen"
-            @select-platform="handleThroughputSelectPlatform"
-            @select-group="handleThroughputSelectGroup"
-            @open-details="handleOpenRequestDetails"
-          />
-        </div>
+        <template v-if="showDeferredDashboardPanels">
+          <div class="lg:col-span-1 min-h-[360px]">
+            <OpsSwitchRateTrendChart
+              :points="switchTrend?.points ?? []"
+              :loading="loadingSwitchTrend"
+              :time-range="switchTrendTimeRange"
+              :fullscreen="isFullscreen"
+            />
+          </div>
+          <div class="lg:col-span-2 min-h-[360px]">
+            <OpsThroughputTrendChart
+              :points="throughputTrend?.points ?? []"
+              :by-platform="throughputTrend?.by_platform ?? []"
+              :top-groups="throughputTrend?.top_groups ?? []"
+              :loading="loadingTrend"
+              :time-range="timeRange"
+              :fullscreen="isFullscreen"
+              @select-platform="handleThroughputSelectPlatform"
+              @select-group="handleThroughputSelectGroup"
+              @open-details="handleOpenRequestDetails"
+            />
+          </div>
+        </template>
       </div>
 
       <!-- Row: Visual Analysis (baseline 3-up grid) -->
-      <div v-if="opsEnabled && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+      <div v-if="showDeferredDashboardPanels" class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
         <OpsLatencyChart :latency-data="latencyHistogram" :loading="loadingLatency" />
         <OpsErrorDistributionChart
           :data="errorDistribution"
@@ -85,12 +90,12 @@
       </div>
 
       <!-- Row: OpenAI Warm Pool -->
-      <div v-if="opsEnabled && (!platform || platform === 'openai') && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6">
+      <div v-if="canRenderOpsContent && (!platform || platform === 'openai')" class="grid grid-cols-1 gap-6">
         <OpsOpenAIWarmPoolCard :group-id-filter="groupId" :refresh-token="dashboardRefreshToken" />
       </div>
 
       <!-- Row: OpenAI Token Stats -->
-      <div v-if="opsEnabled && showOpenAITokenStats && (!platform || platform === 'openai') && !(loading && !hasLoadedOnce)" class="grid grid-cols-1 gap-6">
+      <div v-if="showDeferredDashboardPanels && showOpenAITokenStats && (!platform || platform === 'openai')" class="grid grid-cols-1 gap-6">
         <OpsOpenAITokenStatsCard
           :platform-filter="platform"
           :group-id-filter="groupId"
@@ -99,11 +104,11 @@
       </div>
 
       <!-- Alert Events -->
-      <OpsAlertEventsCard v-if="opsEnabled && showAlertEvents && !(loading && !hasLoadedOnce)" />
+      <OpsAlertEventsCard v-if="showDeferredDashboardPanels && showAlertEvents" />
 
       <!-- System Logs -->
       <OpsSystemLogTable
-        v-if="opsEnabled && !(loading && !hasLoadedOnce)"
+        v-if="showDeferredDashboardPanels"
         :platform-filter="platform"
         :refresh-token="dashboardRefreshToken"
       />
@@ -183,6 +188,7 @@ const adminSettingsStore = useAdminSettingsStore()
 const { t } = useI18n()
 
 const opsEnabled = computed(() => adminSettingsStore.opsMonitoringEnabled)
+const opsAvailabilityChecked = ref(false)
 
 type TimeRange = '5m' | '30m' | '1h' | '6h' | '24h' | 'custom'
 const allowedTimeRanges = new Set<TimeRange>(['5m', '30m', '1h', '6h', '24h', 'custom'])
@@ -194,6 +200,10 @@ const loading = ref(true)
 const hasLoadedOnce = ref(false)
 const errorMessage = ref('')
 const lastUpdated = ref<Date | null>(new Date())
+
+const showInitialDashboardSkeleton = computed(() => loading.value && !hasLoadedOnce.value)
+const canRenderOpsContent = computed(() => opsAvailabilityChecked.value && opsEnabled.value)
+const showDeferredDashboardPanels = computed(() => canRenderOpsContent.value && !showInitialDashboardSkeleton.value)
 
 const timeRange = ref<TimeRange>('1h')
 const platform = ref<string>('')
@@ -719,8 +729,10 @@ async function fetchData() {
 
     lastUpdated.value = new Date()
 
-    // Trigger child component refreshes using the same cadence as the header.
-    dashboardRefreshToken.value += 1
+    // 子卡片首刷会自拉数据；只在首刷之后的统一刷新节奏里递增 token。
+    if (hasLoadedOnce.value) {
+      dashboardRefreshToken.value += 1
+    }
 
     // Reset auto refresh countdown after successful fetch
     if (autoRefreshEnabled.value) {
@@ -781,6 +793,8 @@ onMounted(async () => {
   window.addEventListener('keydown', handleKeydown)
 
   await adminSettingsStore.fetch()
+  opsAvailabilityChecked.value = true
+
   if (!adminSettingsStore.opsMonitoringEnabled) {
     await router.replace('/admin/settings')
     return
@@ -789,12 +803,10 @@ onMounted(async () => {
   // Load thresholds configuration
   loadThresholds()
 
-  // Load auto refresh settings
-  await loadDashboardAdvancedSettings()
-
-  if (opsEnabled.value) {
-    await fetchData()
-  }
+  await Promise.all([
+    loadDashboardAdvancedSettings(),
+    fetchData()
+  ])
 
   // Start auto refresh if enabled
   if (autoRefreshEnabled.value) {

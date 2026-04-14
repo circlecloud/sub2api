@@ -160,6 +160,7 @@ type OpsRealtimeCache interface {
 	ListWarmBucketGroupIDs(ctx context.Context) ([]int64, error)
 	GetWarmBucketMetas(ctx context.Context, groupIDs []int64) (map[int64]*OpsRealtimeWarmBucketMeta, error)
 	GetWarmBucketMemberTokens(ctx context.Context, groupID int64, minTouchedAt time.Time) ([]string, error)
+	GetWarmBucketMemberTokensByGroups(ctx context.Context, groupIDs []int64, minTouchedAt time.Time) (map[int64][]string, error)
 
 	IncrementWarmGlobalTake(ctx context.Context, delta int64) error
 	TouchWarmLastBucketMaintenance(ctx context.Context, at time.Time) error

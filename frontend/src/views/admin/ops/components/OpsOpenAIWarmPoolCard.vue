@@ -27,6 +27,7 @@ const { t } = useI18n()
 const appStore = useAppStore()
 
 const loading = ref(false)
+const logsLoading = ref(false)
 const triggeringGlobalRefill = ref(false)
 const errorMessage = ref('')
 const logErrorMessage = ref('')
@@ -34,7 +35,10 @@ const response = ref<OpsOpenAIWarmPoolStatsResponse | null>(null)
 const logRows = ref<OpsSystemLog[]>([])
 const readyListVisible = ref(false)
 const readyListLoading = ref(false)
+const readyListLoadingMore = ref(false)
 const readyListErrorMessage = ref('')
+const readyListPage = ref(0)
+const readyListHasMore = ref(false)
 const readyAccountRows = ref<OpsOpenAIWarmPoolAccount[]>([])
 
 const summary = computed(() => response.value?.summary ?? {
@@ -60,11 +64,19 @@ const accountRows = computed(() => response.value?.accounts ?? [])
 const globalCoverageRows = computed<OpsOpenAIWarmPoolGroupCoverage[]>(() => response.value?.global_coverages ?? [])
 const globalCoverageMap = computed(() => new Map(globalCoverageRows.value.map((row) => [row.group_id, row] as const)))
 const warmPoolLogComponent = 'service.openai_warm_pool'
+const READY_LIST_PAGE_SIZE = 20
 
 const showAccountTable = computed(() => typeof props.groupIdFilter === 'number' && props.groupIdFilter > 0)
 const realtimeDisabled = computed(() => response.value !== null && !response.value.enabled)
 const warmPoolDisabled = computed(() => response.value !== null && response.value.enabled && !response.value.warm_pool_enabled)
 const readerUnavailable = computed(() => response.value !== null && response.value.enabled && response.value.warm_pool_enabled && !response.value.reader_ready)
+const bootstrappingHintVisible = computed(() => (
+  response.value !== null
+  && response.value.enabled
+  && response.value.warm_pool_enabled
+  && response.value.reader_ready
+  && response.value.bootstrapping === true
+))
 const filteredLogRows = computed(() => logRows.value.slice(0, 12))
 const readyListShowGroupColumn = computed(() => !showAccountTable.value)
 const canTriggerGlobalRefill = computed(() => {
@@ -72,6 +84,7 @@ const canTriggerGlobalRefill = computed(() => {
   if (realtimeDisabled.value || warmPoolDisabled.value || readerUnavailable.value) return false
   return summary.value.active_group_count > 0
 })
+const isRefreshing = computed(() => loading.value || logsLoading.value)
 
 function formatTimestamp(value?: string | null): string {
   if (!value) return '-'
@@ -280,30 +293,71 @@ function formatWarmPoolLogMessage(row: OpsSystemLog): string {
   return parts.join(' · ')
 }
 
-async function loadReadyAccounts() {
-  readyListLoading.value = true
+function resetReadyListState() {
+  readyAccountRows.value = []
+  readyListPage.value = 0
+  readyListHasMore.value = false
+  readyListLoadingMore.value = false
+  readyListErrorMessage.value = ''
+}
+
+async function loadReadyAccounts(options: { append?: boolean } = {}) {
+  const append = options.append === true
+  if (append) {
+    if (readyListLoading.value || readyListLoadingMore.value || !readyListVisible.value || !readyListHasMore.value) return
+  } else if (readyListLoading.value) {
+    return
+  }
+
+  const nextPage = append ? readyListPage.value + 1 : 1
+  const loadingState = append ? readyListLoadingMore : readyListLoading
+  if (!append) {
+    resetReadyListState()
+  }
+
+  loadingState.value = true
   readyListErrorMessage.value = ''
   try {
     const result = await opsAPI.getOpenAIWarmPoolStats(props.groupIdFilter, {
       includeAccount: true,
       accountsOnly: true,
-      accountState: 'ready'
+      accountState: 'ready',
+      page: nextPage,
+      page_size: READY_LIST_PAGE_SIZE
     })
-    readyAccountRows.value = result.accounts || []
+    const incomingRows = result.accounts || []
+    readyAccountRows.value = append ? [...readyAccountRows.value, ...incomingRows] : incomingRows
+    readyListPage.value = typeof result.page === 'number' && result.page > 0 ? result.page : nextPage
+    if (typeof result.pages === 'number' && result.pages > 0) {
+      readyListHasMore.value = readyListPage.value < result.pages
+    } else {
+      readyListHasMore.value = false
+    }
   } catch (error: any) {
-    readyAccountRows.value = []
-    readyListErrorMessage.value =
+    const detail =
       error?.response?.data?.detail ||
       error?.message ||
       t('admin.ops.openaiWarmPool.readyListLoadFailed')
+    if (append) {
+      appStore.showError(detail)
+    } else {
+      readyAccountRows.value = []
+      readyListPage.value = 0
+      readyListHasMore.value = false
+      readyListErrorMessage.value = detail
+    }
   } finally {
-    readyListLoading.value = false
+    loadingState.value = false
   }
 }
 
 async function openReadyList() {
   readyListVisible.value = true
   await loadReadyAccounts()
+}
+
+async function loadMoreReadyAccounts() {
+  await loadReadyAccounts({ append: true })
 }
 
 function closeReadyList() {
@@ -328,32 +382,39 @@ async function triggerGlobalRefill() {
   }
 }
 
-async function loadData() {
+async function loadStats() {
   loading.value = true
   errorMessage.value = ''
-  logErrorMessage.value = ''
-  const [statsResult, logsResult] = await Promise.allSettled([
-    opsAPI.getOpenAIWarmPoolStats(props.groupIdFilter),
-    opsAPI.listSystemLogs(buildWarmPoolLogQuery())
-  ])
-
-  if (statsResult.status === 'fulfilled') {
-    response.value = statsResult.value
-  } else {
-    console.error('[OpsOpenAIWarmPoolCard] Failed to load data', statsResult.reason)
+  try {
+    response.value = await opsAPI.getOpenAIWarmPoolStats(props.groupIdFilter)
+  } catch (error: any) {
+    console.error('[OpsOpenAIWarmPoolCard] Failed to load data', error)
     response.value = null
-    errorMessage.value = statsResult.reason?.response?.data?.detail || statsResult.reason?.message || t('admin.ops.openaiWarmPool.loadFailed')
+    errorMessage.value = error?.response?.data?.detail || error?.message || t('admin.ops.openaiWarmPool.loadFailed')
+  } finally {
+    loading.value = false
   }
+}
 
-  if (logsResult.status === 'fulfilled') {
-    logRows.value = logsResult.value.items || []
-  } else {
-    console.error('[OpsOpenAIWarmPoolCard] Failed to load logs', logsResult.reason)
-    logRows.value = []
-    logErrorMessage.value = logsResult.reason?.response?.data?.detail || logsResult.reason?.message || t('admin.ops.openaiWarmPool.logLoadFailed')
+async function loadLogs() {
+  logsLoading.value = true
+  logErrorMessage.value = ''
+  try {
+    const result = await opsAPI.listSystemLogs(buildWarmPoolLogQuery())
+    logRows.value = result.items || []
+  } catch (error: any) {
+    console.error('[OpsOpenAIWarmPoolCard] Failed to load logs', error)
+    logErrorMessage.value = error?.response?.data?.detail || error?.message || t('admin.ops.openaiWarmPool.logLoadFailed')
+  } finally {
+    logsLoading.value = false
   }
+}
 
-  loading.value = false
+async function loadData() {
+  await Promise.allSettled([
+    loadStats(),
+    loadLogs()
+  ])
 }
 
 watch(
@@ -393,11 +454,11 @@ watch(
         </button>
         <button
           class="flex items-center gap-1 rounded-lg bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-700 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600"
-          :disabled="loading"
+          :disabled="isRefreshing"
           :title="t('common.refresh')"
           @click="loadData"
         >
-          <svg class="h-3 w-3" :class="{ 'animate-spin': loading }" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg class="h-3 w-3" :class="{ 'animate-spin': isRefreshing }" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
           {{ t('common.refresh') }}
@@ -420,6 +481,9 @@ watch(
     <div v-else class="space-y-4">
       <div v-if="readerUnavailable" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
         {{ t('admin.ops.openaiWarmPool.readerUnavailableHint') }}
+      </div>
+      <div v-else-if="bootstrappingHintVisible" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
+        {{ t('admin.ops.openaiWarmPool.bootstrappingHint') }}
       </div>
 
       <div class="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-6">
@@ -588,13 +652,16 @@ watch(
         <div v-if="logErrorMessage" class="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900/20 dark:bg-red-900/20 dark:text-red-400">
           {{ logErrorMessage }}
         </div>
+        <div v-if="logsLoading && filteredLogRows.length === 0" class="py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+          {{ t('admin.ops.loadingText') }}
+        </div>
         <EmptyState
-          v-if="filteredLogRows.length === 0"
+          v-else-if="!logErrorMessage && filteredLogRows.length === 0"
           class="py-6"
           :title="t('common.noData')"
           :description="t('admin.ops.openaiWarmPool.logEmpty')"
         />
-        <div v-else class="max-h-[320px] divide-y divide-gray-100 overflow-auto dark:divide-dark-800">
+        <div v-else-if="filteredLogRows.length > 0" class="max-h-[320px] divide-y divide-gray-100 overflow-auto dark:divide-dark-800">
           <div v-for="row in filteredLogRows" :key="row.id" class="space-y-2 px-3 py-3 text-xs md:text-sm">
             <div class="flex flex-wrap items-center gap-2 text-[11px]">
               <span class="text-gray-500 dark:text-gray-400">{{ formatTimestamp(row.created_at) }}</span>
@@ -679,6 +746,17 @@ watch(
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div v-if="readyListHasMore && readyAccountRows.length > 0" class="flex justify-center pt-1">
+        <button
+          type="button"
+          class="inline-flex items-center rounded-lg bg-green-100 px-3 py-1.5 text-[11px] font-semibold text-green-700 transition-colors hover:bg-green-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-900/30 dark:text-green-300 dark:hover:bg-green-900/40"
+          :disabled="readyListLoadingMore"
+          @click="loadMoreReadyAccounts"
+        >
+          {{ readyListLoadingMore ? t('admin.ops.loadingText') : t('admin.ops.openaiWarmPool.loadMoreReadyList') }}
+        </button>
       </div>
     </div>
   </BaseDialog>

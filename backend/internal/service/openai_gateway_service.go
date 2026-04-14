@@ -2328,7 +2328,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	if account.Type == AccountTypeOAuth {
-		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPath(c))
+		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPath(c), account.IsOpenAIStoreEnabled())
 		if codexResult.Modified {
 			bodyModified = true
 			disablePatch()

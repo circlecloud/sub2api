@@ -1197,7 +1197,8 @@ func (s *OpenAIGatewayService) buildOpenAIWSCreatePayload(reqBody map[string]any
 	payload["type"] = "response.create"
 
 	// OAuth 默认保持 store=false，避免误依赖服务端历史。
-	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
+	// 若账号启用 openai_store_enabled 或 AllowStoreRecovery，则保留客户端 store 值。
+	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) && !account.IsOpenAIStoreEnabled() {
 		payload["store"] = false
 	}
 	return payload
@@ -1241,7 +1242,7 @@ func (s *OpenAIGatewayService) isOpenAIWSStoreRecoveryAllowed(account *Account) 
 }
 
 func (s *OpenAIGatewayService) isOpenAIWSStoreDisabledInRequest(reqBody map[string]any, account *Account) bool {
-	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
+	if account != nil && account.Type == AccountTypeOAuth && !account.IsOpenAIStoreEnabled() && !s.isOpenAIWSStoreRecoveryAllowed(account) {
 		return true
 	}
 	if len(reqBody) == 0 {
@@ -1259,7 +1260,7 @@ func (s *OpenAIGatewayService) isOpenAIWSStoreDisabledInRequest(reqBody map[stri
 }
 
 func (s *OpenAIGatewayService) isOpenAIWSStoreDisabledInRequestRaw(reqBody []byte, account *Account) bool {
-	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
+	if account != nil && account.Type == AccountTypeOAuth && !account.IsOpenAIStoreEnabled() && !s.isOpenAIWSStoreRecoveryAllowed(account) {
 		return true
 	}
 	if len(reqBody) == 0 {

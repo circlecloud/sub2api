@@ -94,4 +94,7 @@ func TestGetOpsAdvancedSettings_BackfillsNewDisplayFlagsFromDefaults(t *testing.
 	if !cfg.DisplayAlertEvents {
 		t.Fatalf("DisplayAlertEvents = false, want true default backfill")
 	}
+	if !cfg.IgnoreOpenAIStreamRectifierTimeouts {
+		t.Fatalf("IgnoreOpenAIStreamRectifierTimeouts = false, want true default backfill")
+	}
 }

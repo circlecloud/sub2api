@@ -96,8 +96,6 @@ async function loadFirstPage() {
   } catch (err: any) {
     console.error('[OpsAlertEventsCard] Failed to load alert events', err)
     appStore.showError(err?.response?.data?.detail || t('admin.ops.alertEvents.loadFailed'))
-    events.value = []
-    hasMore.value = false
   } finally {
     loading.value = false
   }
@@ -316,7 +314,6 @@ onMounted(() => {
 })
 
 watch([timeRange, severity, status, emailSent], () => {
-  events.value = []
   hasMore.value = true
   loadFirstPage()
 })
@@ -351,6 +348,8 @@ function formatStatusLabel(status: string | undefined): string {
   return s.toUpperCase()
 }
 
+const showInitialLoading = computed(() => loading.value && events.value.length === 0)
+const showRefreshingState = computed(() => loading.value && events.value.length > 0)
 const empty = computed(() => events.value.length === 0 && !loading.value)
 </script>
 
@@ -380,7 +379,7 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
       </div>
     </div>
 
-    <div v-if="loading" class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+    <div v-if="showInitialLoading" class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
       <svg class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -392,7 +391,14 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
       {{ t('admin.ops.alertEvents.empty') }}
     </div>
 
-    <div v-else class="max-w-full overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
+    <div v-else class="relative max-w-full overflow-hidden rounded-xl border border-gray-200 dark:border-dark-700">
+      <div v-if="showRefreshingState" class="pointer-events-none absolute right-3 top-3 z-20 flex items-center gap-1.5 rounded-full bg-white/90 px-2 py-1 text-[11px] text-gray-500 shadow-sm ring-1 ring-gray-200 backdrop-blur-sm dark:bg-dark-900/85 dark:text-gray-300 dark:ring-dark-600">
+        <svg class="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        {{ t('admin.ops.alertEvents.loading') }}
+      </div>
       <div class="table-wrapper max-h-[600px] overflow-auto" @scroll="onScroll">
         <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
           <thead class="sticky top-0 z-10 bg-gray-50 dark:bg-dark-900">

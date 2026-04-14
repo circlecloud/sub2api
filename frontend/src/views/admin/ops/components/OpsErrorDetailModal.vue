@@ -108,6 +108,20 @@
         </div>
       </div>
 
+      <div v-if="timingItems.length" class="rounded-xl bg-gray-50 p-6 dark:bg-dark-900">
+        <h3 class="text-sm font-black uppercase tracking-wider text-gray-900 dark:text-white">{{ t('admin.ops.errorDetail.timings') }}</h3>
+        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div
+            v-for="item in timingItems"
+            :key="item.key"
+            class="rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
+          >
+            <div class="text-xs font-bold uppercase tracking-wider text-gray-400">{{ timingLabel(item.key) }}</div>
+            <div class="mt-1 text-sm font-medium text-gray-900 dark:text-white">{{ formatLatency(item.value) }}</div>
+          </div>
+        </div>
+      </div>
+
       <!-- Response content (client request -> error_body; upstream -> upstream_error_detail/message) -->
       <div class="rounded-xl bg-gray-50 p-6 dark:bg-dark-900">
         <h3 class="text-sm font-black uppercase tracking-wider text-gray-900 dark:text-white">{{ t('admin.ops.errorDetail.responseBody') }}</h3>
@@ -195,6 +209,7 @@ import Icon from '@/components/icons/Icon.vue'
 import { useAppStore } from '@/stores'
 import { opsAPI, type OpsErrorDetail } from '@/api/admin/ops'
 import { formatDateTime } from '@/utils/format'
+import { extractErrorDetailTimings, type OpsErrorTimingKey } from '../utils/errorDetailTimings'
 import { resolvePrimaryResponseBody, resolveUpstreamPayload } from '../utils/errorDetailResponse'
 
 interface Props {
@@ -233,6 +248,7 @@ const title = computed(() => {
 })
 
 const emptyText = computed(() => t('admin.ops.errorDetail.noErrorSelected'))
+const timingItems = computed(() => extractErrorDetailTimings(detail.value))
 
 function isUpstreamError(d: OpsErrorDetail | null): boolean {
   if (!d) return false
@@ -264,6 +280,31 @@ function displayModel(d: OpsErrorDetail | null): string {
   const requested = String(d.requested_model || '').trim()
   if (requested) return requested
   return String(d.model || '').trim()
+}
+
+function timingLabel(key: OpsErrorTimingKey): string {
+  switch (key) {
+    case 'auth':
+      return t('admin.ops.errorDetail.auth')
+    case 'routing':
+      return t('admin.ops.errorDetail.routing')
+    case 'prepare':
+      return t('admin.ops.requestDetails.breakdown.prepare')
+    case 'upstream':
+      return t('admin.ops.errorDetail.upstream')
+    case 'response':
+      return t('admin.ops.errorDetail.response')
+    case 'ttft':
+      return 'TTFT'
+    case 'firstEvent':
+      return t('admin.ops.requestDetails.breakdown.firstEvent')
+    default:
+      return key
+  }
+}
+
+function formatLatency(value: number): string {
+  return `${value} ms`
 }
 
 const correlatedUpstream = ref<OpsErrorDetail[]>([])

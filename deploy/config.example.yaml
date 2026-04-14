@@ -340,6 +340,9 @@ gateway:
   # Stream keepalive interval (seconds), 0=disable
   # 流式 keepalive 间隔（秒），0=禁用
   stream_keepalive_interval: 10
+  # Enable OpenAI streaming first-token rectifier (streaming only)
+  # 启用 OpenAI 流式首 token 整流器（仅影响流式请求）
+  openai_stream_first_token_rectifier_enabled: true
   # SSE max line size in bytes (default: 40MB)
   # SSE 单行最大字节数（默认 40MB）
   max_line_size: 41943040

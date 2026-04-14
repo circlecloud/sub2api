@@ -17,6 +17,7 @@ const props = withDefaults(defineProps<Props>(), {
 const { t } = useI18n()
 
 const loading = ref(false)
+const hasLoadedOnce = ref(false)
 const errorMessage = ref('')
 const concurrency = ref<OpsConcurrencyStatsResponse | null>(null)
 const availability = ref<OpsAccountAvailabilityStatsResponse | null>(null)
@@ -290,6 +291,7 @@ async function loadData() {
     errorMessage.value = err?.response?.data?.detail || t('admin.ops.concurrency.loadFailed')
   } finally {
     loading.value = false
+    hasLoadedOnce.value = true
   }
 }
 
@@ -297,8 +299,8 @@ async function loadData() {
 watch(
   () => props.refreshToken,
   () => {
-    if (!realtimeEnabled.value) return
-    loadData()
+    if (!hasLoadedOnce.value || !realtimeEnabled.value) return
+    void loadData()
   }
 )
 
@@ -340,8 +342,9 @@ function formatDuration(seconds: number): string {
 
 watch(
   () => realtimeEnabled.value,
-  async (enabled) => {
-    if (enabled) {
+  async (enabled, previousEnabled) => {
+    if (!enabled) return
+    if (!hasLoadedOnce.value || previousEnabled === false) {
       await loadData()
     }
   },
@@ -408,12 +411,17 @@ watch(
           {{ displayTitle }}
         </span>
         <span class="text-[10px] text-gray-500 dark:text-gray-400">
-          {{ t('admin.ops.concurrency.totalRows', { count: displayRows.length }) }}
+          {{ loading && displayRows.length === 0 ? t('admin.ops.loadingText') : t('admin.ops.concurrency.totalRows', { count: displayRows.length }) }}
         </span>
       </div>
 
+      <!-- 加载中 -->
+      <div v-if="loading && displayRows.length === 0" class="flex flex-1 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+        {{ t('admin.ops.loadingText') }}
+      </div>
+
       <!-- 空状态 -->
-      <div v-if="displayRows.length === 0" class="flex flex-1 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+      <div v-else-if="displayRows.length === 0" class="flex flex-1 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
         {{ t('admin.ops.concurrency.empty') }}
       </div>
 

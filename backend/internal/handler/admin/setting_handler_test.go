@@ -89,6 +89,39 @@ func (s *settingHandlerRepoStub) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+func TestSettingHandler_GetSettings_ReturnsOpenAIStreamRectifierFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := newSettingHandlerRepoStub(map[string]string{
+		service.SettingKeyEnableOpenAIStreamRectifier:                 "false",
+		service.SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts: `[11,13]`,
+		service.SettingKeyOpenAIStreamFirstTokenRectifierTimeouts:     `[7,9]`,
+	})
+	handler := NewSettingHandler(service.NewSettingService(repo, &config.Config{Gateway: config.GatewayConfig{
+		OpenAIStreamRectifierEnabled:                true,
+		OpenAIStreamResponseHeaderRectifierTimeouts: []int{8, 10, 12},
+		OpenAIStreamFirstTokenRectifierTimeouts:     []int{5, 8, 10},
+	}}), nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.GET("/api/v1/admin/settings", handler.GetSettings)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp response.Response
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+
+	payloadBytes, err := json.Marshal(resp.Data)
+	require.NoError(t, err)
+	var settings dto.SystemSettings
+	require.NoError(t, json.Unmarshal(payloadBytes, &settings))
+	require.False(t, settings.EnableOpenAIStreamRectifier)
+	require.Equal(t, []int{11, 13}, settings.OpenAIStreamResponseHeaderRectifierTimeouts)
+	require.Equal(t, []int{7, 9}, settings.OpenAIStreamFirstTokenRectifierTimeouts)
+}
+
 func TestSettingHandler_GetSettings_StartupGroupIDsAlwaysArray(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repo := newSettingHandlerRepoStub(map[string]string{})

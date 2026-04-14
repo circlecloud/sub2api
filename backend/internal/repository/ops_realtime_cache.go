@@ -90,6 +90,8 @@ func NewOpsRealtimeCache(rdb *redis.Client) service.OpsRealtimeCache {
 	return &opsRealtimeCache{rdb: rdb}
 }
 
+// invalidateWarmPoolOverviewSnapshot 仅用于账号索引等结构性变化；
+// warm state / bucket member 抖动依赖 snapshot TTL 自然收敛，避免 overview 重建风暴。
 func (c *opsRealtimeCache) invalidateWarmPoolOverviewSnapshot(ctx context.Context) {
 	if c == nil || c.rdb == nil {
 		return
@@ -323,7 +325,6 @@ func (c *opsRealtimeCache) SetWarmAccountState(ctx context.Context, state *servi
 	if err := c.rdb.SAdd(ctx, opsRealtimeWarmAccountIndexKey, strconv.FormatInt(state.AccountID, 10)).Err(); err != nil {
 		return err
 	}
-	c.invalidateWarmPoolOverviewSnapshot(ctx)
 	return nil
 }
 
@@ -339,7 +340,6 @@ func (c *opsRealtimeCache) DeleteWarmAccountState(ctx context.Context, accountID
 	if err != nil {
 		return err
 	}
-	c.invalidateWarmPoolOverviewSnapshot(ctx)
 	return nil
 }
 
@@ -472,7 +472,6 @@ func (c *opsRealtimeCache) TouchWarmBucketMember(ctx context.Context, groupID in
 	if err != nil {
 		return err
 	}
-	c.invalidateWarmPoolOverviewSnapshot(ctx)
 	return nil
 }
 
@@ -483,7 +482,6 @@ func (c *opsRealtimeCache) RemoveWarmBucketMember(ctx context.Context, groupID i
 	if err := c.rdb.ZRem(ctx, opsRealtimeWarmBucketMembersKey(groupID), strings.TrimSpace(memberToken)).Err(); err != nil {
 		return err
 	}
-	c.invalidateWarmPoolOverviewSnapshot(ctx)
 	return nil
 }
 
@@ -495,7 +493,6 @@ func (c *opsRealtimeCache) RemoveWarmBucketAccount(ctx context.Context, groupID,
 	if err != nil {
 		return err
 	}
-	c.invalidateWarmPoolOverviewSnapshot(ctx)
 	return nil
 }
 
@@ -561,6 +558,35 @@ func (c *opsRealtimeCache) GetWarmBucketMemberTokens(ctx context.Context, groupI
 		minScore = strconv.FormatInt(minTouchedAt.UTC().UnixMilli(), 10)
 	}
 	return c.rdb.ZRangeByScore(ctx, opsRealtimeWarmBucketMembersKey(groupID), &redis.ZRangeBy{Min: minScore, Max: "+inf"}).Result()
+}
+
+func (c *opsRealtimeCache) GetWarmBucketMemberTokensByGroups(ctx context.Context, groupIDs []int64, minTouchedAt time.Time) (map[int64][]string, error) {
+	result := make(map[int64][]string, len(groupIDs))
+	if len(groupIDs) == 0 {
+		return result, nil
+	}
+	minScore := "-inf"
+	if !minTouchedAt.IsZero() {
+		minScore = strconv.FormatInt(minTouchedAt.UTC().UnixMilli(), 10)
+	}
+	pipe := c.rdb.Pipeline()
+	cmds := make(map[int64]*redis.StringSliceCmd, len(groupIDs))
+	for _, groupID := range groupIDs {
+		if groupID < 0 {
+			continue
+		}
+		cmds[groupID] = pipe.ZRangeByScore(ctx, opsRealtimeWarmBucketMembersKey(groupID), &redis.ZRangeBy{Min: minScore, Max: "+inf"})
+	}
+	if len(cmds) == 0 {
+		return result, nil
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, err
+	}
+	for groupID, cmd := range cmds {
+		result[groupID] = append([]string(nil), cmd.Val()...)
+	}
+	return result, nil
 }
 
 func (c *opsRealtimeCache) IncrementWarmGlobalTake(ctx context.Context, delta int64) error {

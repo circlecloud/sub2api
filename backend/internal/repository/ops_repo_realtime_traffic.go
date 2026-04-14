@@ -102,7 +102,7 @@ FROM combined`
 
 	// Keep "current" consistent with the dashboard overview semantics: last 1 minute.
 	// This remains "within the selected window" since end=start+window.
-	qpsCurrent, tpsCurrent, err := r.queryCurrentRates(ctx, filter, end)
+	currentSnapshot, err := r.queryCurrentRateSnapshot(ctx, filter, end)
 	if err != nil {
 		return nil, err
 	}
@@ -111,17 +111,20 @@ FROM combined`
 	tpsPeak := roundTo1DP(float64(peakTokensPerMin) / 60.0)
 
 	return &service.OpsRealtimeTrafficSummary{
-		StartTime: start,
-		EndTime:   end,
-		Platform:  strings.TrimSpace(filter.Platform),
-		GroupID:   filter.GroupID,
+		StartTime:          start,
+		EndTime:            end,
+		Platform:           strings.TrimSpace(filter.Platform),
+		GroupID:            filter.GroupID,
+		RecentRequestCount: currentSnapshot.successCount1m + currentSnapshot.errorCount1m,
+		RecentErrorCount:   currentSnapshot.errorCount1m,
+		RequestCountTotal:  requestCountTotal,
 		QPS: service.OpsRateSummary{
-			Current: qpsCurrent,
+			Current: currentSnapshot.qpsCurrent,
 			Peak:    qpsPeak,
 			Avg:     qpsAvg,
 		},
 		TPS: service.OpsRateSummary{
-			Current: tpsCurrent,
+			Current: currentSnapshot.tpsCurrent,
 			Peak:    tpsPeak,
 			Avg:     tpsAvg,
 		},

@@ -51,9 +51,11 @@ INSERT INTO ops_error_logs (
   upstream_errors,
   auth_latency_ms,
   routing_latency_ms,
+  gateway_prepare_latency_ms,
   upstream_latency_ms,
   response_latency_ms,
   time_to_first_token_ms,
+  stream_first_event_latency_ms,
   request_body,
   request_body_truncated,
   request_body_bytes,
@@ -62,7 +64,7 @@ INSERT INTO ops_error_logs (
   retry_count,
   created_at
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45
 )`
 
 func NewOpsRepository(db *sql.DB) service.OpsRepository {
@@ -167,9 +169,11 @@ func opsInsertErrorLogArgs(input *service.OpsInsertErrorLogInput) []any {
 		opsNullString(input.UpstreamErrorsJSON),
 		opsNullInt64(input.AuthLatencyMs),
 		opsNullInt64(input.RoutingLatencyMs),
+		opsNullInt64(input.GatewayPrepareLatencyMs),
 		opsNullInt64(input.UpstreamLatencyMs),
 		opsNullInt64(input.ResponseLatencyMs),
 		opsNullInt64(input.TimeToFirstTokenMs),
+		opsNullInt64(input.StreamFirstEventLatencyMs),
 		opsNullString(input.RequestBodyJSON),
 		input.RequestBodyTruncated,
 		opsNullInt(input.RequestBodyBytes),
@@ -426,9 +430,11 @@ SELECT
   COALESCE(e.user_agent, ''),
   e.auth_latency_ms,
   e.routing_latency_ms,
+  e.gateway_prepare_latency_ms,
   e.upstream_latency_ms,
   e.response_latency_ms,
   e.time_to_first_token_ms,
+  e.stream_first_event_latency_ms,
   COALESCE(e.request_body::text, ''),
   e.request_body_truncated,
   e.request_body_bytes,
@@ -453,9 +459,11 @@ LIMIT 1`
 	var groupID sql.NullInt64
 	var authLatency sql.NullInt64
 	var routingLatency sql.NullInt64
+	var gatewayPrepareLatency sql.NullInt64
 	var upstreamLatency sql.NullInt64
 	var responseLatency sql.NullInt64
 	var ttft sql.NullInt64
+	var streamFirstEventLatency sql.NullInt64
 	var requestBodyBytes sql.NullInt64
 	var requestType sql.NullInt64
 
@@ -503,9 +511,11 @@ LIMIT 1`
 		&out.UserAgent,
 		&authLatency,
 		&routingLatency,
+		&gatewayPrepareLatency,
 		&upstreamLatency,
 		&responseLatency,
 		&ttft,
+		&streamFirstEventLatency,
 		&out.RequestBody,
 		&out.RequestBodyTruncated,
 		&requestBodyBytes,
@@ -560,6 +570,10 @@ LIMIT 1`
 		v := routingLatency.Int64
 		out.RoutingLatencyMs = &v
 	}
+	if gatewayPrepareLatency.Valid {
+		v := gatewayPrepareLatency.Int64
+		out.GatewayPrepareLatencyMs = &v
+	}
 	if upstreamLatency.Valid {
 		v := upstreamLatency.Int64
 		out.UpstreamLatencyMs = &v
@@ -571,6 +585,10 @@ LIMIT 1`
 	if ttft.Valid {
 		v := ttft.Int64
 		out.TimeToFirstTokenMs = &v
+	}
+	if streamFirstEventLatency.Valid {
+		v := streamFirstEventLatency.Int64
+		out.StreamFirstEventLatencyMs = &v
 	}
 	if requestBodyBytes.Valid {
 		v := int(requestBodyBytes.Int64)

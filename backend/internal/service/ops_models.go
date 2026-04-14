@@ -83,11 +83,13 @@ type OpsErrorLogDetail struct {
 	UpstreamErrors       string `json:"upstream_errors,omitempty"` // JSON array (string) for display/parsing
 
 	// Timings (optional)
-	AuthLatencyMs      *int64 `json:"auth_latency_ms"`
-	RoutingLatencyMs   *int64 `json:"routing_latency_ms"`
-	UpstreamLatencyMs  *int64 `json:"upstream_latency_ms"`
-	ResponseLatencyMs  *int64 `json:"response_latency_ms"`
-	TimeToFirstTokenMs *int64 `json:"time_to_first_token_ms"`
+	AuthLatencyMs             *int64 `json:"auth_latency_ms"`
+	RoutingLatencyMs          *int64 `json:"routing_latency_ms"`
+	GatewayPrepareLatencyMs   *int64 `json:"gateway_prepare_latency_ms"`
+	UpstreamLatencyMs         *int64 `json:"upstream_latency_ms"`
+	ResponseLatencyMs         *int64 `json:"response_latency_ms"`
+	TimeToFirstTokenMs        *int64 `json:"time_to_first_token_ms"`
+	StreamFirstEventLatencyMs *int64 `json:"stream_first_event_latency_ms"`
 
 	// Retry context
 	RequestBody          string `json:"request_body"`

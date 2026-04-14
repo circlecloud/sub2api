@@ -188,6 +188,37 @@ func (r *userRepository) List(ctx context.Context, params pagination.PaginationP
 	return r.ListWithFilters(ctx, params, service.UserListFilters{})
 }
 
+// ListOpsRealtimeUsers returns a lightweight active-user projection for ops realtime dashboards.
+//
+// It avoids the generic filtered list path so the ops concurrency panel doesn't pay for
+// subscription / allowed-group hydration when it only needs the user core fields.
+func (r *userRepository) ListOpsRealtimeUsers(ctx context.Context) ([]service.User, error) {
+	users, err := r.client.User.Query().
+		Select(
+			dbuser.FieldID,
+			dbuser.FieldEmail,
+			dbuser.FieldUsername,
+			dbuser.FieldConcurrency,
+			dbuser.FieldStatus,
+		).
+		Where(dbuser.StatusEQ(service.StatusActive)).
+		Order(dbent.Desc(dbuser.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]service.User, 0, len(users))
+	for i := range users {
+		mapped := userEntityToService(users[i])
+		if mapped == nil {
+			continue
+		}
+		out = append(out, *mapped)
+	}
+	return out, nil
+}
+
 func buildUserOrderOptions(sortBy, sortOrder string) []dbuser.OrderOption {
 	fieldMap := map[string]string{
 		"id":          dbuser.FieldID,

@@ -233,22 +233,39 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
+	rectifierPolicy := h.gatewayService.ResolveOpenAIStreamRectifierPolicy(c.Request.Context())
+	requestRectifierCtx := service.WithOpenAIStreamRectifierPolicy(c.Request.Context(), rectifierPolicy)
+	rectifierState := newOpenAIRectifierAttemptState()
+	schedulerBucket := h.gatewayService.ResolveOpenAISchedulerBucketString(apiKey.GroupID)
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var rectifierRetrySelection *service.AccountSelectionResult
 
 	for {
-		// Select account supporting the requested model
-		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
-			c.Request.Context(),
-			apiKey.GroupID,
-			previousResponseID,
-			sessionHash,
-			reqModel,
-			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
+		var (
+			selection                *service.AccountSelectionResult
+			scheduleDecision         service.OpenAIAccountScheduleDecision
+			err                      error
+			reusedRectifierSelection bool
 		)
+		if rectifierRetrySelection != nil {
+			reusedRectifierSelection = true
+			selection = rectifierRetrySelection
+			rectifierRetrySelection = nil
+		} else {
+			// Select account supporting the requested model
+			reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+				c.Request.Context(),
+				apiKey.GroupID,
+				previousResponseID,
+				sessionHash,
+				reqModel,
+				failedAccountIDs,
+				service.OpenAIUpstreamTransportAny,
+			)
+		}
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(err),
@@ -272,15 +289,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if previousResponseID != "" && selection != nil && selection.Account != nil {
 			reqLog.Debug("openai.account_selected_with_previous_response_id", zap.Int64("account_id", selection.Account.ID))
 		}
-		reqLog.Debug("openai.account_schedule_decision",
-			zap.String("layer", scheduleDecision.Layer),
-			zap.Bool("sticky_previous_hit", scheduleDecision.StickyPreviousHit),
-			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
-			zap.Int("candidate_count", scheduleDecision.CandidateCount),
-			zap.Int("top_k", scheduleDecision.TopK),
-			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
-			zap.Float64("load_skew", scheduleDecision.LoadSkew),
-		)
+		if !reusedRectifierSelection {
+			reqLog.Debug("openai.account_schedule_decision",
+				zap.String("layer", scheduleDecision.Layer),
+				zap.Bool("sticky_previous_hit", scheduleDecision.StickyPreviousHit),
+				zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
+				zap.Int("candidate_count", scheduleDecision.CandidateCount),
+				zap.Int("top_k", scheduleDecision.TopK),
+				zap.Int64("latency_ms", scheduleDecision.LatencyMs),
+				zap.Float64("load_skew", scheduleDecision.LoadSkew),
+			)
+		}
 		account := selection.Account
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
@@ -292,14 +311,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		// Forward request
-		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		setContextLatencyMsIfAbsent(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
+		forwardCtx := h.gatewayService.PrepareOpenAIStreamFirstTokenRectifierContext(
+			requestRectifierCtx,
+			reqStream,
+			rectifierState.currentAttempt("response_header"),
+			rectifierState.currentAttempt("first_token"),
+		)
 		// 应用渠道模型映射到请求体
 		forwardBody := body
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
-		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
+		result, err := h.gatewayService.Forward(forwardCtx, c, account, forwardBody)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
@@ -314,6 +339,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
+			if timeoutErr, ok := service.AsOpenAIRectifierTimeoutError(err); ok {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				maxAttempts := rectifierPolicy.MaxAttemptsForPhase(timeoutErr.Phase)
+				retryLimit := openAIRectifierRetryLimit(maxAttempts)
+				if rectifierState.currentAttempt(timeoutErr.Phase) < maxAttempts {
+					rectifierState.advance(timeoutErr.Phase)
+					retryCount := service.IncrementOpsRectifierRetryCount(c)
+					logOpenAIRectifierTimeoutRetry(reqLog, "openai.rectifier_timeout_retry", account.ID, schedulerBucket, timeoutErr, rectifierState, retryCount, retryLimit)
+					rectifierRetrySelection = h.newRectifierRetrySelection(account)
+					continue
+				}
+				logOpenAIRectifierTimeoutExhausted(reqLog, "openai.rectifier_timeout_exhausted", account.ID, schedulerBucket, timeoutErr, service.GetOpsRectifierRetryCount(c), retryLimit)
+				h.handleRectifierTimeoutExhausted(c, timeoutErr, streamStarted)
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -325,6 +365,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						reqLog.Warn("openai.pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.String("failover_phase", failoverErr.Phase),
 							zap.Int("retry_limit", retryLimit),
 							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
 						)
@@ -339,6 +380,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
+				rectifierState.reset()
+				rectifierRetrySelection = nil
 				if switchCount >= maxAccountSwitches {
 					h.handleFailoverExhausted(c, failoverErr, streamStarted)
 					return
@@ -347,6 +390,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				reqLog.Warn("openai.upstream_failover_switching",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", failoverErr.StatusCode),
+					zap.String("failover_phase", failoverErr.Phase),
 					zap.Int("switch_count", switchCount),
 					zap.Int("max_switches", maxAccountSwitches),
 				)
@@ -367,6 +411,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		if result != nil {
+			attachOpenAITimingBreakdownFromContext(c, result)
 			if account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
@@ -412,86 +457,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		)
 		return
 	}
-}
-
-func isOpenAIRemoteCompactPath(c *gin.Context) bool {
-	if c == nil || c.Request == nil || c.Request.URL == nil {
-		return false
-	}
-	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
-	return strings.HasSuffix(normalizedPath, "/responses/compact")
-}
-
-func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {
-	if !isOpenAIRemoteCompactPath(c) {
-		return
-	}
-
-	var (
-		ctx    = context.Background()
-		path   string
-		status int
-	)
-	if c != nil {
-		if c.Request != nil {
-			ctx = c.Request.Context()
-			if c.Request.URL != nil {
-				path = strings.TrimSpace(c.Request.URL.Path)
-			}
-		}
-		if c.Writer != nil {
-			status = c.Writer.Status()
-		}
-	}
-
-	outcome := "failed"
-	if status >= 200 && status < 300 {
-		outcome = "succeeded"
-	}
-	latencyMs := time.Since(startedAt).Milliseconds()
-	if latencyMs < 0 {
-		latencyMs = 0
-	}
-
-	fields := []zap.Field{
-		zap.String("component", "handler.openai_gateway.responses"),
-		zap.Bool("remote_compact", true),
-		zap.String("compact_outcome", outcome),
-		zap.Int("status_code", status),
-		zap.Int64("latency_ms", latencyMs),
-		zap.String("path", path),
-		zap.Bool("force_codex_cli", h != nil && h.cfg != nil && h.cfg.Gateway.ForceCodexCLI),
-	}
-
-	if c != nil {
-		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); userAgent != "" {
-			fields = append(fields, zap.String("request_user_agent", userAgent))
-		}
-		if v, ok := c.Get(opsModelKey); ok {
-			if model, ok := v.(string); ok && strings.TrimSpace(model) != "" {
-				fields = append(fields, zap.String("request_model", strings.TrimSpace(model)))
-			}
-		}
-		if v, ok := c.Get(opsAccountIDKey); ok {
-			if accountID, ok := v.(int64); ok && accountID > 0 {
-				fields = append(fields, zap.Int64("account_id", accountID))
-			}
-		}
-		if c.Writer != nil {
-			if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("x-request-id")); upstreamRequestID != "" {
-				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
-			} else if upstreamRequestID := strings.TrimSpace(c.Writer.Header().Get("X-Request-Id")); upstreamRequestID != "" {
-				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
-			}
-		}
-	}
-
-	log := logger.FromContext(ctx).With(fields...)
-	if outcome == "succeeded" {
-		log.Info("codex.remote_compact.succeeded")
-		return
-	}
-	log.Warn("codex.remote_compact.failed")
 }
 
 // Messages handles Anthropic Messages API requests routed to OpenAI platform.
@@ -614,26 +579,43 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
+	rectifierPolicy := h.gatewayService.ResolveOpenAIStreamRectifierPolicy(c.Request.Context())
+	requestRectifierCtx := service.WithOpenAIStreamRectifierPolicy(c.Request.Context(), rectifierPolicy)
+	rectifierState := newOpenAIRectifierAttemptState()
+	schedulerBucket := h.gatewayService.ResolveOpenAISchedulerBucketString(apiKey.GroupID)
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var rectifierRetrySelection *service.AccountSelectionResult
 	effectiveMappedModel := preferredMappedModel
 
 	for {
+		var (
+			selection        *service.AccountSelectionResult
+			scheduleDecision service.OpenAIAccountScheduleDecision
+			err              error
+		)
+		// 清除上一次迭代的降级模型标记，避免残留影响本次迭代
+		c.Set("openai_messages_fallback_model", "")
 		currentRoutingModel := routingModel
 		if effectiveMappedModel != "" {
 			currentRoutingModel = effectiveMappedModel
 		}
-		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
-			c.Request.Context(),
-			apiKey.GroupID,
-			"", // no previous_response_id
-			sessionHash,
-			currentRoutingModel,
-			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
-		)
+		if rectifierRetrySelection != nil {
+			selection = rectifierRetrySelection
+			rectifierRetrySelection = nil
+		} else {
+			reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+				c.Request.Context(),
+				apiKey.GroupID,
+				"", // no previous_response_id
+				sessionHash,
+				currentRoutingModel,
+				failedAccountIDs,
+				service.OpenAIUpstreamTransportAny,
+			)
+		}
 		if err != nil {
 			reqLog.Warn("openai_messages.account_select_failed",
 				zap.Error(err),
@@ -668,8 +650,14 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 
-		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		setContextLatencyMsIfAbsent(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
+		forwardCtx := h.gatewayService.PrepareOpenAIStreamFirstTokenRectifierContext(
+			requestRectifierCtx,
+			reqStream,
+			rectifierState.currentAttempt("response_header"),
+			rectifierState.currentAttempt("first_token"),
+		)
 
 		defaultMappedModel := strings.TrimSpace(effectiveMappedModel)
 		// 应用渠道模型映射到请求体
@@ -677,7 +665,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if channelMappingMsg.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMappingMsg.MappedModel)
 		}
-		result, err := h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		result, err := h.gatewayService.ForwardAsAnthropic(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
@@ -693,6 +681,21 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
+			if timeoutErr, ok := service.AsOpenAIRectifierTimeoutError(err); ok {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				maxAttempts := rectifierPolicy.MaxAttemptsForPhase(timeoutErr.Phase)
+				retryLimit := openAIRectifierRetryLimit(maxAttempts)
+				if rectifierState.currentAttempt(timeoutErr.Phase) < maxAttempts {
+					rectifierState.advance(timeoutErr.Phase)
+					retryCount := service.IncrementOpsRectifierRetryCount(c)
+					logOpenAIRectifierTimeoutRetry(reqLog, "openai_messages.rectifier_timeout_retry", account.ID, schedulerBucket, timeoutErr, rectifierState, retryCount, retryLimit)
+					rectifierRetrySelection = h.newRectifierRetrySelection(account)
+					continue
+				}
+				logOpenAIRectifierTimeoutExhausted(reqLog, "openai_messages.rectifier_timeout_exhausted", account.ID, schedulerBucket, timeoutErr, service.GetOpsRectifierRetryCount(c), retryLimit)
+				h.handleAnthropicRectifierTimeoutExhausted(c, timeoutErr, streamStarted)
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -704,6 +707,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						reqLog.Warn("openai_messages.pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.String("failover_phase", failoverErr.Phase),
 							zap.Int("retry_limit", retryLimit),
 							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
 						)
@@ -718,6 +722,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
+				rectifierState.reset()
+				rectifierRetrySelection = nil
 				if switchCount >= maxAccountSwitches {
 					h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
 					return
@@ -726,6 +732,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				reqLog.Warn("openai_messages.upstream_failover_switching",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", failoverErr.StatusCode),
+					zap.String("failover_phase", failoverErr.Phase),
 					zap.Int("switch_count", switchCount),
 					zap.Int("max_switches", maxAccountSwitches),
 				)
@@ -741,6 +748,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 		if result != nil {
+			attachOpenAITimingBreakdownFromContext(c, result)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
@@ -819,6 +827,208 @@ func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, stat
 func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(failoverErr.StatusCode)
 	h.anthropicStreamingAwareError(c, status, errType, errMsg, streamStarted)
+}
+
+func openAIRectifierTimeoutFields(accountID int64, schedulerBucket string, timeoutErr *service.OpenAIRectifierTimeoutError) []zap.Field {
+	fields := []zap.Field{zap.Int64("account_id", accountID)}
+	if bucket := strings.TrimSpace(schedulerBucket); bucket != "" {
+		fields = append(fields, zap.String("scheduler_bucket", bucket))
+	}
+	if timeoutErr == nil {
+		return fields
+	}
+	fields = append(fields,
+		zap.String("phase", timeoutErr.Phase),
+		zap.Duration("timeout", timeoutErr.Timeout),
+		zap.Int64("timeout_ms", timeoutErr.Timeout.Milliseconds()),
+		zap.Int("timeout_seconds", int(timeoutErr.Timeout/time.Second)),
+	)
+	return fields
+}
+
+func openAIRectifierRetryLimit(maxAttempts int) int {
+	if maxAttempts <= 1 {
+		return 0
+	}
+	return maxAttempts - 1
+}
+
+func logOpenAIRectifierTimeoutRetry(reqLog *zap.Logger, eventName string, accountID int64, schedulerBucket string, timeoutErr *service.OpenAIRectifierTimeoutError, retryState openAIRectifierAttemptState, retryCount int, retryLimit int) {
+	if reqLog == nil || timeoutErr == nil {
+		return
+	}
+	retryAttempt := retryState.currentAttempt(timeoutErr.Phase)
+	fields := append(openAIRectifierTimeoutFields(accountID, schedulerBucket, timeoutErr),
+		zap.Int("attempt", retryAttempt),
+		zap.Int("retry_attempt", retryAttempt),
+		zap.Int("timed_out_attempt", timeoutErr.Attempt),
+		zap.Int("retry_count", retryCount),
+		zap.Int("retry_limit", retryLimit),
+		zap.Int("max_attempts", retryLimit+1),
+		zap.Int("header_attempt", retryState.currentAttempt("response_header")),
+		zap.Int("first_token_attempt", retryState.currentAttempt("first_token")),
+	)
+	reqLog.Warn(eventName, fields...)
+}
+
+func logOpenAIRectifierTimeoutExhausted(reqLog *zap.Logger, eventName string, accountID int64, schedulerBucket string, timeoutErr *service.OpenAIRectifierTimeoutError, retryCount int, retryLimit int) {
+	if reqLog == nil || timeoutErr == nil {
+		return
+	}
+	fields := append(openAIRectifierTimeoutFields(accountID, schedulerBucket, timeoutErr),
+		zap.Int("attempt", timeoutErr.Attempt),
+		zap.Int("retry_count", retryCount),
+		zap.Int("retry_limit", retryLimit),
+		zap.Int("max_attempts", retryLimit+1),
+		zap.Int("header_attempt", timeoutErr.HeaderAttempt),
+		zap.Int("first_token_attempt", timeoutErr.FirstTokenAttempt),
+	)
+	reqLog.Warn(eventName, fields...)
+}
+
+type openAIRectifierAttemptState struct {
+	header     int
+	firstToken int
+}
+
+func newOpenAIRectifierAttemptState() openAIRectifierAttemptState {
+	return openAIRectifierAttemptState{header: 1, firstToken: 1}
+}
+
+func (s openAIRectifierAttemptState) currentAttempt(phase string) int {
+	switch phase {
+	case "response_header":
+		if s.header <= 0 {
+			return 1
+		}
+		return s.header
+	default:
+		if s.firstToken <= 0 {
+			return 1
+		}
+		return s.firstToken
+	}
+}
+
+func (s *openAIRectifierAttemptState) advance(phase string) {
+	if s == nil {
+		return
+	}
+	switch phase {
+	case "response_header":
+		s.header++
+	default:
+		s.firstToken++
+	}
+}
+
+func (s *openAIRectifierAttemptState) reset() {
+	if s == nil {
+		return
+	}
+	s.header = 1
+	s.firstToken = 1
+}
+
+func isOpenAIRemoteCompactPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimSpace(c.Request.URL.Path)
+	return strings.HasSuffix(path, "/responses/compact") || strings.HasSuffix(path, "/responses/compact/")
+}
+
+func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {
+	if !isOpenAIRemoteCompactPath(c) {
+		return
+	}
+	statusCode := http.StatusOK
+	if c != nil && c.Writer != nil {
+		statusCode = c.Writer.Status()
+		if statusCode == 0 {
+			statusCode = http.StatusOK
+		}
+	}
+	outcome := "succeeded"
+	logFn := logger.L().Info
+	if statusCode >= http.StatusBadRequest {
+		outcome = "failed"
+		logFn = logger.L().Warn
+	}
+	fields := []zap.Field{
+		zap.String("compact_outcome", outcome),
+		zap.Int("status_code", statusCode),
+		zap.Duration("latency", time.Since(startedAt)),
+	}
+	if c != nil && c.Request != nil && c.Request.URL != nil {
+		fields = append(fields, zap.String("path", c.Request.URL.Path))
+	}
+	if c != nil {
+		if model, ok := c.Get(opsModelKey); ok {
+			fields = append(fields, zap.Any("request_model", model))
+		}
+		if accountID, ok := c.Get(opsAccountIDKey); ok {
+			fields = append(fields, zap.Any("account_id", accountID))
+		}
+		if requestID := strings.TrimSpace(c.Writer.Header().Get("x-request-id")); requestID != "" {
+			fields = append(fields, zap.String("upstream_request_id", requestID))
+		}
+	}
+	logFn("codex.remote_compact."+outcome, fields...)
+}
+
+func (h *OpenAIGatewayHandler) newRectifierRetrySelection(account *service.Account) *service.AccountSelectionResult {
+	if account == nil {
+		return nil
+	}
+	maxConcurrency := account.Concurrency
+	if maxConcurrency <= 0 {
+		maxConcurrency = 1
+	}
+	return &service.AccountSelectionResult{
+		Account: account,
+		WaitPlan: &service.AccountWaitPlan{
+			AccountID:                account.ID,
+			MaxConcurrency:           maxConcurrency,
+			Timeout:                  time.Second,
+			MaxWaiting:               service.CalculateMaxWait(maxConcurrency),
+			DetachFromRequestContext: true,
+		},
+	}
+}
+
+func openAIRectifierTimeoutClientMessage(timeoutErr *service.OpenAIRectifierTimeoutError) string {
+	if timeoutErr == nil {
+		return "Gateway timeout while waiting for upstream response"
+	}
+	switch timeoutErr.Phase {
+	case "response_header":
+		return "Gateway timeout while waiting for upstream response headers"
+	case "first_token":
+		return "Gateway timeout while waiting for upstream first token"
+	default:
+		return "Gateway timeout while waiting for upstream response"
+	}
+}
+
+func (h *OpenAIGatewayHandler) handleRectifierTimeoutExhausted(c *gin.Context, timeoutErr *service.OpenAIRectifierTimeoutError, streamStarted bool) {
+	message := openAIRectifierTimeoutClientMessage(timeoutErr)
+	statusCode := http.StatusGatewayTimeout
+	if timeoutErr != nil && timeoutErr.StatusCode > 0 {
+		statusCode = timeoutErr.StatusCode
+	}
+	service.MarkOpsRectifierTimeoutExhausted(c)
+	h.handleStreamingAwareError(c, statusCode, "upstream_error", message, streamStarted)
+}
+
+func (h *OpenAIGatewayHandler) handleAnthropicRectifierTimeoutExhausted(c *gin.Context, timeoutErr *service.OpenAIRectifierTimeoutError, streamStarted bool) {
+	message := openAIRectifierTimeoutClientMessage(timeoutErr)
+	statusCode := http.StatusGatewayTimeout
+	if timeoutErr != nil && timeoutErr.StatusCode > 0 {
+		statusCode = timeoutErr.StatusCode
+	}
+	service.MarkOpsRectifierTimeoutExhausted(c)
+	h.anthropicStreamingAwareError(c, statusCode, "upstream_error", message, streamStarted)
 }
 
 // ensureAnthropicErrorResponse writes a fallback Anthropic error if no response was written.
@@ -944,6 +1154,15 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	if selection.WaitPlan == nil {
 		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
 		return nil, false
+	}
+
+	if selection.WaitPlan.DetachFromRequestContext {
+		originalReq := c.Request
+		ctx = context.WithoutCancel(ctx)
+		c.Request = c.Request.WithContext(ctx)
+		defer func() {
+			c.Request = originalReq
+		}()
 	}
 
 	fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(
@@ -1250,6 +1469,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if turnErr != nil || result == nil {
 				return
 			}
+			attachOpenAITimingBreakdownFromContext(c, result)
 			if account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
 			}
@@ -1386,6 +1606,34 @@ func (h *OpenAIGatewayHandler) missingResponsesDependencies() []string {
 	return missing
 }
 
+func attachOpenAITimingBreakdownFromContext(c *gin.Context, result *service.OpenAIForwardResult) {
+	if c == nil || result == nil {
+		return
+	}
+	if ms, ok := getContextInt64(c, service.OpsAuthLatencyMsKey); ok {
+		value := int(ms)
+		result.AuthLatencyMs = &value
+	}
+	if ms, ok := getContextInt64(c, service.OpsRoutingLatencyMsKey); ok {
+		value := int(ms)
+		result.RoutingLatencyMs = &value
+	}
+	if ms, ok := getContextInt64(c, service.OpsGatewayPrepareLatencyMsKey); ok {
+		value := int(ms)
+		result.GatewayPrepareMs = &value
+	}
+	if ms, ok := getContextInt64(c, service.OpsUpstreamLatencyMsKey); ok {
+		value := int(ms)
+		result.UpstreamLatencyMs = &value
+	}
+	if result.StreamFirstEventMs == nil {
+		if ms, ok := getContextInt64(c, service.OpsStreamFirstEventLatencyMsKey); ok {
+			value := int(ms)
+			result.StreamFirstEventMs = &value
+		}
+	}
+}
+
 func getContextInt64(c *gin.Context, key string) (int64, bool) {
 	if c == nil || key == "" {
 		return 0, false
@@ -1406,6 +1654,16 @@ func getContextInt64(c *gin.Context, key string) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func setContextLatencyMsIfAbsent(c *gin.Context, key string, value int64) {
+	if c == nil || value < 0 {
+		return
+	}
+	if _, ok := getContextInt64(c, key); ok {
+		return
+	}
+	service.SetOpsLatencyMs(c, key, value)
 }
 
 func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTask) {

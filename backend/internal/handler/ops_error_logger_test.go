@@ -108,6 +108,36 @@ func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
 	require.Equal(t, int64(1), OpsErrorLogQueueLength())
 }
 
+func TestApplyOpsRetryCountFromContext_UsesRectifierRetryTotal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+	service.IncrementOpsRectifierRetryCount(c)
+	service.IncrementOpsRectifierRetryCount(c)
+
+	entry := &service.OpsInsertErrorLogInput{}
+	applyOpsRetryCountFromContext(c, entry)
+
+	require.Equal(t, 2, entry.RetryCount)
+}
+
+func TestApplyOpsRetryCountFromContext_DefaultZero(t *testing.T) {
+	entry := &service.OpsInsertErrorLogInput{RetryCount: 99}
+	applyOpsRetryCountFromContext(nil, entry)
+	require.Equal(t, 99, entry.RetryCount)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+	entry = &service.OpsInsertErrorLogInput{RetryCount: 99}
+	applyOpsRetryCountFromContext(c, entry)
+	require.Equal(t, 0, entry.RetryCount)
+}
+
 func TestAttachOpsRequestBodyToEntry_EarlyReturnBranches(t *testing.T) {
 	resetOpsErrorLoggerStateForTest(t)
 	gin.SetMode(gin.TestMode)
@@ -195,6 +225,51 @@ func TestOpsCaptureWriterPool_ResetOnRelease(t *testing.T) {
 	require.Zero(t, reused.buf.Len(), "writer should be reset before reuse")
 }
 
+func TestOpsErrorLoggerMiddleware_RecoveredRectifierRetryCountEnqueuesRecoveredLog(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	opsErrorLogOnce.Do(func() {})
+	opsErrorLogMu.Lock()
+	opsErrorLogQueue = make(chan opsErrorLogJob, 1)
+	opsErrorLogMu.Unlock()
+
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	r := gin.New()
+	r.Use(OpsErrorLoggerMiddleware(ops))
+	r.GET("/v1/responses", func(c *gin.Context) {
+		c.Set(service.OpsUpstreamErrorsKey, []*service.OpsUpstreamErrorEvent{{
+			Platform:           service.PlatformOpenAI,
+			AccountID:          42,
+			AccountName:        "sticky-openai",
+			UpstreamStatusCode: http.StatusBadGateway,
+			Kind:               "request_error:rectifier_timeout",
+			Message:            "OpenAI response header timeout after 8s on header attempt 2",
+			Detail:             "phase=response_header timeout_ms=8000 attempt=2 header_attempt=2 first_token_attempt=1",
+		}})
+		service.SetOpsRectifierRetryCount(c, 2)
+		c.Status(http.StatusOK)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	r.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	select {
+	case job := <-opsErrorLogQueue:
+		require.NotNil(t, job.entry)
+		require.Equal(t, 2, job.entry.RetryCount)
+		require.Equal(t, http.StatusOK, job.entry.StatusCode)
+		require.Equal(t, "Recovered upstream error 502: OpenAI response header timeout after 8s on header attempt 2", job.entry.ErrorMessage)
+		require.Len(t, job.entry.UpstreamErrors, 1)
+		require.Equal(t, "request_error:rectifier_timeout", job.entry.UpstreamErrors[0].Kind)
+	default:
+		t.Fatal("expected recovered upstream error log to be enqueued")
+	}
+}
+
 func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -258,6 +333,7 @@ func TestNormalizeOpsErrorType(t *testing.T) {
 		// Unknown type but known code still maps correctly.
 		{"nil with INSUFFICIENT_BALANCE code", "<nil>", "INSUFFICIENT_BALANCE", "billing_error"},
 		{"nil with USAGE_LIMIT_EXCEEDED code", "<nil>", "USAGE_LIMIT_EXCEEDED", "subscription_error"},
+		{"nil with API_KEY_QUOTA_EXHAUSTED code", "<nil>", "API_KEY_QUOTA_EXHAUSTED", "subscription_error"},
 
 		// Empty type falls through to code-based mapping.
 		{"empty type with balance code", "", "INSUFFICIENT_BALANCE", "billing_error"},
@@ -273,6 +349,12 @@ func TestNormalizeOpsErrorType(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestClassifyOpsIsBusinessLimited(t *testing.T) {
+	require.True(t, classifyOpsIsBusinessLimited("api_error", "internal", "API_KEY_QUOTA_EXHAUSTED", 429, "quota exhausted"))
+	require.True(t, classifyOpsIsBusinessLimited("subscription_error", "request", "USAGE_LIMIT_EXCEEDED", 429, "usage limit exceeded"))
+	require.False(t, classifyOpsIsBusinessLimited("rate_limit_error", "upstream", "", 429, "upstream rate limit"))
 }
 
 func TestSetOpsEndpointContext_SetsContextKeys(t *testing.T) {

@@ -22,8 +22,14 @@ type OpsRequestDetail struct {
 	Platform string `json:"platform,omitempty"`
 	Model    string `json:"model,omitempty"`
 
-	DurationMs *int `json:"duration_ms,omitempty"`
-	StatusCode *int `json:"status_code,omitempty"`
+	DurationMs              *int `json:"duration_ms,omitempty"`
+	TTFTMs                  *int `json:"ttft_ms,omitempty"`
+	AuthLatencyMs           *int `json:"auth_latency_ms,omitempty"`
+	RoutingLatencyMs        *int `json:"routing_latency_ms,omitempty"`
+	GatewayPrepareLatencyMs *int `json:"gateway_prepare_latency_ms,omitempty"`
+	UpstreamLatencyMs       *int `json:"upstream_latency_ms,omitempty"`
+	StreamFirstEventMs      *int `json:"stream_first_event_ms,omitempty"`
+	StatusCode              *int `json:"status_code,omitempty"`
 
 	// When Kind == "error", ErrorID links to /admin/ops/errors/:id.
 	ErrorID *int64 `json:"error_id,omitempty"`
@@ -61,7 +67,7 @@ type OpsRequestDetailFilter struct {
 	MinDurationMs *int
 	MaxDurationMs *int
 
-	// Sort: created_at_desc (default) or duration_desc.
+	// Sort: created_at_desc (default), duration_desc, or ttft_desc.
 	Sort string
 
 	Page     int

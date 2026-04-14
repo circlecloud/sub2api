@@ -12,6 +12,7 @@ export interface OpsRequestDetailsPreset {
   title: string
   kind?: OpsRequestDetailsParams['kind']
   sort?: OpsRequestDetailsParams['sort']
+  metric?: 'duration' | 'ttft'
   min_duration_ms?: number
   max_duration_ms?: number
 }
@@ -47,6 +48,30 @@ const rangeLabel = computed(() => {
   if (minutes >= 60) return t('admin.ops.requestDetails.rangeHours', { n: Math.round(minutes / 60) })
   return t('admin.ops.requestDetails.rangeMinutes', { n: minutes })
 })
+
+const latencyMetric = computed<'duration' | 'ttft'>(() => props.preset.metric ?? 'duration')
+const latencyColumns = computed<Array<'duration' | 'ttft'>>(() =>
+  latencyMetric.value === 'ttft' ? ['ttft', 'duration'] : ['duration', 'ttft']
+)
+const showTTFTBreakdown = computed(() => latencyMetric.value === 'ttft')
+const getLatencyColumnLabel = (metric: 'duration' | 'ttft') =>
+  metric === 'ttft'
+    ? t('admin.ops.requestDetails.table.ttft')
+    : t('admin.ops.requestDetails.table.duration')
+const formatLatencyMetric = (value?: number | null) => (typeof value === 'number' ? `${value} ms` : '-')
+const formatLatencyValue = (row: OpsRequestDetail, metric: 'duration' | 'ttft') => {
+  const value = metric === 'ttft' ? row.ttft_ms : row.duration_ms
+  return formatLatencyMetric(value)
+}
+const getTTFTBreakdownItems = (row: OpsRequestDetail) => [
+  { label: t('admin.ops.requestDetails.breakdown.auth'), value: row.auth_latency_ms },
+  { label: t('admin.ops.requestDetails.breakdown.routing'), value: row.routing_latency_ms },
+  { label: t('admin.ops.requestDetails.breakdown.prepare'), value: row.gateway_prepare_latency_ms },
+  { label: t('admin.ops.requestDetails.breakdown.headers'), value: row.upstream_latency_ms },
+  { label: t('admin.ops.requestDetails.breakdown.firstEvent'), value: row.stream_first_event_ms }
+]
+const hasTTFTBreakdown = (row: OpsRequestDetail) =>
+  getTTFTBreakdownItems(row).some((item) => typeof item.value === 'number')
 
 function buildTimeParams(): Pick<OpsRequestDetailsParams, 'start_time' | 'end_time'> {
   const minutes = parseTimeRangeMinutes(props.timeRange)
@@ -204,8 +229,21 @@ const kindBadgeClass = (kind: string) => {
                   <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                     {{ t('admin.ops.requestDetails.table.model') }}
                   </th>
-                  <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    {{ t('admin.ops.requestDetails.table.duration') }}
+                  <th
+                    v-for="metric in latencyColumns"
+                    :key="metric"
+                    class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
+                  >
+                    {{ getLatencyColumnLabel(metric) }}
+                  </th>
+                  <th
+                    v-if="showTTFTBreakdown"
+                    class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
+                  >
+                    <div>{{ t('admin.ops.requestDetails.table.diagnosis') }}</div>
+                    <div class="mt-1 text-[10px] font-medium normal-case tracking-normal text-gray-400 dark:text-gray-500">
+                      {{ t('admin.ops.requestDetails.table.diagnosisHint') }}
+                    </div>
                   </th>
                   <th class="px-4 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                     {{ t('admin.ops.requestDetails.table.status') }}
@@ -234,8 +272,28 @@ const kindBadgeClass = (kind: string) => {
                   <td class="max-w-[240px] truncate px-4 py-3 text-xs text-gray-600 dark:text-gray-300" :title="row.model || ''">
                     {{ row.model || '-' }}
                   </td>
-                  <td class="whitespace-nowrap px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
-                    {{ typeof row.duration_ms === 'number' ? `${row.duration_ms} ms` : '-' }}
+                  <td
+                    v-for="metric in latencyColumns"
+                    :key="`${idx}-${metric}`"
+                    class="whitespace-nowrap px-4 py-3 text-xs text-gray-600 dark:text-gray-300"
+                  >
+                    {{ formatLatencyValue(row, metric) }}
+                  </td>
+                  <td
+                    v-if="showTTFTBreakdown"
+                    class="min-w-[260px] px-4 py-3 text-xs text-gray-600 dark:text-gray-300"
+                  >
+                    <div v-if="hasTTFTBreakdown(row)" class="grid grid-cols-2 gap-x-3 gap-y-1">
+                      <div
+                        v-for="item in getTTFTBreakdownItems(row)"
+                        :key="`${idx}-${item.label}`"
+                        class="flex items-baseline gap-1 whitespace-nowrap"
+                      >
+                        <span class="text-gray-400 dark:text-gray-500">{{ item.label }}:</span>
+                        <span class="font-medium text-gray-700 dark:text-gray-200">{{ formatLatencyMetric(item.value) }}</span>
+                      </div>
+                    </div>
+                    <span v-else class="text-gray-400">-</span>
                   </td>
                   <td class="whitespace-nowrap px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
                     {{ row.status_code ?? '-' }}

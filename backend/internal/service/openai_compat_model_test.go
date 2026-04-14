@@ -228,3 +228,91 @@ func TestForwardAsAnthropic_ForcedCodexInstructionsTemplateUsesCachedTemplateCon
 	require.NotNil(t, result)
 	require.Equal(t, "cached-prefix\n\nclient-system", gjson.GetBytes(upstream.lastBody, "instructions").String())
 }
+
+func TestForwardAsOpenAICompat_StoreEnabledControlsCompatStoreFlag(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	buildResponsesBody := func() string {
+		return strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")
+	}
+
+	buildAccount := func(storeEnabled bool) *Account {
+		extra := map[string]any{}
+		if storeEnabled {
+			extra["openai_store_enabled"] = true
+		}
+		return &Account{
+			ID:          1,
+			Name:        "openai-oauth",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Concurrency: 1,
+			Extra:       extra,
+			Credentials: map[string]any{
+				"access_token":       "oauth-token",
+				"chatgpt_account_id": "chatgpt-acc",
+				"model_mapping": map[string]any{
+					"gpt-5.4": "gpt-5.4",
+				},
+			},
+		}
+	}
+
+	t.Run("anthropic route respects account store flag", func(t *testing.T) {
+		for _, storeEnabled := range []bool{false, true} {
+			name := "disabled"
+			if storeEnabled {
+				name = "enabled"
+			}
+			t.Run(name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				body := []byte(`{"model":"gpt-5.4","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+				c.Request.Header.Set("Content-Type", "application/json")
+				upstream := &httpUpstreamRecorder{resp: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(buildResponsesBody())),
+				}}
+				svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+				_, err := svc.ForwardAsAnthropic(context.Background(), c, buildAccount(storeEnabled), body, "", "gpt-5.1")
+				require.NoError(t, err)
+				require.Equal(t, storeEnabled, gjson.GetBytes(upstream.lastBody, "store").Bool())
+			})
+		}
+	})
+
+	t.Run("chat completions route respects account store flag", func(t *testing.T) {
+		for _, storeEnabled := range []bool{false, true} {
+			name := "disabled"
+			if storeEnabled {
+				name = "enabled"
+			}
+			t.Run(name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+				c.Request.Header.Set("Content-Type", "application/json")
+				upstream := &httpUpstreamRecorder{resp: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(buildResponsesBody())),
+				}}
+				svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+				_, err := svc.ForwardAsChatCompletions(context.Background(), c, buildAccount(storeEnabled), body, "", "gpt-5.1")
+				require.NoError(t, err)
+				require.Equal(t, storeEnabled, gjson.GetBytes(upstream.lastBody, "store").Bool())
+			})
+		}
+	})
+}

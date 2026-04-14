@@ -149,82 +149,6 @@ func TestComputeDashboardHealthScore_Comprehensive(t *testing.T) {
 			wantMin: 70,
 			wantMax: 90,
 		},
-		{
-			name: "Redis failure",
-			overview: &OpsDashboardOverview{
-				RequestCountTotal: 1000,
-				RequestCountSLA:   1000,
-				SLA:               0.995,
-				ErrorRate:         0,
-				UpstreamErrorRate: 0,
-				Duration:          OpsPercentiles{P99: intPtr(500)},
-				SystemMetrics: &OpsSystemMetricsSnapshot{
-					DBOK:               boolPtr(true),
-					RedisOK:            boolPtr(false),
-					CPUUsagePercent:    float64Ptr(30),
-					MemoryUsagePercent: float64Ptr(40),
-				},
-			},
-			wantMin: 85,
-			wantMax: 95,
-		},
-		{
-			name: "high CPU usage",
-			overview: &OpsDashboardOverview{
-				RequestCountTotal: 1000,
-				RequestCountSLA:   1000,
-				SLA:               0.995,
-				ErrorRate:         0,
-				UpstreamErrorRate: 0,
-				Duration:          OpsPercentiles{P99: intPtr(500)},
-				SystemMetrics: &OpsSystemMetricsSnapshot{
-					DBOK:               boolPtr(true),
-					RedisOK:            boolPtr(true),
-					CPUUsagePercent:    float64Ptr(95),
-					MemoryUsagePercent: float64Ptr(40),
-				},
-			},
-			wantMin: 85,
-			wantMax: 100,
-		},
-		{
-			name: "combined failures - business degraded + infra healthy",
-			overview: &OpsDashboardOverview{
-				RequestCountTotal: 1000,
-				RequestCountSLA:   1000,
-				SLA:               0.90,
-				ErrorRate:         0.05,
-				UpstreamErrorRate: 0.02,
-				Duration:          OpsPercentiles{P99: intPtr(10000)},
-				SystemMetrics: &OpsSystemMetricsSnapshot{
-					DBOK:               boolPtr(true),
-					RedisOK:            boolPtr(true),
-					CPUUsagePercent:    float64Ptr(20),
-					MemoryUsagePercent: float64Ptr(30),
-				},
-			},
-			wantMin: 84,
-			wantMax: 85,
-		},
-		{
-			name: "combined failures - business healthy + infra degraded",
-			overview: &OpsDashboardOverview{
-				RequestCountTotal: 1000,
-				RequestCountSLA:   1000,
-				SLA:               0.998,
-				ErrorRate:         0.001,
-				UpstreamErrorRate: 0,
-				Duration:          OpsPercentiles{P99: intPtr(600)},
-				SystemMetrics: &OpsSystemMetricsSnapshot{
-					DBOK:               boolPtr(false),
-					RedisOK:            boolPtr(false),
-					CPUUsagePercent:    float64Ptr(95),
-					MemoryUsagePercent: float64Ptr(95),
-				},
-			},
-			wantMin: 70,
-			wantMax: 90,
-		},
 	}
 
 	for _, tt := range tests {
@@ -234,6 +158,88 @@ func TestComputeDashboardHealthScore_Comprehensive(t *testing.T) {
 			require.LessOrEqual(t, score, tt.wantMax, "score should be <= %d", tt.wantMax)
 			require.GreaterOrEqual(t, score, 0, "score must be >= 0")
 			require.LessOrEqual(t, score, 100, "score must be <= 100")
+		})
+	}
+}
+
+func TestComputeDashboardHealthScore_CompositeCoverage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	tests := []struct {
+		name     string
+		overview *OpsDashboardOverview
+		wantMin  int
+		wantMax  int
+	}{
+		{
+			name: "business degraded infra healthy",
+			overview: &OpsDashboardOverview{
+				RequestCountTotal: 1000,
+				RequestCountSLA:   1000,
+				SLA:               0.90,
+				ErrorRate:         0.10,
+				UpstreamErrorRate: 0.04,
+				TTFT:              OpsPercentiles{P99: intPtr(300)},
+				SystemMetrics: &OpsSystemMetricsSnapshot{
+					DBOK:               boolPtr(true),
+					RedisOK:            boolPtr(true),
+					CPUUsagePercent:    float64Ptr(35),
+					MemoryUsagePercent: float64Ptr(45),
+				},
+			},
+			wantMin: 60,
+			wantMax: 70,
+		},
+		{
+			name: "infra degraded business healthy",
+			overview: &OpsDashboardOverview{
+				RequestCountTotal: 1000,
+				RequestCountSLA:   1000,
+				SLA:               1.0,
+				ErrorRate:         0,
+				UpstreamErrorRate: 0,
+				TTFT:              OpsPercentiles{P99: intPtr(200)},
+				SystemMetrics: &OpsSystemMetricsSnapshot{
+					DBOK:               boolPtr(false),
+					RedisOK:            boolPtr(true),
+					CPUUsagePercent:    float64Ptr(35),
+					MemoryUsagePercent: float64Ptr(45),
+				},
+			},
+			wantMin: 85,
+			wantMax: 90,
+		},
+		{
+			name: "redis and cpu degradation still reflected in composite score",
+			overview: &OpsDashboardOverview{
+				RequestCountTotal: 1000,
+				RequestCountSLA:   1000,
+				SLA:               1.0,
+				ErrorRate:         0,
+				UpstreamErrorRate: 0,
+				TTFT:              OpsPercentiles{P99: intPtr(200)},
+				SystemMetrics: &OpsSystemMetricsSnapshot{
+					DBOK:               boolPtr(true),
+					RedisOK:            boolPtr(false),
+					CPUUsagePercent:    float64Ptr(95),
+					MemoryUsagePercent: float64Ptr(40),
+				},
+				JobHeartbeats: []*OpsJobHeartbeat{{
+					JobName:       "job-a",
+					LastSuccessAt: timePtr(now.Add(-1 * time.Minute)),
+				}},
+			},
+			wantMin: 85,
+			wantMax: 92,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := computeDashboardHealthScore(now, tt.overview)
+			require.GreaterOrEqual(t, score, tt.wantMin)
+			require.LessOrEqual(t, score, tt.wantMax)
 		})
 	}
 }
@@ -403,6 +409,26 @@ func TestComputeInfraHealth(t *testing.T) {
 			},
 			wantMin: 85,
 			wantMax: 95,
+		},
+		{
+			name: "scheduled cleanup job stays healthy within daily cadence",
+			overview: &OpsDashboardOverview{
+				RequestCountTotal: 1000,
+				SystemMetrics: &OpsSystemMetricsSnapshot{
+					DBOK:               boolPtr(true),
+					RedisOK:            boolPtr(true),
+					CPUUsagePercent:    float64Ptr(30),
+					MemoryUsagePercent: float64Ptr(40),
+				},
+				JobHeartbeats: []*OpsJobHeartbeat{
+					{
+						JobName:       opsCleanupJobName,
+						LastSuccessAt: timePtr(now.Add(-8 * time.Hour)),
+					},
+				},
+			},
+			wantMin: 100,
+			wantMax: 100,
 		},
 		{
 			name: "failed background job",

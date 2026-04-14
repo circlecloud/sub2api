@@ -3,6 +3,7 @@ package repository
 import (
 	"compress/flate"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,121 @@ const (
 )
 
 var errUpstreamClientLimitReached = errors.New("upstream client cache limit reached")
+
+func requestResponseHeaderTimeoutOverride(req *http.Request) (time.Duration, bool) {
+	if req == nil {
+		return 0, false
+	}
+	return service.HTTPUpstreamResponseHeaderTimeoutFromContext(req.Context())
+}
+
+func requestPoolGroupIDOverride(req *http.Request) (int64, bool) {
+	if req == nil {
+		return 0, false
+	}
+	return service.HTTPUpstreamPoolGroupIDFromContext(req.Context())
+}
+
+func shouldShareBucketAcrossResponseHeaderTimeout(poolGroupID int64) bool {
+	return poolGroupID > 0
+}
+
+func responseHeaderTimeoutCacheSuffix(timeout time.Duration, poolGroupID int64) string {
+	if shouldShareBucketAcrossResponseHeaderTimeout(poolGroupID) || timeout <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("|rht:%dms", timeout.Milliseconds())
+}
+
+func applyResponseHeaderTimeoutOverride(settings poolSettings, timeout time.Duration, poolGroupID int64) poolSettings {
+	if shouldShareBucketAcrossResponseHeaderTimeout(poolGroupID) || timeout <= 0 {
+		return settings
+	}
+	settings.responseHeaderTimeout = timeout
+	return settings
+}
+
+func wrapResponseHeaderTimeoutError(err error, timeout time.Duration) error {
+	if err == nil || timeout <= 0 || !isResponseHeaderTimeoutError(err) {
+		return err
+	}
+	return &service.UpstreamResponseHeaderTimeoutError{Timeout: timeout, Err: err}
+}
+
+type upstreamDoResult struct {
+	resp *http.Response
+	err  error
+}
+
+func cloneRequestWithContext(req *http.Request, ctx context.Context) *http.Request {
+	if req == nil {
+		return nil
+	}
+	cloned := req.Clone(ctx)
+	cloned.Body = req.Body
+	cloned.GetBody = req.GetBody
+	cloned.ContentLength = req.ContentLength
+	cloned.TransferEncoding = append([]string(nil), req.TransferEncoding...)
+	cloned.Host = req.Host
+	return cloned
+}
+
+//nolint:staticcheck // 保持现有返回顺序，避免扩大当前提交的调用点改动面
+func doWithHardResponseHeaderTimeout(req *http.Request, timeout time.Duration, do func(*http.Request) (*http.Response, error)) (*http.Response, error, context.CancelFunc) {
+	if do == nil {
+		return nil, fmt.Errorf("do func is nil"), func() {}
+	}
+	if timeout <= 0 {
+		resp, err := do(req)
+		return resp, wrapResponseHeaderTimeoutError(err, timeout), func() {}
+	}
+
+	baseCtx := context.Background()
+	if req != nil {
+		baseCtx = req.Context()
+	}
+	requestCtx, cancel := context.WithCancel(baseCtx)
+	request := cloneRequestWithContext(req, requestCtx)
+	resultCh := make(chan upstreamDoResult, 1)
+	go func() {
+		resp, err := do(request)
+		resultCh <- upstreamDoResult{resp: resp, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			cancel()
+			if result.resp != nil && result.resp.Body != nil {
+				_ = result.resp.Body.Close()
+			}
+			return nil, wrapResponseHeaderTimeoutError(result.err, timeout), func() {}
+		}
+		return result.resp, nil, cancel
+	case <-timer.C:
+		cancel()
+		result := <-resultCh
+		if result.resp != nil && result.resp.Body != nil {
+			_ = result.resp.Body.Close()
+		}
+		return nil, &service.UpstreamResponseHeaderTimeoutError{Timeout: timeout, Err: context.DeadlineExceeded}, func() {}
+	}
+}
+
+func isResponseHeaderTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "response headers") || strings.Contains(msg, "response header")
+}
 
 // poolSettings 连接池配置参数
 // 封装 Transport 所需的各项连接池参数
@@ -131,15 +247,17 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
 	}
+	responseHeaderTimeoutOverride, _ := requestResponseHeaderTimeoutOverride(req)
+	poolGroupIDOverride, _ := requestPoolGroupIDOverride(req)
 
 	// 获取或创建对应的客户端，并标记请求占用
-	entry, err := s.acquireClient(proxyURL, accountID, accountConcurrency)
+	entry, err := s.acquireClientWithResponseHeaderTimeout(proxyURL, accountID, poolGroupIDOverride, accountConcurrency, responseHeaderTimeoutOverride)
 	if err != nil {
 		return nil, err
 	}
 
 	// 执行请求
-	resp, err := entry.client.Do(req)
+	resp, err, cancelReq := doWithHardResponseHeaderTimeout(req, responseHeaderTimeoutOverride, entry.client.Do)
 	if err != nil {
 		// 请求失败，立即减少计数
 		atomic.AddInt64(&entry.inFlight, -1)
@@ -153,6 +271,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	// 包装响应体，在关闭时自动减少计数并更新时间戳
 	// 这确保了流式响应（如 SSE）在完全读取前不会被淘汰
 	resp.Body = wrapTrackedBody(resp.Body, func() {
+		cancelReq()
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 	})
@@ -168,6 +287,8 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if profile == nil {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
+	responseHeaderTimeoutOverride, _ := requestResponseHeaderTimeoutOverride(req)
+	poolGroupIDOverride, _ := requestPoolGroupIDOverride(req)
 
 	targetHost := ""
 	if req != nil && req.URL != nil {
@@ -183,13 +304,13 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 		return nil, err
 	}
 
-	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile)
+	entry, err := s.acquireClientWithTLSResponseHeaderTimeout(proxyURL, accountID, poolGroupIDOverride, accountConcurrency, profile, responseHeaderTimeoutOverride)
 	if err != nil {
 		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
 		return nil, err
 	}
 
-	resp, err := entry.client.Do(req)
+	resp, err, cancelReq := doWithHardResponseHeaderTimeout(req, responseHeaderTimeoutOverride, entry.client.Do)
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
@@ -200,6 +321,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	decompressResponseBody(resp)
 
 	resp.Body = wrapTrackedBody(resp.Body, func() {
+		cancelReq()
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 	})
@@ -208,21 +330,29 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 }
 
 // acquireClientWithTLS 获取或创建带 TLS 指纹的客户端
+//
+//nolint:unused // 预留给后续仅 TLS 指纹客户端获取路径
 func (s *httpUpstreamService) acquireClientWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*upstreamClientEntry, error) {
-	return s.getClientEntryWithTLS(proxyURL, accountID, accountConcurrency, profile, true, true)
+	return s.acquireClientWithTLSResponseHeaderTimeout(proxyURL, accountID, 0, accountConcurrency, profile, 0)
+}
+
+func (s *httpUpstreamService) acquireClientWithTLSResponseHeaderTimeout(proxyURL string, accountID int64, poolGroupID int64, accountConcurrency int, profile *tlsfingerprint.Profile, responseHeaderTimeoutOverride time.Duration) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithTLS(proxyURL, accountID, poolGroupID, accountConcurrency, profile, responseHeaderTimeoutOverride, true, true)
 }
 
 // getClientEntryWithTLS 获取或创建带 TLS 指纹的客户端条目
 // TLS 指纹客户端使用独立的缓存键，与普通客户端隔离
-func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
+func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID int64, poolGroupID int64, accountConcurrency int, profile *tlsfingerprint.Profile, responseHeaderTimeoutOverride time.Duration, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
 	isolation := s.getIsolationMode()
 	proxyKey, parsedProxy, err := normalizeProxyURL(proxyURL)
 	if err != nil {
 		return nil, err
 	}
+	sharedGroupScope := shouldShareBucketAcrossResponseHeaderTimeout(poolGroupID)
 	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID)
-	poolKey := s.buildPoolKey(isolation, accountConcurrency) + ":tls"
+	timeoutSuffix := responseHeaderTimeoutCacheSuffix(responseHeaderTimeoutOverride, poolGroupID)
+	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, poolGroupID) + timeoutSuffix
+	poolKey := s.buildPoolKey(isolation, accountConcurrency, sharedGroupScope) + timeoutSuffix + ":tls"
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
@@ -273,7 +403,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 
 	// 创建带 TLS 指纹的 Transport
 	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "cache_key", cacheKey, "proxy", proxyKey)
-	settings := s.resolvePoolSettings(isolation, accountConcurrency)
+	settings := applyResponseHeaderTimeoutOverride(s.resolvePoolSettings(isolation, accountConcurrency, sharedGroupScope), responseHeaderTimeoutOverride, poolGroupID)
 	transport, err := buildUpstreamTransportWithTLSFingerprint(settings, parsedProxy, profile)
 	if err != nil {
 		s.mu.Unlock()
@@ -339,7 +469,11 @@ func (s *httpUpstreamService) redirectChecker(req *http.Request, via []*http.Req
 // acquireClient 获取或创建客户端，并标记为进行中请求
 // 用于请求路径，避免在获取后被淘汰
 func (s *httpUpstreamService) acquireClient(proxyURL string, accountID int64, accountConcurrency int) (*upstreamClientEntry, error) {
-	return s.getClientEntry(proxyURL, accountID, accountConcurrency, true, true)
+	return s.acquireClientWithResponseHeaderTimeout(proxyURL, accountID, 0, accountConcurrency, 0)
+}
+
+func (s *httpUpstreamService) acquireClientWithResponseHeaderTimeout(proxyURL string, accountID int64, poolGroupID int64, accountConcurrency int, responseHeaderTimeoutOverride time.Duration) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithResponseHeaderTimeout(proxyURL, accountID, poolGroupID, accountConcurrency, responseHeaderTimeoutOverride, true, true)
 }
 
 // getOrCreateClient 获取或创建客户端
@@ -358,13 +492,17 @@ func (s *httpUpstreamService) acquireClient(proxyURL string, accountID int64, ac
 //   - account: 按账户隔离，同一账户共享客户端（代理变更时重建）
 //   - account_proxy: 按账户+代理组合隔离，最细粒度
 func (s *httpUpstreamService) getOrCreateClient(proxyURL string, accountID int64, accountConcurrency int) (*upstreamClientEntry, error) {
-	return s.getClientEntry(proxyURL, accountID, accountConcurrency, false, false)
+	return s.getClientEntryWithResponseHeaderTimeout(proxyURL, accountID, 0, accountConcurrency, 0, false, false)
 }
 
 // getClientEntry 获取或创建客户端条目
 // markInFlight=true 时会标记进行中请求，用于请求路径防止被淘汰
 // enforceLimit=true 时会限制客户端数量，超限且无法淘汰时返回错误
 func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, accountConcurrency int, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithResponseHeaderTimeout(proxyURL, accountID, 0, accountConcurrency, 0, markInFlight, enforceLimit)
+}
+
+func (s *httpUpstreamService) getClientEntryWithResponseHeaderTimeout(proxyURL string, accountID int64, poolGroupID int64, accountConcurrency int, responseHeaderTimeoutOverride time.Duration, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
 	// 获取隔离模式
 	isolation := s.getIsolationMode()
 	// 标准化代理 URL 并解析
@@ -372,10 +510,12 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	if err != nil {
 		return nil, err
 	}
+	sharedGroupScope := shouldShareBucketAcrossResponseHeaderTimeout(poolGroupID)
 	// 构建缓存键（根据隔离策略不同）
-	cacheKey := buildCacheKey(isolation, proxyKey, accountID)
+	timeoutSuffix := responseHeaderTimeoutCacheSuffix(responseHeaderTimeoutOverride, poolGroupID)
+	cacheKey := buildCacheKey(isolation, proxyKey, accountID, poolGroupID) + timeoutSuffix
 	// 构建连接池配置键（用于检测配置变更）
-	poolKey := s.buildPoolKey(isolation, accountConcurrency)
+	poolKey := s.buildPoolKey(isolation, accountConcurrency, sharedGroupScope) + timeoutSuffix
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
@@ -418,7 +558,7 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	}
 
 	// 缓存未命中或需要重建，创建新客户端
-	settings := s.resolvePoolSettings(isolation, accountConcurrency)
+	settings := applyResponseHeaderTimeoutOverride(s.resolvePoolSettings(isolation, accountConcurrency, sharedGroupScope), responseHeaderTimeoutOverride, poolGroupID)
 	transport, err := buildUpstreamTransport(settings, parsedProxy)
 	if err != nil {
 		s.mu.Unlock()
@@ -604,10 +744,11 @@ func (s *httpUpstreamService) clientIdleTTL() time.Duration {
 // 说明:
 //   - 账户隔离模式下，连接池大小与账户并发数对应
 //   - 这确保了单账户不会占用过多连接资源
-func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcurrency int) poolSettings {
+func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcurrency int, sharedGroupScope bool) poolSettings {
 	settings := defaultPoolSettings(s.cfg)
-	// 账户隔离模式下，根据账户并发数调整连接池大小
-	if (isolation == config.ConnectionPoolIsolationAccount || isolation == config.ConnectionPoolIsolationAccountProxy) && accountConcurrency > 0 {
+	// 账户隔离模式下，根据账户并发数调整连接池大小。
+	// 若当前请求声明了分组共享连接池，则保持默认全局池参数，避免被单个账号并发数限制。
+	if !sharedGroupScope && (isolation == config.ConnectionPoolIsolationAccount || isolation == config.ConnectionPoolIsolationAccountProxy) && accountConcurrency > 0 {
 		settings.maxIdleConns = accountConcurrency
 		settings.maxIdleConnsPerHost = accountConcurrency
 		settings.maxConnsPerHost = accountConcurrency
@@ -624,8 +765,8 @@ func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcu
 //
 // 返回:
 //   - string: 配置键
-func (s *httpUpstreamService) buildPoolKey(isolation string, accountConcurrency int) string {
-	if isolation == config.ConnectionPoolIsolationAccount || isolation == config.ConnectionPoolIsolationAccountProxy {
+func (s *httpUpstreamService) buildPoolKey(isolation string, accountConcurrency int, sharedGroupScope bool) string {
+	if !sharedGroupScope && (isolation == config.ConnectionPoolIsolationAccount || isolation == config.ConnectionPoolIsolationAccountProxy) {
 		if accountConcurrency > 0 {
 			return fmt.Sprintf("account:%d", accountConcurrency)
 		}
@@ -634,26 +775,35 @@ func (s *httpUpstreamService) buildPoolKey(isolation string, accountConcurrency 
 }
 
 // buildCacheKey 构建客户端缓存键
-// 根据隔离策略决定缓存键的组成
+// 根据隔离策略决定缓存键的组成。
+// 当请求上下文声明了 poolGroupID 时，account/account_proxy 模式会退化为按 group/group+proxy 共享，
+// 以便同一账号组内的账号复用同一个上游连接池。
 //
 // 参数:
 //   - isolation: 隔离模式
 //   - proxyKey: 代理标识
 //   - accountID: 账户 ID
+//   - poolGroupID: 请求所属账号组 ID（<=0 表示未声明）
 //
 // 返回:
 //   - string: 缓存键
 //
 // 缓存键格式:
 //   - proxy 模式: "proxy:{proxyKey}"
-//   - account 模式: "account:{accountID}"
-//   - account_proxy 模式: "account:{accountID}|proxy:{proxyKey}"
-func buildCacheKey(isolation, proxyKey string, accountID int64) string {
+//   - account 模式: "account:{accountID}" 或 "group:{poolGroupID}"
+//   - account_proxy 模式: "account:{accountID}|proxy:{proxyKey}" 或 "group:{poolGroupID}|proxy:{proxyKey}"
+func buildCacheKey(isolation, proxyKey string, accountID int64, poolGroupID int64) string {
+	scopePrefix := "account"
+	scopeID := accountID
+	if poolGroupID > 0 {
+		scopePrefix = "group"
+		scopeID = poolGroupID
+	}
 	switch isolation {
 	case config.ConnectionPoolIsolationAccount:
-		return fmt.Sprintf("account:%d", accountID)
+		return fmt.Sprintf("%s:%d", scopePrefix, scopeID)
 	case config.ConnectionPoolIsolationAccountProxy:
-		return fmt.Sprintf("account:%d|proxy:%s", accountID, proxyKey)
+		return fmt.Sprintf("%s:%d|proxy:%s", scopePrefix, scopeID, proxyKey)
 	default:
 		return fmt.Sprintf("proxy:%s", proxyKey)
 	}

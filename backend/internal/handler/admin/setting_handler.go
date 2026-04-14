@@ -1038,25 +1038,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return append([]int(nil), previousSettings.OpenAIStreamFirstTokenRectifierTimeouts...)
 		}(),
-		OpenAIWarmPoolEnabled:                     warmPoolSettings.Enabled,
-		OpenAIWarmPoolBucketTargetSize:            warmPoolSettings.BucketTargetSize,
-		OpenAIWarmPoolBucketRefillBelow:           warmPoolSettings.BucketRefillBelow,
-		OpenAIWarmPoolBucketSyncFillMin:           warmPoolSettings.BucketSyncFillMin,
-		OpenAIWarmPoolBucketEntryTTLSeconds:       warmPoolSettings.BucketEntryTTLSeconds,
-		OpenAIWarmPoolBucketRefillCooldownSeconds: warmPoolSettings.BucketRefillCooldownSeconds,
-		OpenAIWarmPoolBucketRefillIntervalSeconds: warmPoolSettings.BucketRefillIntervalSeconds,
-		OpenAIWarmPoolGlobalTargetSize:            warmPoolSettings.GlobalTargetSize,
-		OpenAIWarmPoolGlobalRefillBelow:           warmPoolSettings.GlobalRefillBelow,
-		OpenAIWarmPoolGlobalEntryTTLSeconds:       warmPoolSettings.GlobalEntryTTLSeconds,
-		OpenAIWarmPoolGlobalRefillCooldownSeconds: warmPoolSettings.GlobalRefillCooldownSeconds,
-		OpenAIWarmPoolGlobalRefillIntervalSeconds: warmPoolSettings.GlobalRefillIntervalSeconds,
-		OpenAIWarmPoolNetworkErrorPoolSize:        warmPoolSettings.NetworkErrorPoolSize,
-		OpenAIWarmPoolNetworkErrorEntryTTLSeconds: warmPoolSettings.NetworkErrorEntryTTLSeconds,
-		OpenAIWarmPoolProbeMaxCandidates:          warmPoolSettings.ProbeMaxCandidates,
-		OpenAIWarmPoolProbeConcurrency:            warmPoolSettings.ProbeConcurrency,
-		OpenAIWarmPoolProbeTimeoutSeconds:         warmPoolSettings.ProbeTimeoutSeconds,
-		OpenAIWarmPoolProbeFailureCooldownSeconds: warmPoolSettings.ProbeFailureCooldownSeconds,
-		OpenAIWarmPoolStartupGroupIDs:             warmPoolSettings.StartupGroupIDs,
 		BalanceLowNotifyEnabled: func() bool {
 			if req.BalanceLowNotifyEnabled != nil {
 				return *req.BalanceLowNotifyEnabled
@@ -1087,6 +1068,25 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return append([]service.NotifyEmailEntry(nil), previousSettings.AccountQuotaNotifyEmails...)
 		}(),
+		OpenAIWarmPoolEnabled:                     warmPoolSettings.Enabled,
+		OpenAIWarmPoolBucketTargetSize:            warmPoolSettings.BucketTargetSize,
+		OpenAIWarmPoolBucketRefillBelow:           warmPoolSettings.BucketRefillBelow,
+		OpenAIWarmPoolBucketSyncFillMin:           warmPoolSettings.BucketSyncFillMin,
+		OpenAIWarmPoolBucketEntryTTLSeconds:       warmPoolSettings.BucketEntryTTLSeconds,
+		OpenAIWarmPoolBucketRefillCooldownSeconds: warmPoolSettings.BucketRefillCooldownSeconds,
+		OpenAIWarmPoolBucketRefillIntervalSeconds: warmPoolSettings.BucketRefillIntervalSeconds,
+		OpenAIWarmPoolGlobalTargetSize:            warmPoolSettings.GlobalTargetSize,
+		OpenAIWarmPoolGlobalRefillBelow:           warmPoolSettings.GlobalRefillBelow,
+		OpenAIWarmPoolGlobalEntryTTLSeconds:       warmPoolSettings.GlobalEntryTTLSeconds,
+		OpenAIWarmPoolGlobalRefillCooldownSeconds: warmPoolSettings.GlobalRefillCooldownSeconds,
+		OpenAIWarmPoolGlobalRefillIntervalSeconds: warmPoolSettings.GlobalRefillIntervalSeconds,
+		OpenAIWarmPoolNetworkErrorPoolSize:        warmPoolSettings.NetworkErrorPoolSize,
+		OpenAIWarmPoolNetworkErrorEntryTTLSeconds: warmPoolSettings.NetworkErrorEntryTTLSeconds,
+		OpenAIWarmPoolProbeMaxCandidates:          warmPoolSettings.ProbeMaxCandidates,
+		OpenAIWarmPoolProbeConcurrency:            warmPoolSettings.ProbeConcurrency,
+		OpenAIWarmPoolProbeTimeoutSeconds:         warmPoolSettings.ProbeTimeoutSeconds,
+		OpenAIWarmPoolProbeFailureCooldownSeconds: warmPoolSettings.ProbeFailureCooldownSeconds,
+		OpenAIWarmPoolStartupGroupIDs:             warmPoolSettings.StartupGroupIDs,
 	}
 
 	if err := h.settingService.UpdateSettings(c.Request.Context(), settings); err != nil {
@@ -1265,6 +1265,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAIWarmPoolProbeTimeoutSeconds:           updatedSettings.OpenAIWarmPoolProbeTimeoutSeconds,
 		OpenAIWarmPoolProbeFailureCooldownSeconds:   updatedSettings.OpenAIWarmPoolProbeFailureCooldownSeconds,
 		OpenAIWarmPoolStartupGroupIDs:               ensureInt64SliceForJSON(updatedSettings.OpenAIWarmPoolStartupGroupIDs),
+		WebSearchEmulationEnabled:                   updatedSettings.WebSearchEmulationEnabled,
 		BalanceLowNotifyEnabled:                     updatedSettings.BalanceLowNotifyEnabled,
 		BalanceLowNotifyThreshold:                   updatedSettings.BalanceLowNotifyThreshold,
 		BalanceLowNotifyRechargeURL:                 updatedSettings.BalanceLowNotifyRechargeURL,

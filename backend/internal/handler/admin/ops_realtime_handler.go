@@ -186,6 +186,13 @@ func (h *OpsHandler) GetAccountAvailability(c *gin.Context) {
 
 // GetOpenAIWarmPoolStats returns realtime OpenAI warm-pool visibility data.
 // GET /api/v1/admin/ops/openai-warm-pool
+//
+// Query params:
+// - group_id: optional
+// - include_account: optional
+// - accounts_only: optional
+// - account_state: optional
+// - page/page_size: optional, only applied for ready-list requests
 func (h *OpsHandler) GetOpenAIWarmPoolStats(c *gin.Context) {
 	if h.opsService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
@@ -217,7 +224,14 @@ func (h *OpsHandler) GetOpenAIWarmPoolStats(c *gin.Context) {
 		includeAccount = true
 	}
 
-	stats, err := h.opsService.GetOpenAIWarmPoolStatsWithOptions(c.Request.Context(), groupID, includeAccount, accountState, accountsOnly)
+	page, pageSize, paginate := shouldPaginateOpsWarmPoolReadyList(c, includeAccount, accountsOnly, accountState)
+	var stats *service.OpsOpenAIWarmPoolStats
+	var err error
+	if paginate {
+		stats, err = h.opsService.GetOpenAIWarmPoolStatsWithPage(c.Request.Context(), groupID, includeAccount, accountState, accountsOnly, page, pageSize)
+	} else {
+		stats, err = h.opsService.GetOpenAIWarmPoolStatsWithOptions(c.Request.Context(), groupID, includeAccount, accountState, accountsOnly)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -290,6 +304,17 @@ func parseOpsWarmPoolAccountState(v string) string {
 	}
 }
 
+func shouldPaginateOpsWarmPoolReadyList(c *gin.Context, includeAccount, accountsOnly bool, accountState string) (page, pageSize int, ok bool) {
+	if c == nil || !includeAccount || !accountsOnly || !strings.EqualFold(strings.TrimSpace(accountState), "ready") {
+		return 0, 0, false
+	}
+	if strings.TrimSpace(c.Query("page")) == "" && strings.TrimSpace(c.Query("page_size")) == "" && strings.TrimSpace(c.Query("limit")) == "" {
+		return 0, 0, false
+	}
+	page, pageSize = response.ParsePagination(c)
+	return page, pageSize, true
+}
+
 func parseOpsRealtimeWindow(v string) (time.Duration, string, bool) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "", "1min", "1m":
@@ -344,13 +369,15 @@ func (h *OpsHandler) GetRealtimeTrafficSummary(c *gin.Context) {
 
 	if !h.opsService.IsRealtimeMonitoringEnabled(c.Request.Context()) {
 		disabledSummary := &service.OpsRealtimeTrafficSummary{
-			Window:    windowLabel,
-			StartTime: startTime,
-			EndTime:   endTime,
-			Platform:  platform,
-			GroupID:   groupID,
-			QPS:       service.OpsRateSummary{},
-			TPS:       service.OpsRateSummary{},
+			Window:             windowLabel,
+			StartTime:          startTime,
+			EndTime:            endTime,
+			Platform:           platform,
+			GroupID:            groupID,
+			RecentRequestCount: 0,
+			RecentErrorCount:   0,
+			QPS:                service.OpsRateSummary{},
+			TPS:                service.OpsRateSummary{},
 		}
 		response.Success(c, gin.H{
 			"enabled":   false,

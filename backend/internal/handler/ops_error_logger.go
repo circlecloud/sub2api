@@ -44,6 +44,7 @@ const (
 	opsCodeUsageLimitExceeded   = "USAGE_LIMIT_EXCEEDED"
 	opsCodeSubscriptionNotFound = "SUBSCRIPTION_NOT_FOUND"
 	opsCodeSubscriptionInvalid  = "SUBSCRIPTION_INVALID"
+	opsCodeAPIKeyQuotaExhausted = "API_KEY_QUOTA_EXHAUSTED"
 	opsCodeUserInactive         = "USER_INACTIVE"
 )
 
@@ -693,6 +694,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				CreatedAt:   time.Now(),
 			}
 			applyOpsLatencyFieldsFromContext(c, entry)
+			applyOpsRetryCountFromContext(c, entry)
 
 			if apiKey != nil {
 				entry.APIKeyID = &apiKey.ID
@@ -740,7 +742,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 
 		// Skip logging if the error should be filtered based on settings
-		if shouldSkipOpsErrorLog(c.Request.Context(), ops, parsed.Message, string(body), c.Request.URL.Path) {
+		if shouldSkipOpsErrorLog(c, ops, parsed.Message, string(body), c.Request.URL.Path) {
 			return
 		}
 
@@ -839,6 +841,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			CreatedAt:   time.Now(),
 		}
 		applyOpsLatencyFieldsFromContext(c, entry)
+		applyOpsRetryCountFromContext(c, entry)
 
 		// Capture upstream error context set by gateway services (if present).
 		// This does NOT affect the client response; it enriches Ops troubleshooting data.
@@ -968,9 +971,18 @@ func applyOpsLatencyFieldsFromContext(c *gin.Context, entry *service.OpsInsertEr
 	}
 	entry.AuthLatencyMs = getContextLatencyMs(c, service.OpsAuthLatencyMsKey)
 	entry.RoutingLatencyMs = getContextLatencyMs(c, service.OpsRoutingLatencyMsKey)
+	entry.GatewayPrepareLatencyMs = getContextLatencyMs(c, service.OpsGatewayPrepareLatencyMsKey)
 	entry.UpstreamLatencyMs = getContextLatencyMs(c, service.OpsUpstreamLatencyMsKey)
 	entry.ResponseLatencyMs = getContextLatencyMs(c, service.OpsResponseLatencyMsKey)
 	entry.TimeToFirstTokenMs = getContextLatencyMs(c, service.OpsTimeToFirstTokenMsKey)
+	entry.StreamFirstEventLatencyMs = getContextLatencyMs(c, service.OpsStreamFirstEventLatencyMsKey)
+}
+
+func applyOpsRetryCountFromContext(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
+	if c == nil || entry == nil {
+		return
+	}
+	entry.RetryCount = service.GetOpsRectifierRetryCount(c)
 }
 
 func getContextLatencyMs(c *gin.Context, key string) *int64 {
@@ -1103,7 +1115,7 @@ func normalizeOpsErrorType(errType string, code string) string {
 	switch strings.TrimSpace(code) {
 	case opsCodeInsufficientBalance:
 		return "billing_error"
-	case opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid:
+	case opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid, opsCodeAPIKeyQuotaExhausted:
 		return "subscription_error"
 	default:
 		return "api_error"
@@ -1115,7 +1127,7 @@ func classifyOpsPhase(errType, message, code string) string {
 	// Standardized phases: request|auth|routing|upstream|network|internal
 	// Map billing/concurrency/response => request; scheduling => routing.
 	switch strings.TrimSpace(code) {
-	case opsCodeInsufficientBalance, opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid:
+	case opsCodeInsufficientBalance, opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid, opsCodeAPIKeyQuotaExhausted:
 		return "request"
 	}
 
@@ -1180,7 +1192,7 @@ func classifyOpsIsRetryable(errType string, statusCode int) bool {
 
 func classifyOpsIsBusinessLimited(errType, phase, code string, status int, message string) bool {
 	switch strings.TrimSpace(code) {
-	case opsCodeInsufficientBalance, opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid, opsCodeUserInactive:
+	case opsCodeInsufficientBalance, opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid, opsCodeAPIKeyQuotaExhausted, opsCodeUserInactive:
 		return true
 	}
 	if phase == "billing" || phase == "concurrency" {
@@ -1252,9 +1264,13 @@ func strconvItoa(v int) string {
 
 // shouldSkipOpsErrorLog determines if an error should be skipped from logging based on settings.
 // Returns true for errors that should be filtered according to OpsAdvancedSettings.
-func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message, body, requestPath string) bool {
+func shouldSkipOpsErrorLog(c *gin.Context, ops *service.OpsService, message, body, requestPath string) bool {
 	if ops == nil {
 		return false
+	}
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
 	}
 
 	// Get advanced settings to check filter configuration
@@ -1262,6 +1278,9 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 	if err != nil || settings == nil {
 		// If we can't get settings, don't skip (fail open)
 		return false
+	}
+	if c != nil && service.IsOpsRectifierTimeoutExhausted(c) && settings.IgnoreOpenAIStreamRectifierTimeouts {
+		return true
 	}
 
 	msgLower := strings.ToLower(message)

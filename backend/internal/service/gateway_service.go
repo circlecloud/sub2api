@@ -466,6 +466,9 @@ type AccountWaitPlan struct {
 	MaxConcurrency int
 	Timeout        time.Duration
 	MaxWaiting     int
+	// DetachFromRequestContext 仅用于网关内部重试（如 rectifier 同账号重试）。
+	// 这类重试不应被首轮上游超时链路遗留的 request context cancel 直接打断。
+	DetachFromRequestContext bool
 }
 
 type AccountSelectionResult struct {
@@ -512,6 +515,7 @@ type UpstreamFailoverError struct {
 	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
 	ForceCacheBilling      bool        // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	Phase                  string      // failover 阶段：如 response_header / first_token
 }
 
 func (e *UpstreamFailoverError) Error() string {

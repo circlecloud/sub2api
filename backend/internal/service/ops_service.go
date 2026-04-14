@@ -58,14 +58,16 @@ type OpsService struct {
 	opsRealtimeCache          OpsRealtimeCache
 	systemLogSink             *OpsSystemLogSink
 
-	realtimeSnapshotOnce     sync.Once
-	realtimeAccountsCache    map[string]opsRealtimeAccountsCacheEntry
-	realtimeUsersCache       *opsRealtimeUsersCacheEntry
-	realtimeConcurrencyCache map[string]opsRealtimeConcurrencyCacheEntry
-	realtimeWarmPoolCache    map[string]opsWarmPoolResultCacheEntry
-	realtimeCacheMissLogAt   map[string]time.Time
-	realtimeSnapshotMu       sync.RWMutex
-	realtimeSnapshotFlight   singleflight.Group
+	realtimeSnapshotOnce             sync.Once
+	realtimeAccountsCache            opsSnapshotMapCache[string, []Account]
+	realtimeUsersCache               opsSnapshotValueCache[[]User]
+	realtimeUserConcurrencyCache     opsSnapshotValueCache[opsRealtimeUserConcurrencyCacheEntry]
+	realtimeConcurrencyCache         opsSnapshotMapCache[string, opsRealtimeConcurrencyCacheEntry]
+	realtimeAccountAvailabilityCache opsSnapshotMapCache[string, opsRealtimeAvailabilityCacheEntry]
+	realtimeWarmPoolCache            opsSnapshotMapCache[string, *OpsOpenAIWarmPoolStats]
+	realtimeCacheMissLogAt           map[string]time.Time
+	realtimeSnapshotMu               sync.RWMutex
+	realtimeSnapshotFlight           singleflight.Group
 }
 
 func NewOpsService(
@@ -152,7 +154,38 @@ func (s *OpsService) logRealtimeCacheMiss(scope string, err error) {
 	}
 	s.realtimeCacheMissLogAt[scope] = now
 	s.realtimeSnapshotMu.Unlock()
-	log.Printf("[OpsService] realtime cache fallback (%s): %v", scope, err)
+
+	newOpsTrace("realtime_cache_lookup").
+		WithBranch("fallback_on_error").
+		WithScope(scope).
+		WithCacheHit(false).
+		WithErr(err).
+		Warn("ops_realtime_cache_fallback")
+}
+
+func (s *OpsService) logRealtimeSharedSnapshot(scope string, _ string, sharedHit bool, source string, accountCount int, duration time.Duration) {
+	if s == nil || strings.TrimSpace(scope) == "" {
+		return
+	}
+	newOpsTrace("shared_realtime_snapshot").
+		WithScope(scope).
+		WithBranch(strings.TrimSpace(source)).
+		WithCacheHit(sharedHit).
+		WithLoadedAccountCount(accountCount).
+		WithDuration(duration).
+		Info("ops_realtime_shared_snapshot")
+}
+
+func (s *OpsService) logRealtimeResultCache(scope string, _ string, hit bool, duration time.Duration) {
+	if s == nil || strings.TrimSpace(scope) == "" {
+		return
+	}
+	newOpsTrace("result_cache_lookup").
+		WithScope(scope).
+		WithBranch("result_cache").
+		WithCacheHit(hit).
+		WithDuration(duration).
+		Info("ops_realtime_result_cache")
 }
 
 func (s *OpsService) IsMonitoringEnabled(ctx context.Context) bool {

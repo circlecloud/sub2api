@@ -30,18 +30,13 @@ type openAIWarmAccountInspection struct {
 	NetworkErrorUntil *time.Time
 }
 
-type opsWarmPoolResultCacheEntry struct {
-	stats     *OpsOpenAIWarmPoolStats
-	expiresAt time.Time
-}
-
 var (
 	ErrOpenAIWarmPoolUnavailable       = infraerrors.ServiceUnavailable("OPENAI_WARM_POOL_UNAVAILABLE", "OpenAI warm pool service is not available")
 	ErrOpenAIWarmPoolDisabled          = infraerrors.BadRequest("OPENAI_WARM_POOL_DISABLED", "OpenAI warm pool is disabled")
 	ErrOpenAIWarmPoolReaderUnavailable = infraerrors.ServiceUnavailable("OPENAI_WARM_POOL_READER_UNAVAILABLE", "OpenAI warm pool usage reader is not ready")
 )
 
-func buildOpsWarmPoolStatsCacheKey(groupID *int64, includeAccounts bool, accountStateFilter string, accountsOnly bool) string {
+func buildOpsWarmPoolStatsCacheKey(groupID *int64, includeAccounts bool, accountStateFilter string, accountsOnly bool, readerReady bool, bootstrapping bool, revision int64) string {
 	group := int64(0)
 	if groupID != nil && *groupID > 0 {
 		group = *groupID
@@ -51,6 +46,9 @@ func buildOpsWarmPoolStatsCacheKey(groupID *int64, includeAccounts bool, account
 		strconv.FormatBool(includeAccounts),
 		strings.ToLower(strings.TrimSpace(accountStateFilter)),
 		strconv.FormatBool(accountsOnly),
+		strconv.FormatBool(readerReady),
+		strconv.FormatBool(bootstrapping),
+		strconv.FormatInt(revision, 10),
 	}, "|")
 }
 
@@ -58,41 +56,21 @@ func (s *OpsService) getCachedWarmPoolStats(key string) (*OpsOpenAIWarmPoolStats
 	if s == nil || key == "" {
 		return nil, false
 	}
-	s.initRealtimeSnapshotCache()
-	now := time.Now()
-	s.realtimeSnapshotMu.RLock()
-	entry, ok := s.realtimeWarmPoolCache[key]
-	s.realtimeSnapshotMu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	if now.After(entry.expiresAt) {
-		s.realtimeSnapshotMu.Lock()
-		delete(s.realtimeWarmPoolCache, key)
-		s.realtimeSnapshotMu.Unlock()
-		return nil, false
-	}
-	return entry.stats, true
+	return s.realtimeWarmPoolCache.get(key, time.Now())
 }
 
 func (s *OpsService) setCachedWarmPoolStats(key string, stats *OpsOpenAIWarmPoolStats) {
 	if s == nil || key == "" || stats == nil {
 		return
 	}
-	s.initRealtimeSnapshotCache()
-	s.realtimeSnapshotMu.Lock()
-	s.realtimeWarmPoolCache[key] = opsWarmPoolResultCacheEntry{stats: stats, expiresAt: time.Now().Add(opsRealtimeResultCacheTTL)}
-	s.realtimeSnapshotMu.Unlock()
+	s.realtimeWarmPoolCache.set(key, stats, opsRealtimeResultCacheTTL, time.Now())
 }
 
 func (s *OpsService) invalidateCachedWarmPoolStats(ctx context.Context) {
 	if s == nil {
 		return
 	}
-	s.initRealtimeSnapshotCache()
-	s.realtimeSnapshotMu.Lock()
-	clear(s.realtimeWarmPoolCache)
-	s.realtimeSnapshotMu.Unlock()
+	s.realtimeWarmPoolCache.clear()
 	if s.opsRealtimeCache != nil {
 		_ = s.opsRealtimeCache.DeleteWarmPoolOverviewSnapshot(ctx)
 	}
@@ -157,28 +135,44 @@ func (s *OpsService) GetOpenAIWarmPoolStatsWithOptions(ctx context.Context, grou
 	cfg := pool.config()
 	stats.WarmPoolEnabled = cfg.Enabled
 	stats.ReaderReady = pool.getUsageReader() != nil
+	stats.Bootstrapping = pool.isStartupBootstrapping()
 	if !cfg.Enabled {
 		stats.NetworkErrorPool = &OpsOpenAIWarmPoolNetworkErrorPool{Capacity: cfg.NetworkErrorPoolSize}
 		return stats, nil
 	}
+	stateFilter := normalizeWarmPoolStateFilter(accountStateFilter)
+	cacheKey := buildOpsWarmPoolStatsCacheKey(groupID, includeAccounts, stateFilter, accountsOnly, stats.ReaderReady, stats.Bootstrapping, pool.opsWarmPoolStatsCacheRevision())
+	if includeAccounts && accountsOnly && stateFilter == "ready" {
+		if cached, ok := s.getCachedWarmPoolStats(cacheKey); ok {
+			return cached, nil
+		}
+	}
 	if cachedStats, hit, err := s.getOpenAIWarmPoolStatsFromRealtimeCache(ctx, pool, groupID, includeAccounts, accountStateFilter, accountsOnly, stats); err != nil {
 		s.logRealtimeCacheMiss("ops_openai_warm_pool", err)
 	} else if hit {
+		if includeAccounts && accountsOnly && stateFilter == "ready" {
+			s.setCachedWarmPoolStats(cacheKey, cachedStats)
+		}
 		return cachedStats, nil
 	}
 
-	stats.NetworkErrorPool = pool.buildOpsWarmPoolNetworkErrorPool(now)
-	stateFilter := normalizeWarmPoolStateFilter(accountStateFilter)
 	normalizedGroupID := pool.normalizeGroupID(groupID)
+
+	if includeAccounts && accountsOnly && stateFilter == "ready" {
+		return s.buildOpenAIWarmPoolReadyListStats(ctx, pool, groupID, 0, 0)
+	}
+	if !includeAccounts {
+		if cached, ok := s.getCachedWarmPoolStats(cacheKey); ok {
+			return cached, nil
+		}
+	}
+
 	bucketSnapshots := pool.collectActiveOpsBuckets(now, cfg.ActiveBucketTTL)
+	stats.NetworkErrorPool = pool.buildOpsWarmPoolNetworkErrorPool(now)
 	globalCoverage := openAIWarmPoolGlobalCoverageSnapshot{}
 	stats.Summary = pool.buildOpsWarmPoolSummary(now, cfg.ActiveBucketTTL, globalCoverage)
 
 	if !includeAccounts {
-		cacheKey := buildOpsWarmPoolStatsCacheKey(groupID, includeAccounts, stateFilter, accountsOnly)
-		if cached, ok := s.getCachedWarmPoolStats(cacheKey); ok {
-			return cached, nil
-		}
 		value, err, _ := s.realtimeSnapshotFlight.Do("ops_warm_pool:"+cacheKey, func() (any, error) {
 			if cached, ok := s.getCachedWarmPoolStats(cacheKey); ok {
 				return cached, nil
@@ -305,6 +299,7 @@ func (p *openAIAccountWarmPoolService) buildOpsWarmPoolSummary(now time.Time, ac
 	if p == nil {
 		return summary
 	}
+	readyAccountCount := 0
 	p.accountStates.Range(func(_, value any) bool {
 		state, _ := value.(*openAIWarmAccountState)
 		if state == nil {
@@ -321,9 +316,15 @@ func (p *openAIAccountWarmPoolService) buildOpsWarmPoolSummary(now time.Time, ac
 		if inspection.NetworkError {
 			summary.NetworkErrorPoolCount++
 		}
+		if inspection.Ready {
+			readyAccountCount++
+		}
 		return true
 	})
 	summary.GlobalReadyAccountCount = globalCoverage.uniqueReadyCount
+	if summary.GlobalReadyAccountCount == 0 && len(globalCoverage.activeGroupIDs) == 0 && p.startupBootstrapDone.Load() {
+		summary.GlobalReadyAccountCount = readyAccountCount
+	}
 	summary.ActiveGroupCount = len(globalCoverage.activeGroupIDs)
 	cfg := p.config()
 	summary.GlobalTargetPerActiveGroup = cfg.GlobalTargetSize
@@ -342,7 +343,7 @@ func (p *openAIAccountWarmPoolService) buildOpsWarmPoolSummary(now time.Time, ac
 		if bucket == nil {
 			continue
 		}
-		summary.BucketReadyAccountCount += bucket.readyCount(now)
+		summary.BucketReadyAccountCount += bucket.readyCount()
 	}
 	summary.TakeCount = p.totalTakeCount.Load()
 	if cfg.NetworkErrorPoolSize > 0 && summary.NetworkErrorPoolCount >= cfg.NetworkErrorPoolSize {
@@ -553,7 +554,7 @@ func countBucketWarmReadyReadonly(pool *openAIAccountWarmPoolService, now time.T
 		return 0
 	}
 	count := 0
-	for _, accountID := range bucket.readyIDs(now) {
+	for _, accountID := range bucket.readyIDs() {
 		if accountIDs != nil {
 			if _, exists := accountIDs[accountID]; !exists {
 				continue
@@ -691,9 +692,80 @@ func buildOpenAIWarmPoolAccountRows(pool *openAIAccountWarmPoolService, accounts
 	return rows
 }
 
+func (s *OpsService) loadOpenAIWarmPoolReadyAccounts(ctx context.Context, pool *openAIAccountWarmPoolService, normalizedGroupID int64, now time.Time) ([]Account, error) {
+	if pool == nil {
+		return []Account{}, nil
+	}
+	if s == nil || s.openAIGatewayService == nil {
+		return []Account{}, nil
+	}
+	if s.openAIGatewayService.accountRepo == nil {
+		var accounts []Account
+		var err error
+		if normalizedGroupID > 0 {
+			accounts, err = s.openAIGatewayService.listSchedulableAccounts(ctx, pool.groupIDPointer(normalizedGroupID))
+		} else {
+			accounts, err = s.openAIGatewayService.listAllSchedulableOpenAIAccounts(ctx)
+		}
+		if err != nil {
+			return nil, err
+		}
+		inspectionCache := buildOpenAIWarmPoolInspectionCache(pool, now, accounts)
+		readyAccounts := make([]Account, 0, len(accounts))
+		for i := range accounts {
+			acc := &accounts[i]
+			if acc == nil || !acc.IsOpenAI() || !acc.IsSchedulable() {
+				continue
+			}
+			inspection := lookupOpenAIWarmPoolInspection(pool, now, inspectionCache, acc.ID)
+			if !warmPoolReadyUsable(inspection) {
+				continue
+			}
+			if normalizedGroupID > 0 && !warmPoolAccountBelongsToBucket(pool, acc, normalizedGroupID) {
+				continue
+			}
+			readyAccounts = append(readyAccounts, *acc)
+		}
+		return readyAccounts, nil
+	}
+	ids := collectWarmPoolTrackedAccountIDsByState(pool, now, "ready")
+	if len(ids) == 0 {
+		return []Account{}, nil
+	}
+	accounts, err := s.openAIGatewayService.accountRepo.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	readyAccounts := make([]Account, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc == nil || !acc.IsOpenAI() || !acc.IsSchedulable() {
+			continue
+		}
+		if normalizedGroupID > 0 && !warmPoolAccountBelongsToBucket(pool, acc, normalizedGroupID) {
+			continue
+		}
+		readyAccounts = append(readyAccounts, *acc)
+	}
+	return readyAccounts, nil
+}
+
 func (s *OpsService) buildOpenAIWarmPoolAccountRowsOnly(ctx context.Context, pool *openAIAccountWarmPoolService, groupID *int64, accountStateFilter string) ([]*OpsOpenAIWarmPoolAccount, error) {
+	if pool == nil {
+		return []*OpsOpenAIWarmPoolAccount{}, nil
+	}
+	if s == nil || s.openAIGatewayService == nil {
+		return []*OpsOpenAIWarmPoolAccount{}, nil
+	}
 	stateFilter := normalizeWarmPoolStateFilter(accountStateFilter)
-	if stateFilter == "" || stateFilter == "idle" || stateFilter == "ready" {
+	normalizedGroupID := pool.normalizeGroupID(groupID)
+	if stateFilter == "ready" {
+		stats, err := s.buildOpenAIWarmPoolReadyListStats(ctx, pool, groupID, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		return stats.Accounts, nil
+	}
+	if stateFilter == "" || stateFilter == "idle" {
 		if groupID != nil {
 			accounts, err := s.openAIGatewayService.listSchedulableAccounts(ctx, groupID)
 			if err != nil {
@@ -724,7 +796,6 @@ func (s *OpsService) buildOpenAIWarmPoolAccountRowsOnly(ctx context.Context, poo
 		return nil, err
 	}
 
-	normalizedGroupID := pool.normalizeGroupID(groupID)
 	rows := make([]*OpsOpenAIWarmPoolAccount, 0, len(accounts))
 	now := time.Now()
 	for _, acc := range accounts {

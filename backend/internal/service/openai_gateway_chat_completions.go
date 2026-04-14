@@ -59,6 +59,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 	originalModel := chatReq.Model
 	clientStream := chatReq.Stream
+	ctx = s.EnsureOpenAIStreamFirstTokenRectifierContext(ctx, clientStream, 1, 1)
 	includeUsage := chatReq.StreamOptions != nil && chatReq.StreamOptions.IncludeUsage
 
 	// 2. Resolve model mapping early so compat prompt_cache_key injection can
@@ -151,7 +152,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
 		}
-		codexResult := applyCodexOAuthTransform(reqBody, false, false)
+		storeEnabled := account.IsOpenAIStoreEnabled()
+		if storeEnabled {
+			reqBody["store"] = true
+		}
+		codexResult := applyCodexOAuthTransform(reqBody, false, false, storeEnabled)
 		if codexResult.NormalizedModel != "" {
 			upstreamModel = codexResult.NormalizedModel
 		}
@@ -173,7 +178,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// 6. Build upstream request
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
+	upstreamCtx := s.ApplyOpenAIStreamResponseHeaderRectifierContext(ctx, clientStream)
+	if rectifier, ok := getOpenAIStreamFirstTokenRectifier(ctx); ok && clientStream {
+		s.logOpenAIStreamResponseHeaderRectifierEnabled(ctx, account, rectifier)
+	}
+	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, promptCacheKey, false)
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
@@ -183,12 +192,21 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// 7. Send request
+	prepareLatencyMs := time.Since(startTime).Milliseconds()
+	SetOpsLatencyMs(c, OpsGatewayPrepareLatencyMsKey, prepareLatencyMs)
 	proxyURL := ""
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	upstreamStart := time.Now()
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if _, ok := AsUpstreamResponseHeaderTimeoutError(err); ok {
+			if rectifier, rectifierEnabled := getOpenAIStreamFirstTokenRectifier(ctx); rectifierEnabled {
+				return nil, s.newOpenAIStreamFirstTokenRectifierTimeoutError(ctx, c, account, rectifier, "response_header")
+			}
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -247,7 +265,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleChatStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, includeUsage, startTime)
+		result, handleErr = s.handleChatStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, includeUsage, startTime)
 	} else {
 		result, handleErr = s.handleChatBufferedStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
 	}
@@ -382,8 +400,10 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 // handleChatStreamingResponse reads Responses SSE events from upstream,
 // converts each to Chat Completions SSE chunks, and writes them to the client.
 func (s *OpenAIGatewayService) handleChatStreamingResponse(
+	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
@@ -407,7 +427,32 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
+	var streamFirstEventMs *int
 	firstChunk := true
+	rectifier, rectifierEnabled := getOpenAIStreamFirstTokenRectifier(ctx)
+	streamGateStart := time.Now()
+	var firstEventTimer *time.Timer
+	var firstEventCh <-chan time.Time
+	stopFirstEventGate := func() {
+		if firstEventTimer == nil {
+			firstEventCh = nil
+			return
+		}
+		if !firstEventTimer.Stop() {
+			select {
+			case <-firstEventTimer.C:
+			default:
+			}
+		}
+		firstEventTimer = nil
+		firstEventCh = nil
+	}
+	if rectifierEnabled {
+		firstEventTimer = time.NewTimer(rectifier.FirstTokenTimeout)
+		firstEventCh = firstEventTimer.C
+		s.logOpenAIStreamFirstTokenRectifierEnabled(ctx, account, rectifier)
+		defer stopFirstEventGate()
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -418,14 +463,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:     requestID,
-			Usage:         usage,
-			Model:         originalModel,
-			BillingModel:  billingModel,
-			UpstreamModel: upstreamModel,
-			Stream:        true,
-			Duration:      time.Since(startTime),
-			FirstTokenMs:  firstTokenMs,
+			RequestID:          requestID,
+			Usage:              usage,
+			Model:              originalModel,
+			BillingModel:       billingModel,
+			UpstreamModel:      upstreamModel,
+			Stream:             true,
+			Duration:           time.Since(startTime),
+			FirstTokenMs:       firstTokenMs,
+			StreamFirstEventMs: streamFirstEventMs,
 		}
 	}
 
@@ -434,6 +480,13 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
+			streamMs := int(time.Since(streamGateStart).Milliseconds())
+			streamFirstEventMs = &streamMs
+			SetOpsLatencyMs(c, OpsStreamFirstEventLatencyMsKey, int64(streamMs))
+			stopFirstEventGate()
+			if rectifierEnabled {
+				s.logOpenAIStreamFirstTokenRectifierObserved(ctx, account, rectifier, ms, streamMs)
+			}
 		}
 
 		var event apicompat.ResponsesStreamEvent
@@ -511,8 +564,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		keepaliveInterval = time.Duration(s.cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	}
 
-	// No keepalive: fast synchronous path
-	if keepaliveInterval <= 0 {
+	// No keepalive / no首 token 整流器: fast synchronous path
+	if keepaliveInterval <= 0 && firstEventCh == nil {
 		for scanner.Scan() {
 			line := scanner.Text()
 			if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
@@ -526,7 +579,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		return finalizeStream()
 	}
 
-	// With keepalive: goroutine + channel + select
+	// With keepalive or first-token rectifier: goroutine + channel + select
 	type scanEvent struct {
 		line string
 		err  error
@@ -554,8 +607,13 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}()
 	defer close(done)
 
-	keepaliveTicker := time.NewTicker(keepaliveInterval)
-	defer keepaliveTicker.Stop()
+	var keepaliveTicker *time.Ticker
+	var keepaliveCh <-chan time.Time
+	if keepaliveInterval > 0 {
+		keepaliveTicker = time.NewTicker(keepaliveInterval)
+		defer keepaliveTicker.Stop()
+		keepaliveCh = keepaliveTicker.C
+	}
 	lastDataAt := time.Now()
 
 	for {
@@ -577,7 +635,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				return resultWithUsage(), nil
 			}
 
-		case <-keepaliveTicker.C:
+		case <-firstEventCh:
+			if firstTokenMs != nil {
+				continue
+			}
+			_ = resp.Body.Close()
+			return nil, s.newOpenAIStreamFirstTokenRectifierTimeoutError(ctx, c, account, rectifier, "first_token")
+
+		case <-keepaliveCh:
 			if time.Since(lastDataAt) < keepaliveInterval {
 				continue
 			}

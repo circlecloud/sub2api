@@ -74,6 +74,10 @@ func (r *opsRepository) getDashboardOverviewRaw(ctx context.Context, filter *ser
 	if err != nil {
 		return nil, err
 	}
+	rectifierRetryCount, err := r.queryRectifierRetryCount(ctx, filter, start, end)
+	if err != nil {
+		return nil, err
+	}
 
 	windowSeconds := end.Sub(start).Seconds()
 	if windowSeconds <= 0 {
@@ -137,6 +141,7 @@ func (r *opsRepository) getDashboardOverviewRaw(ctx context.Context, filter *ser
 		RequestCountTotal:    requestCountTotal,
 		RequestCountSLA:      requestCountSLA,
 		TokenConsumed:        tokenConsumed,
+		RectifierRetryCount:  rectifierRetryCount,
 
 		SLA:                          roundTo4DP(sla),
 		ErrorRate:                    roundTo4DP(errorRate),
@@ -227,17 +232,19 @@ func (r *opsRepository) getDashboardOverviewPreaggregated(ctx context.Context, f
 		tail = *part
 	}
 
-	// Merge counts.
+	// Merge success/token counts from pre-aggregation, but re-read error metrics from raw logs
+	// so rectifier retry rows are excluded immediately without waiting for hourly pre-agg refresh.
 	successCount := preagg.successCount + head.successCount + tail.successCount
-	errorTotal := preagg.errorCountTotal + head.errorCountTotal + tail.errorCountTotal
-	businessLimited := preagg.businessLimitedCount + head.businessLimitedCount + tail.businessLimitedCount
-	errorCountSLA := preagg.errorCountSLA + head.errorCountSLA + tail.errorCountSLA
-
-	upstreamExcl := preagg.upstreamErrorCountExcl429529 + head.upstreamErrorCountExcl429529 + tail.upstreamErrorCountExcl429529
-	upstream429 := preagg.upstream429Count + head.upstream429Count + tail.upstream429Count
-	upstream529 := preagg.upstream529Count + head.upstream529Count + tail.upstream529Count
+	errorTotal, businessLimited, errorCountSLA, upstreamExcl, upstream429, upstream529, err := r.queryErrorCounts(ctx, filter, start, end)
+	if err != nil {
+		return nil, err
+	}
 
 	tokenConsumed := preagg.tokenConsumed + head.tokenConsumed + tail.tokenConsumed
+	rectifierRetryCount, err := r.queryRectifierRetryCount(ctx, filter, start, end)
+	if err != nil {
+		return nil, err
+	}
 
 	// Approximate percentiles across segments:
 	// - p50/p90/avg: weighted average by success_count
@@ -317,6 +324,7 @@ func (r *opsRepository) getDashboardOverviewPreaggregated(ctx context.Context, f
 		RequestCountTotal:    requestCountTotal,
 		RequestCountSLA:      requestCountSLA,
 		TokenConsumed:        tokenConsumed,
+		RectifierRetryCount:  rectifierRetryCount,
 
 		SLA:                          roundTo4DP(sla),
 		ErrorRate:                    roundTo4DP(errorRate),
@@ -866,7 +874,7 @@ SELECT
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400), 0) AS error_total,
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400 AND is_business_limited), 0) AS business_limited,
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400 AND NOT is_business_limited), 0) AS error_sla,
-  COALESCE(COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) NOT IN (429, 529)), 0) AS upstream_excl,
+  COALESCE(COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(retry_count, 0) = 0 AND COALESCE(upstream_status_code, status_code, 0) NOT IN (429, 529)), 0) AS upstream_excl,
   COALESCE(COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) = 429), 0) AS upstream_429,
   COALESCE(COUNT(*) FILTER (WHERE error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) = 529), 0) AS upstream_529
 FROM ops_error_logs
@@ -885,21 +893,57 @@ FROM ops_error_logs
 	return errorTotal, businessLimited, errorCountSLA, upstreamExcl429529, upstream429, upstream529, nil
 }
 
-func (r *opsRepository) queryCurrentRates(ctx context.Context, filter *service.OpsDashboardFilter, end time.Time) (qpsCurrent float64, tpsCurrent float64, err error) {
+func (r *opsRepository) queryRectifierRetryCount(ctx context.Context, filter *service.OpsDashboardFilter, start, end time.Time) (int64, error) {
+	where, args, _ := buildErrorWhere(filter, start, end, 1)
+
+	q := `
+SELECT
+  COALESCE(SUM(COALESCE(retry_count, 0)), 0) AS rectifier_retry_count
+FROM ops_error_logs
+` + where
+
+	var retryCount int64
+	if err := r.db.QueryRowContext(ctx, q, args...).Scan(&retryCount); err != nil {
+		return 0, err
+	}
+	return retryCount, nil
+}
+
+type opsCurrentRateSnapshot struct {
+	qpsCurrent     float64
+	tpsCurrent     float64
+	successCount1m int64
+	errorCount1m   int64
+	token1m        int64
+}
+
+func (r *opsRepository) queryCurrentRateSnapshot(ctx context.Context, filter *service.OpsDashboardFilter, end time.Time) (*opsCurrentRateSnapshot, error) {
 	windowStart := end.Add(-1 * time.Minute)
 
 	successCount1m, token1m, err := r.queryUsageCounts(ctx, filter, windowStart, end)
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 	errorCount1m, _, _, _, _, _, err := r.queryErrorCounts(ctx, filter, windowStart, end)
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 
-	qpsCurrent = roundTo1DP(float64(successCount1m+errorCount1m) / 60.0)
-	tpsCurrent = roundTo1DP(float64(token1m) / 60.0)
-	return qpsCurrent, tpsCurrent, nil
+	return &opsCurrentRateSnapshot{
+		qpsCurrent:     roundTo1DP(float64(successCount1m+errorCount1m) / 60.0),
+		tpsCurrent:     roundTo1DP(float64(token1m) / 60.0),
+		successCount1m: successCount1m,
+		errorCount1m:   errorCount1m,
+		token1m:        token1m,
+	}, nil
+}
+
+func (r *opsRepository) queryCurrentRates(ctx context.Context, filter *service.OpsDashboardFilter, end time.Time) (qpsCurrent float64, tpsCurrent float64, err error) {
+	snapshot, err := r.queryCurrentRateSnapshot(ctx, filter, end)
+	if err != nil {
+		return 0, 0, err
+	}
+	return snapshot.qpsCurrent, snapshot.tpsCurrent, nil
 }
 
 func (r *opsRepository) queryPeakRates(ctx context.Context, filter *service.OpsDashboardFilter, start, end time.Time) (qpsPeak float64, tpsPeak float64, err error) {

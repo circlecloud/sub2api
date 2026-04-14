@@ -53,7 +53,11 @@ func (s *settingUpdateRepoStub) SetMultiple(ctx context.Context, settings map[st
 }
 
 func (s *settingUpdateRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
-	panic("unexpected GetAll call")
+	result := make(map[string]string, len(s.values))
+	for key, value := range s.values {
+		result[key] = value
+	}
+	return result, nil
 }
 
 func (s *settingUpdateRepoStub) Delete(ctx context.Context, key string) error {
@@ -206,6 +210,41 @@ func TestSettingService_UpdateSettings_RegistrationEmailSuffixWhitelist_Invalid(
 	require.Equal(t, "INVALID_REGISTRATION_EMAIL_SUFFIX_WHITELIST", infraerrors.Reason(err))
 }
 
+func TestSettingService_UpdateSettings_OpenAIStreamRectifier_PersistsAndRefreshesCache(t *testing.T) {
+	repo := &settingUpdateRepoStub{
+		values: map[string]string{
+			SettingKeyEnableOpenAIStreamRectifier:                 "true",
+			SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts: `[8,10,12]`,
+			SettingKeyOpenAIStreamFirstTokenRectifierTimeouts:     `[5,8,10]`,
+		},
+	}
+	gatewayForwardingSF.Forget("gateway_forwarding")
+	gatewayForwardingCache.Store((*cachedGatewayForwardingSettings)(nil))
+	t.Cleanup(func() {
+		gatewayForwardingSF.Forget("gateway_forwarding")
+		gatewayForwardingCache.Store((*cachedGatewayForwardingSettings)(nil))
+	})
+
+	svc := NewSettingService(repo, &config.Config{Gateway: config.GatewayConfig{
+		OpenAIStreamRectifierEnabled:                true,
+		OpenAIStreamResponseHeaderRectifierTimeouts: []int{8, 10, 12},
+		OpenAIStreamFirstTokenRectifierTimeouts:     []int{5, 8, 10},
+	}})
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		EnableOpenAIStreamRectifier:                 false,
+		OpenAIStreamResponseHeaderRectifierTimeouts: []int{11, 13},
+		OpenAIStreamFirstTokenRectifierTimeouts:     []int{7, 9},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "false", repo.updates[SettingKeyEnableOpenAIStreamRectifier])
+	require.Equal(t, `[11,13]`, repo.updates[SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts])
+	require.Equal(t, `[7,9]`, repo.updates[SettingKeyOpenAIStreamFirstTokenRectifierTimeouts])
+	require.False(t, svc.IsOpenAIStreamRectifierEnabled(context.Background()))
+	header, first := svc.GetOpenAIStreamRectifierTimeouts(context.Background())
+	require.Equal(t, []int{11, 13}, header)
+	require.Equal(t, []int{7, 9}, first)
+}
+
 func TestSettingService_UpdateSettings_OpenAIWarmPool_PersistsAndRefreshesCache(t *testing.T) {
 	repo := &settingUpdateRepoStub{
 		values: map[string]string{
@@ -289,6 +328,29 @@ func TestSettingService_UpdateSettings_OpenAIWarmPool_PersistsAndRefreshesCache(
 	require.Equal(t, 19, warmPool.ProbeTimeoutSeconds)
 	require.Equal(t, 180, warmPool.ProbeFailureCooldownSeconds)
 	require.Equal(t, []int64{3, 9}, warmPool.StartupGroupIDs)
+}
+
+func TestSettingService_GetAllSettings_ParsesNotifyAndWebSearchFields(t *testing.T) {
+	repo := &settingUpdateRepoStub{values: map[string]string{
+		SettingKeyWebSearchEmulationConfig:    `{"enabled":true,"providers":[{"type":"brave","api_key_configured":true}]}`,
+		SettingKeyBalanceLowNotifyEnabled:     "true",
+		SettingKeyBalanceLowNotifyThreshold:   "12.5",
+		SettingKeyBalanceLowNotifyRechargeURL: "https://example.com/recharge",
+		SettingKeyAccountQuotaNotifyEnabled:   "true",
+		SettingKeyAccountQuotaNotifyEmails:    `[{"email":"ops@example.com","disabled":false,"verified":true}]`,
+	}}
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetAllSettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, settings.WebSearchEmulationEnabled)
+	require.True(t, settings.BalanceLowNotifyEnabled)
+	require.Equal(t, 12.5, settings.BalanceLowNotifyThreshold)
+	require.Equal(t, "https://example.com/recharge", settings.BalanceLowNotifyRechargeURL)
+	require.True(t, settings.AccountQuotaNotifyEnabled)
+	require.Len(t, settings.AccountQuotaNotifyEmails, 1)
+	require.Equal(t, "ops@example.com", settings.AccountQuotaNotifyEmails[0].Email)
+	require.True(t, settings.AccountQuotaNotifyEmails[0].Verified)
 }
 
 func TestParseDefaultSubscriptions_NormalizesValues(t *testing.T) {

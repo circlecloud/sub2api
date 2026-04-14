@@ -111,22 +111,37 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
+	rectifierPolicy := h.gatewayService.ResolveOpenAIStreamRectifierPolicy(c.Request.Context())
+	requestRectifierCtx := service.WithOpenAIStreamRectifierPolicy(c.Request.Context(), rectifierPolicy)
+	rectifierState := newOpenAIRectifierAttemptState()
+	schedulerBucket := h.gatewayService.ResolveOpenAISchedulerBucketString(apiKey.GroupID)
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var rectifierRetrySelection *service.AccountSelectionResult
 
 	for {
-		c.Set("openai_chat_completions_fallback_model", "")
-		reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
-			c.Request.Context(),
-			apiKey.GroupID,
-			"",
-			sessionHash,
-			reqModel,
-			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
+		var (
+			selection        *service.AccountSelectionResult
+			scheduleDecision service.OpenAIAccountScheduleDecision
+			err              error
 		)
+		c.Set("openai_chat_completions_fallback_model", "")
+		if rectifierRetrySelection != nil {
+			selection = rectifierRetrySelection
+			rectifierRetrySelection = nil
+		} else {
+			reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+				c.Request.Context(),
+				apiKey.GroupID,
+				"",
+				sessionHash,
+				reqModel,
+				failedAccountIDs,
+				service.OpenAIUpstreamTransportAny,
+			)
+		}
 		if err != nil {
 			reqLog.Warn("openai_chat_completions.account_select_failed",
 				zap.Error(err),
@@ -182,15 +197,24 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 
-		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		setContextLatencyMsIfAbsent(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
+		forwardCtx := h.gatewayService.PrepareOpenAIStreamFirstTokenRectifierContext(
+			requestRectifierCtx,
+			reqStream,
+			rectifierState.currentAttempt("response_header"),
+			rectifierState.currentAttempt("first_token"),
+		)
+		if apiKey.GroupID != nil && *apiKey.GroupID > 0 {
+			forwardCtx = service.WithHTTPUpstreamPoolGroupID(forwardCtx, *apiKey.GroupID)
+		}
 
 		defaultMappedModel := resolveOpenAIForwardDefaultMappedModel(apiKey, c.GetString("openai_chat_completions_fallback_model"))
 		forwardBody := body
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
-		result, err := h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		result, err := h.gatewayService.ForwardAsChatCompletions(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
@@ -206,6 +230,21 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
+			if timeoutErr, ok := service.AsOpenAIRectifierTimeoutError(err); ok {
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				maxAttempts := rectifierPolicy.MaxAttemptsForPhase(timeoutErr.Phase)
+				retryLimit := openAIRectifierRetryLimit(maxAttempts)
+				if rectifierState.currentAttempt(timeoutErr.Phase) < maxAttempts {
+					rectifierState.advance(timeoutErr.Phase)
+					retryCount := service.IncrementOpsRectifierRetryCount(c)
+					logOpenAIRectifierTimeoutRetry(reqLog, "openai_chat_completions.rectifier_timeout_retry", account.ID, schedulerBucket, timeoutErr, rectifierState, retryCount, retryLimit)
+					rectifierRetrySelection = h.newRectifierRetrySelection(account)
+					continue
+				}
+				logOpenAIRectifierTimeoutExhausted(reqLog, "openai_chat_completions.rectifier_timeout_exhausted", account.ID, schedulerBucket, timeoutErr, service.GetOpsRectifierRetryCount(c), retryLimit)
+				h.handleRectifierTimeoutExhausted(c, timeoutErr, streamStarted)
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -217,6 +256,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						reqLog.Warn("openai_chat_completions.pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.String("failover_phase", failoverErr.Phase),
 							zap.Int("retry_limit", retryLimit),
 							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
 						)
@@ -231,6 +271,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
+				rectifierState.reset()
+				rectifierRetrySelection = nil
 				if switchCount >= maxAccountSwitches {
 					h.handleFailoverExhausted(c, failoverErr, streamStarted)
 					return
@@ -239,6 +281,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				reqLog.Warn("openai_chat_completions.upstream_failover_switching",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", failoverErr.StatusCode),
+					zap.String("failover_phase", failoverErr.Phase),
 					zap.Int("switch_count", switchCount),
 					zap.Int("max_switches", maxAccountSwitches),
 				)
@@ -254,6 +297,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		if result != nil {
+			attachOpenAITimingBreakdownFromContext(c, result)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)

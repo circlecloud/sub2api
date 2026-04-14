@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,12 +26,19 @@ type stubConcurrencyCacheForTest struct {
 	waitCount          int
 	waitCountErr       error
 	loadBatch          map[int64]*AccountLoadInfo
+	loadMap            map[int64]*AccountLoadInfo
 	loadBatchErr       error
 	usersLoadBatch     map[int64]*UserLoadInfo
 	usersLoadErr       error
+	skipDefaultLoad    bool
 	cleanupErr         error
 	cleanupActiveErr   error
 	cleanupActiveCalls chan struct{}
+
+	accountLoadCalls     atomic.Int32
+	accountFastLoadCalls atomic.Int32
+	userLoadCalls        atomic.Int32
+	userFastLoadCalls    atomic.Int32
 
 	// 记录调用
 	releasedAccountIDs []int64
@@ -84,12 +92,88 @@ func (c *stubConcurrencyCacheForTest) IncrementWaitCount(_ context.Context, _ in
 func (c *stubConcurrencyCacheForTest) DecrementWaitCount(_ context.Context, _ int64) error {
 	return nil
 }
-func (c *stubConcurrencyCacheForTest) GetAccountsLoadBatch(_ context.Context, _ []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
-	return c.loadBatch, c.loadBatchErr
+func (c *stubConcurrencyCacheForTest) buildAccountLoadBatch(accounts []AccountWithConcurrency) map[int64]*AccountLoadInfo {
+	source := c.loadBatch
+	if source == nil {
+		source = c.loadMap
+	}
+	if c.skipDefaultLoad && source != nil {
+		result := make(map[int64]*AccountLoadInfo, len(accounts))
+		for _, acc := range accounts {
+			if load, ok := source[acc.ID]; ok {
+				result[acc.ID] = load
+			}
+		}
+		return result
+	}
+	result := make(map[int64]*AccountLoadInfo, len(accounts))
+	for _, acc := range accounts {
+		if source != nil {
+			if load, ok := source[acc.ID]; ok {
+				result[acc.ID] = load
+				continue
+			}
+		}
+		result[acc.ID] = &AccountLoadInfo{AccountID: acc.ID, LoadRate: 0}
+	}
+	return result
 }
-func (c *stubConcurrencyCacheForTest) GetUsersLoadBatch(_ context.Context, _ []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
-	return c.usersLoadBatch, c.usersLoadErr
+
+func (c *stubConcurrencyCacheForTest) buildUserLoadBatch(users []UserWithConcurrency) map[int64]*UserLoadInfo {
+	if c.skipDefaultLoad && c.usersLoadBatch != nil {
+		result := make(map[int64]*UserLoadInfo, len(users))
+		for _, user := range users {
+			if load, ok := c.usersLoadBatch[user.ID]; ok {
+				result[user.ID] = load
+			}
+		}
+		return result
+	}
+	result := make(map[int64]*UserLoadInfo, len(users))
+	for _, user := range users {
+		if c.usersLoadBatch != nil {
+			if load, ok := c.usersLoadBatch[user.ID]; ok {
+				result[user.ID] = load
+				continue
+			}
+		}
+		result[user.ID] = &UserLoadInfo{UserID: user.ID, LoadRate: 0}
+	}
+	return result
 }
+
+func (c *stubConcurrencyCacheForTest) GetAccountsLoadBatch(_ context.Context, accounts []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
+	c.accountLoadCalls.Add(1)
+	if c.loadBatchErr != nil {
+		return nil, c.loadBatchErr
+	}
+	return c.buildAccountLoadBatch(accounts), nil
+}
+
+func (c *stubConcurrencyCacheForTest) GetAccountsLoadBatchFast(_ context.Context, accounts []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
+	c.accountFastLoadCalls.Add(1)
+	if c.loadBatchErr != nil {
+		return nil, c.loadBatchErr
+	}
+	return c.buildAccountLoadBatch(accounts), nil
+}
+
+func (c *stubConcurrencyCacheForTest) GetUsersLoadBatch(_ context.Context, users []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	c.userLoadCalls.Add(1)
+	if c.usersLoadErr != nil {
+		return nil, c.usersLoadErr
+	}
+	return c.buildUserLoadBatch(users), nil
+}
+
+func (c *stubConcurrencyCacheForTest) GetUsersLoadBatchFast(_ context.Context, users []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	c.userFastLoadCalls.Add(1)
+	if c.usersLoadErr != nil {
+		return nil, c.usersLoadErr
+	}
+	return c.buildUserLoadBatch(users), nil
+}
+
 func (c *stubConcurrencyCacheForTest) CleanupExpiredAccountSlots(_ context.Context, _ int64) error {
 	return c.cleanupErr
 }
@@ -134,6 +218,22 @@ func (r *trackingSlotCleanupAccountRepo) ListSchedulable(context.Context) ([]Acc
 		}
 	}
 	return nil, nil
+}
+
+type legacyCountingLoadCache struct {
+	stubConcurrencyCache
+	accountLoadCalls atomic.Int32
+	userLoadCalls    atomic.Int32
+}
+
+func (c *legacyCountingLoadCache) GetAccountsLoadBatch(ctx context.Context, accounts []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
+	c.accountLoadCalls.Add(1)
+	return c.stubConcurrencyCache.GetAccountsLoadBatch(ctx, accounts)
+}
+
+func (c *legacyCountingLoadCache) GetUsersLoadBatch(ctx context.Context, users []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	c.userLoadCalls.Add(1)
+	return c.stubConcurrencyCache.GetUsersLoadBatch(ctx, users)
 }
 
 func TestCleanupStaleProcessSlots_NilCache(t *testing.T) {
@@ -290,8 +390,8 @@ func TestGenerateRequestID_UsesStablePrefixAndMonotonicCounter(t *testing.T) {
 
 func TestGetAccountsLoadBatch_ReturnsCorrectData(t *testing.T) {
 	expected := map[int64]*AccountLoadInfo{
-		1: {AccountID: 1, CurrentConcurrency: 3, WaitingCount: 0, LoadRate: 60},
-		2: {AccountID: 2, CurrentConcurrency: 5, WaitingCount: 2, LoadRate: 100},
+		1: &AccountLoadInfo{AccountID: 1, CurrentConcurrency: 3, WaitingCount: 0, LoadRate: 60},
+		2: &AccountLoadInfo{AccountID: 2, CurrentConcurrency: 5, WaitingCount: 2, LoadRate: 100},
 	}
 	cache := &stubConcurrencyCacheForTest{loadBatch: expected}
 	svc := NewConcurrencyService(cache)
@@ -381,6 +481,56 @@ func TestGetAccountWaitingCount_NilCache(t *testing.T) {
 	count, err := svc.GetAccountWaitingCount(context.Background(), 1)
 	require.NoError(t, err)
 	require.Equal(t, 0, count)
+}
+
+func TestGetAccountsLoadBatchFast_PrefersFastPathAndFallsBack(t *testing.T) {
+	t.Run("fast path", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{loadMap: map[int64]*AccountLoadInfo{1: &AccountLoadInfo{AccountID: 1, CurrentConcurrency: 2, WaitingCount: 1}}, skipDefaultLoad: true}
+		svc := NewConcurrencyService(cache)
+
+		result, err := svc.GetAccountsLoadBatchFast(context.Background(), []AccountWithConcurrency{{ID: 1, MaxConcurrency: 5}})
+		require.NoError(t, err)
+		require.Equal(t, 2, result[1].CurrentConcurrency)
+		require.Equal(t, 1, result[1].WaitingCount)
+		require.EqualValues(t, 1, cache.accountFastLoadCalls.Load())
+		require.EqualValues(t, 0, cache.accountLoadCalls.Load())
+	})
+
+	t.Run("fallback", func(t *testing.T) {
+		cache := &legacyCountingLoadCache{stubConcurrencyCache: stubConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{1: &AccountLoadInfo{AccountID: 1, CurrentConcurrency: 2, WaitingCount: 1}}, skipDefaultLoad: true}}
+		svc := NewConcurrencyService(cache)
+
+		result, err := svc.GetAccountsLoadBatchFast(context.Background(), []AccountWithConcurrency{{ID: 1, MaxConcurrency: 5}})
+		require.NoError(t, err)
+		require.Equal(t, 2, result[1].CurrentConcurrency)
+		require.Equal(t, 1, result[1].WaitingCount)
+		require.EqualValues(t, 1, cache.accountLoadCalls.Load())
+	})
+}
+
+func TestGetUsersLoadBatchFast_PrefersFastPathAndFallsBack(t *testing.T) {
+	t.Run("fast path", func(t *testing.T) {
+		cache := &stubConcurrencyCacheForTest{usersLoadBatch: map[int64]*UserLoadInfo{1: &UserLoadInfo{UserID: 1, CurrentConcurrency: 3, WaitingCount: 2}}, skipDefaultLoad: true}
+		svc := NewConcurrencyService(cache)
+
+		result, err := svc.GetUsersLoadBatchFast(context.Background(), []UserWithConcurrency{{ID: 1, MaxConcurrency: 5}})
+		require.NoError(t, err)
+		require.Equal(t, 3, result[1].CurrentConcurrency)
+		require.Equal(t, 2, result[1].WaitingCount)
+		require.EqualValues(t, 1, cache.userFastLoadCalls.Load())
+		require.EqualValues(t, 0, cache.userLoadCalls.Load())
+	})
+
+	t.Run("fallback", func(t *testing.T) {
+		cache := &legacyCountingLoadCache{stubConcurrencyCache: stubConcurrencyCache{usersLoadBatch: map[int64]*UserLoadInfo{1: &UserLoadInfo{UserID: 1, CurrentConcurrency: 3, WaitingCount: 2}}, skipDefaultLoad: true}}
+		svc := NewConcurrencyService(cache)
+
+		result, err := svc.GetUsersLoadBatchFast(context.Background(), []UserWithConcurrency{{ID: 1, MaxConcurrency: 5}})
+		require.NoError(t, err)
+		require.Equal(t, 3, result[1].CurrentConcurrency)
+		require.Equal(t, 2, result[1].WaitingCount)
+		require.EqualValues(t, 1, cache.userLoadCalls.Load())
+	})
 }
 
 func TestGetAccountConcurrencyBatch(t *testing.T) {

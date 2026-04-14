@@ -10,6 +10,7 @@ import { opsAPI, type OpsDashboardOverview, type OpsMetricThresholds, type OpsRe
 import type { OpsRequestDetailsPreset } from './OpsRequestDetailsModal.vue'
 import { useAdminSettingsStore } from '@/stores'
 import { formatNumber } from '@/utils/format'
+import { formatRealtimeTrafficAverage, formatRealtimeTrafficPrimary, isRealtimeTrafficIdle } from './opsDashboardTrafficDisplay'
 
 type RealtimeWindow = '1min' | '5min' | '30min' | '1h'
 
@@ -276,8 +277,20 @@ function getThresholdColorClass(level: ThresholdLevel): string {
 
 const totalRequestsLabel = computed(() => formatNumber(overview.value?.request_count_total ?? 0))
 const totalTokensLabel = computed(() => formatNumber(overview.value?.token_consumed ?? 0))
+const overviewRequestCount = computed(() => overview.value?.request_count_total ?? 0)
+
+function getWindowMinutes(startTime?: string | null, endTime?: string | null): number | null {
+  if (!startTime || !endTime) return null
+  const start = new Date(startTime)
+  const end = new Date(endTime)
+  const diffMinutes = (end.getTime() - start.getTime()) / 60000
+  return Number.isFinite(diffMinutes) && diffMinutes > 0 ? diffMinutes : null
+}
+
+const overviewWindowMinutes = computed(() => getWindowMinutes(overview.value?.start_time, overview.value?.end_time))
 
 const realtimeTrafficSummary = ref<OpsRealtimeTrafficSummary | null>(null)
+const realtimeWindowMinutes = computed(() => getWindowMinutes(realtimeTrafficSummary.value?.start_time, realtimeTrafficSummary.value?.end_time))
 const realtimeTrafficLoading = ref(false)
 
 function makeZeroRealtimeTrafficSummary(): OpsRealtimeTrafficSummary {
@@ -288,6 +301,9 @@ function makeZeroRealtimeTrafficSummary(): OpsRealtimeTrafficSummary {
     end_time: now,
     platform: props.platform,
     group_id: props.groupId,
+    recent_request_count: 0,
+    recent_error_count: 0,
+    request_count_total: 0,
     qps: { current: 0, peak: 0, avg: 0 },
     tps: { current: 0, peak: 0, avg: 0 }
   }
@@ -350,10 +366,10 @@ watch(
 
 // no-op: parent controls refresh cadence
 
-const displayRealTimeQps = computed(() => {
-  const v = realtimeTrafficSummary.value?.qps?.current
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0
-})
+const realtimePrimaryDisplay = computed(() => formatRealtimeTrafficPrimary({
+  qpsCurrent: realtimeTrafficSummary.value?.qps?.current,
+  recentRequestCount: realtimeTrafficSummary.value?.recent_request_count,
+}))
 
 const displayRealTimeTps = computed(() => {
   const v = realtimeTrafficSummary.value?.tps?.current
@@ -368,20 +384,19 @@ const realtimeTpsPeakLabel = computed(() => {
   const v = realtimeTrafficSummary.value?.tps?.peak
   return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(1) : '-'
 })
-const realtimeQpsAvgLabel = computed(() => {
-  const v = realtimeTrafficSummary.value?.qps?.avg
-  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(1) : '-'
-})
+const realtimeQpsAvgDisplay = computed(() => formatRealtimeTrafficAverage({
+  avgRequestCount: realtimeTrafficSummary.value?.request_count_total,
+  avgWindowMinutes: realtimeWindowMinutes.value,
+}))
 const realtimeTpsAvgLabel = computed(() => {
   const v = realtimeTrafficSummary.value?.tps?.avg
   return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(1) : '-'
 })
 
-const qpsAvgLabel = computed(() => {
-  const v = overview.value?.qps?.avg
-  if (typeof v !== 'number') return '-'
-  return v.toFixed(1)
-})
+const overviewQpsAvgDisplay = computed(() => formatRealtimeTrafficAverage({
+  avgRequestCount: overviewRequestCount.value,
+  avgWindowMinutes: overviewWindowMinutes.value,
+}))
 
 const tpsAvgLabel = computed(() => {
   const v = overview.value?.tps?.avg
@@ -424,11 +439,8 @@ const ttftMaxMs = computed(() => overview.value?.ttft?.max_ms ?? null)
 // --- Health Score & Diagnosis (primary) ---
 
 const isSystemIdle = computed(() => {
-  const ov = overview.value
-  if (!ov) return true
-  const qps = ov.qps?.current
-  const errorRate = ov.error_rate ?? 0
-  return (qps ?? 0) === 0 && errorRate === 0
+  const errorRate = overview.value?.error_rate ?? 0
+  return isRealtimeTrafficIdle(overviewRequestCount.value, errorRate)
 })
 
 const healthScoreValue = computed<number | null>(() => {
@@ -1136,8 +1148,8 @@ function handleToolbarRefresh() {
                 <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.current') }}</div>
                 <div class="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-2">
                   <div class="flex items-baseline gap-1.5">
-                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeQps.toFixed(1) }}</span>
-                    <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">QPS</span>
+                    <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ realtimePrimaryDisplay.value }}</span>
+                    <span :class="[props.fullscreen ? 'text-sm' : 'text-xs', 'font-bold text-gray-500']">{{ realtimePrimaryDisplay.unit }}</span>
                   </div>
                   <div class="flex items-baseline gap-1.5">
                     <span :class="[props.fullscreen ? 'text-4xl' : 'text-xl sm:text-2xl', 'font-black text-gray-900 dark:text-white']">{{ displayRealTimeTps.toFixed(1) }}</span>
@@ -1168,8 +1180,8 @@ function handleToolbarRefresh() {
                   <div :class="[props.fullscreen ? 'text-xs' : 'text-[10px]', 'font-bold uppercase text-gray-400']">{{ t('admin.ops.average') }}</div>
                   <div :class="[props.fullscreen ? 'text-base' : 'text-sm', 'mt-1 space-y-0.5 font-medium text-gray-600 dark:text-gray-400']">
                     <div class="flex items-baseline gap-1.5">
-                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeQpsAvgLabel }}</span>
-                      <span class="text-xs">QPS</span>
+                      <span class="font-black text-gray-900 dark:text-white">{{ realtimeQpsAvgDisplay.value }}</span>
+                      <span class="text-xs">{{ realtimeQpsAvgDisplay.unit }}</span>
                     </div>
                     <div class="flex items-baseline gap-1.5">
                       <span class="font-black text-gray-900 dark:text-white">{{ realtimeTpsAvgLabel }}</span>
@@ -1235,11 +1247,11 @@ function handleToolbarRefresh() {
             </div>
             <div class="flex justify-between">
               <span class="text-gray-500">{{ t('admin.ops.avgQps') }}:</span>
-              <span class="font-bold text-gray-900 dark:text-white">{{ qpsAvgLabel }}</span>
+              <span class="font-bold text-gray-900 dark:text-white">{{ overviewQpsAvgDisplay.value }} {{ overviewQpsAvgDisplay.unit }}</span>
             </div>
             <div class="flex justify-between">
               <span class="text-gray-500">{{ t('admin.ops.avgTps') }}:</span>
-              <span class="font-bold text-gray-900 dark:text-white">{{ tpsAvgLabel }}</span>
+              <span class="font-bold text-gray-900 dark:text-white">{{ tpsAvgLabel }} {{ t('admin.ops.tps') }}</span>
             </div>
           </div>
         </div>
@@ -1337,7 +1349,7 @@ function handleToolbarRefresh() {
               v-if="!props.fullscreen"
               class="text-[10px] font-bold text-blue-500 hover:underline"
               type="button"
-              @click="openDetails({ title: t('admin.ops.ttftLabel'), sort: 'duration_desc' })"
+              @click="openDetails({ title: t('admin.ops.ttftLabel'), sort: 'ttft_desc', metric: 'ttft' })"
             >
               {{ t('admin.ops.requestDetails.details') }}
             </button>
@@ -1347,6 +1359,9 @@ function handleToolbarRefresh() {
               {{ ttftP99Ms ?? '-' }}
             </div>
             <span class="text-xs font-bold text-gray-400">ms (P99)</span>
+          </div>
+          <div class="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+            {{ t('admin.ops.requestDetails.table.diagnosisHint') }}
           </div>
           <div class="mt-3 grid grid-cols-1 gap-x-3 gap-y-1 text-xs 2xl:grid-cols-2">
             <div class="flex items-baseline gap-1 whitespace-nowrap">
@@ -1425,6 +1440,10 @@ function handleToolbarRefresh() {
             <div class="flex justify-between">
               <span class="text-gray-500">429/529:</span>
               <span class="font-bold text-gray-900 dark:text-white">{{ formatNumber((overview.upstream_429_count ?? 0) + (overview.upstream_529_count ?? 0)) }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-500">{{ t('admin.ops.rectifierRetries') }}:</span>
+              <span class="font-bold text-gray-900 dark:text-white">{{ formatNumber(overview.rectifier_retry_count ?? 0) }}</span>
             </div>
           </div>
         </div>

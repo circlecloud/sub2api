@@ -45,7 +45,10 @@ export default defineConfig(({ mode }) => {
       vue(),
       checker({
         typescript: true,
-        vueTsc: true
+        vueTsc: true,
+        // `pnpm build` 已在 package.json 中显式执行 `vue-tsc --noEmit`。
+        // 关闭 checker 的 build 阶段，避免 production build 再重复拉起 tsc/vue-tsc。
+        enableBuild: false
       }),
       injectPublicSettings(backendUrl)
     ],

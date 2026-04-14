@@ -6,10 +6,15 @@ type OpsOpenAIWarmPoolStats struct {
 	Enabled          bool                               `json:"enabled"`
 	WarmPoolEnabled  bool                               `json:"warm_pool_enabled"`
 	ReaderReady      bool                               `json:"reader_ready"`
+	Bootstrapping    bool                               `json:"bootstrapping"`
 	Timestamp        *time.Time                         `json:"timestamp,omitempty"`
 	Summary          *OpsOpenAIWarmPoolSummary          `json:"summary,omitempty"`
 	Buckets          []*OpsOpenAIWarmPoolBucket         `json:"buckets"`
 	Accounts         []*OpsOpenAIWarmPoolAccount        `json:"accounts"`
+	Page             int                                `json:"page,omitempty"`
+	PageSize         int                                `json:"page_size,omitempty"`
+	Total            int                                `json:"total,omitempty"`
+	Pages            int                                `json:"pages,omitempty"`
 	GlobalCoverages  []*OpsOpenAIWarmPoolGroupCoverage  `json:"global_coverages"`
 	NetworkErrorPool *OpsOpenAIWarmPoolNetworkErrorPool `json:"network_error_pool,omitempty"`
 }

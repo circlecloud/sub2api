@@ -30,135 +30,165 @@ func (s *OpsService) GetAccountAvailabilityStatsWithOptions(ctx context.Context,
 		return nil, nil, nil, nil, err
 	}
 
-	accounts, err := s.listAllAccountsForOps(ctx, platformFilter, groupIDFilter)
+	start := time.Now()
+	cacheKey := buildOpsRealtimeAvailabilityCacheKey(platformFilter, groupIDFilter, scope)
+	if platform, group, account, collectedAt, ok := s.getCachedRealtimeAccountAvailabilityStats(cacheKey); ok {
+		s.logRealtimeResultCache("ops_account_availability", cacheKey, true, time.Since(start))
+		return platform, group, account, collectedAt, nil
+	}
+
+	compute := func() (map[string]*PlatformAvailability, map[int64]*GroupAvailability, map[int64]*AccountAvailability, *time.Time, error) {
+		accounts, err := s.listAllAccountsForOps(ctx, platformFilter, groupIDFilter)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+
+		now := time.Now()
+		collectedAt := now
+
+		platform := make(map[string]*PlatformAvailability)
+		group := make(map[int64]*GroupAvailability)
+		account := map[int64]*AccountAvailability{}
+		if scope.includeAccount() {
+			account = make(map[int64]*AccountAvailability)
+		}
+
+		for _, acc := range accounts {
+			if acc.ID <= 0 {
+				continue
+			}
+
+			isTempUnsched := false
+			if acc.TempUnschedulableUntil != nil && now.Before(*acc.TempUnschedulableUntil) {
+				isTempUnsched = true
+			}
+
+			isRateLimited := acc.RateLimitResetAt != nil && now.Before(*acc.RateLimitResetAt)
+			isOverloaded := acc.OverloadUntil != nil && now.Before(*acc.OverloadUntil)
+			hasError := acc.Status == StatusError
+
+			// Normalize exclusive status flags so the UI doesn't show conflicting badges.
+			if hasError {
+				isRateLimited = false
+				isOverloaded = false
+			}
+
+			isAvailable := acc.Status == StatusActive && acc.Schedulable && !isRateLimited && !isOverloaded && !isTempUnsched
+
+			if scope.includePlatform() && acc.Platform != "" {
+				if _, ok := platform[acc.Platform]; !ok {
+					platform[acc.Platform] = &PlatformAvailability{
+						Platform: acc.Platform,
+					}
+				}
+				p := platform[acc.Platform]
+				p.TotalAccounts++
+				if isAvailable {
+					p.AvailableCount++
+				}
+				if isRateLimited {
+					p.RateLimitCount++
+				}
+				if hasError {
+					p.ErrorCount++
+				}
+			}
+
+			if scope.includeGroup() {
+				for _, grp := range acc.Groups {
+					if grp == nil || grp.ID <= 0 {
+						continue
+					}
+					if _, ok := group[grp.ID]; !ok {
+						group[grp.ID] = &GroupAvailability{
+							GroupID:   grp.ID,
+							GroupName: grp.Name,
+							Platform:  grp.Platform,
+						}
+					}
+					g := group[grp.ID]
+					g.TotalAccounts++
+					if isAvailable {
+						g.AvailableCount++
+					}
+					if isRateLimited {
+						g.RateLimitCount++
+					}
+					if hasError {
+						g.ErrorCount++
+					}
+				}
+			}
+
+			if scope.includeAccount() {
+				displayGroupID := int64(0)
+				displayGroupName := ""
+				if len(acc.Groups) > 0 && acc.Groups[0] != nil {
+					displayGroupID = acc.Groups[0].ID
+					displayGroupName = acc.Groups[0].Name
+				}
+
+				item := &AccountAvailability{
+					AccountID:   acc.ID,
+					AccountName: acc.Name,
+					Platform:    acc.Platform,
+					GroupID:     displayGroupID,
+					GroupName:   displayGroupName,
+					Status:      acc.Status,
+
+					IsAvailable:   isAvailable,
+					IsRateLimited: isRateLimited,
+					IsOverloaded:  isOverloaded,
+					HasError:      hasError,
+
+					ErrorMessage: acc.ErrorMessage,
+				}
+
+				if isRateLimited && acc.RateLimitResetAt != nil {
+					item.RateLimitResetAt = acc.RateLimitResetAt
+					remainingSec := int64(time.Until(*acc.RateLimitResetAt).Seconds())
+					if remainingSec > 0 {
+						item.RateLimitRemainingSec = &remainingSec
+					}
+				}
+				if isOverloaded && acc.OverloadUntil != nil {
+					item.OverloadUntil = acc.OverloadUntil
+					remainingSec := int64(time.Until(*acc.OverloadUntil).Seconds())
+					if remainingSec > 0 {
+						item.OverloadRemainingSec = &remainingSec
+					}
+				}
+				if isTempUnsched && acc.TempUnschedulableUntil != nil {
+					item.TempUnschedulableUntil = acc.TempUnschedulableUntil
+				}
+
+				account[acc.ID] = item
+			}
+		}
+
+		return platform, group, account, &collectedAt, nil
+	}
+	if cacheKey == "" {
+		return compute()
+	}
+
+	value, err, _ := s.realtimeSnapshotFlight.Do("ops_account_availability:"+cacheKey, func() (any, error) {
+		if platform, group, account, collectedAt, ok := s.getCachedRealtimeAccountAvailabilityStats(cacheKey); ok {
+			return opsRealtimeAvailabilityCacheEntry{platform: platform, group: group, account: account, collectedAt: collectedAt}, nil
+		}
+		platform, group, account, collectedAt, err := compute()
+		if err != nil {
+			return nil, err
+		}
+		s.setCachedRealtimeAccountAvailabilityStats(cacheKey, platform, group, account, collectedAt)
+		return opsRealtimeAvailabilityCacheEntry{platform: platform, group: group, account: account, collectedAt: collectedAt}, nil
+	})
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-
-	now := time.Now()
-	collectedAt := now
-
-	platform := make(map[string]*PlatformAvailability)
-	group := make(map[int64]*GroupAvailability)
-	account := map[int64]*AccountAvailability{}
-	if scope.includeAccount() {
-		account = make(map[int64]*AccountAvailability)
-	}
-
-	for _, acc := range accounts {
-		if acc.ID <= 0 {
-			continue
-		}
-
-		isTempUnsched := false
-		if acc.TempUnschedulableUntil != nil && now.Before(*acc.TempUnschedulableUntil) {
-			isTempUnsched = true
-		}
-
-		isRateLimited := acc.RateLimitResetAt != nil && now.Before(*acc.RateLimitResetAt)
-		isOverloaded := acc.OverloadUntil != nil && now.Before(*acc.OverloadUntil)
-		hasError := acc.Status == StatusError
-
-		// Normalize exclusive status flags so the UI doesn't show conflicting badges.
-		if hasError {
-			isRateLimited = false
-			isOverloaded = false
-		}
-
-		isAvailable := acc.Status == StatusActive && acc.Schedulable && !isRateLimited && !isOverloaded && !isTempUnsched
-
-		if scope.includePlatform() && acc.Platform != "" {
-			if _, ok := platform[acc.Platform]; !ok {
-				platform[acc.Platform] = &PlatformAvailability{
-					Platform: acc.Platform,
-				}
-			}
-			p := platform[acc.Platform]
-			p.TotalAccounts++
-			if isAvailable {
-				p.AvailableCount++
-			}
-			if isRateLimited {
-				p.RateLimitCount++
-			}
-			if hasError {
-				p.ErrorCount++
-			}
-		}
-
-		if scope.includeGroup() {
-			for _, grp := range acc.Groups {
-				if grp == nil || grp.ID <= 0 {
-					continue
-				}
-				if _, ok := group[grp.ID]; !ok {
-					group[grp.ID] = &GroupAvailability{
-						GroupID:   grp.ID,
-						GroupName: grp.Name,
-						Platform:  grp.Platform,
-					}
-				}
-				g := group[grp.ID]
-				g.TotalAccounts++
-				if isAvailable {
-					g.AvailableCount++
-				}
-				if isRateLimited {
-					g.RateLimitCount++
-				}
-				if hasError {
-					g.ErrorCount++
-				}
-			}
-		}
-
-		if scope.includeAccount() {
-			displayGroupID := int64(0)
-			displayGroupName := ""
-			if len(acc.Groups) > 0 && acc.Groups[0] != nil {
-				displayGroupID = acc.Groups[0].ID
-				displayGroupName = acc.Groups[0].Name
-			}
-
-			item := &AccountAvailability{
-				AccountID:   acc.ID,
-				AccountName: acc.Name,
-				Platform:    acc.Platform,
-				GroupID:     displayGroupID,
-				GroupName:   displayGroupName,
-				Status:      acc.Status,
-
-				IsAvailable:   isAvailable,
-				IsRateLimited: isRateLimited,
-				IsOverloaded:  isOverloaded,
-				HasError:      hasError,
-
-				ErrorMessage: acc.ErrorMessage,
-			}
-
-			if isRateLimited && acc.RateLimitResetAt != nil {
-				item.RateLimitResetAt = acc.RateLimitResetAt
-				remainingSec := int64(time.Until(*acc.RateLimitResetAt).Seconds())
-				if remainingSec > 0 {
-					item.RateLimitRemainingSec = &remainingSec
-				}
-			}
-			if isOverloaded && acc.OverloadUntil != nil {
-				item.OverloadUntil = acc.OverloadUntil
-				remainingSec := int64(time.Until(*acc.OverloadUntil).Seconds())
-				if remainingSec > 0 {
-					item.OverloadRemainingSec = &remainingSec
-				}
-			}
-			if isTempUnsched && acc.TempUnschedulableUntil != nil {
-				item.TempUnschedulableUntil = acc.TempUnschedulableUntil
-			}
-
-			account[acc.ID] = item
-		}
-	}
-
-	return platform, group, account, &collectedAt, nil
+	entry, _ := value.(opsRealtimeAvailabilityCacheEntry)
+	s.logRealtimeResultCache("ops_account_availability", cacheKey, false, time.Since(start))
+	return entry.platform, entry.group, entry.account, entry.collectedAt, nil
 }
 
 type OpsAccountAvailability struct {

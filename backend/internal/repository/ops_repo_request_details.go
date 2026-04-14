@@ -93,6 +93,12 @@ WITH combined AS (
     COALESCE(NULLIF(g.platform, ''), NULLIF(a.platform, ''), '') AS platform,
     ul.model AS model,
     ul.duration_ms AS duration_ms,
+    ul.first_token_ms AS ttft_ms,
+    ul.auth_latency_ms AS auth_latency_ms,
+    ul.routing_latency_ms AS routing_latency_ms,
+    ul.gateway_prepare_latency_ms AS gateway_prepare_latency_ms,
+    ul.upstream_latency_ms AS upstream_latency_ms,
+    ul.stream_first_event_ms AS stream_first_event_ms,
     NULL::INT AS status_code,
     NULL::BIGINT AS error_id,
     NULL::TEXT AS phase,
@@ -117,6 +123,12 @@ WITH combined AS (
     COALESCE(NULLIF(o.platform, ''), NULLIF(g.platform, ''), NULLIF(a.platform, ''), '') AS platform,
     o.model AS model,
     o.duration_ms AS duration_ms,
+    o.time_to_first_token_ms AS ttft_ms,
+    o.auth_latency_ms AS auth_latency_ms,
+    o.routing_latency_ms AS routing_latency_ms,
+    o.gateway_prepare_latency_ms AS gateway_prepare_latency_ms,
+    o.upstream_latency_ms AS upstream_latency_ms,
+    o.stream_first_event_latency_ms AS stream_first_event_ms,
     o.status_code AS status_code,
     o.id AS error_id,
     o.error_phase AS phase,
@@ -152,6 +164,8 @@ WITH combined AS (
 			// default
 		case "duration_desc":
 			sort = "ORDER BY duration_ms DESC NULLS LAST, created_at DESC"
+		case "ttft_desc":
+			sort = "ORDER BY ttft_ms DESC NULLS LAST, created_at DESC"
 		default:
 			return nil, 0, fmt.Errorf("invalid sort")
 		}
@@ -166,6 +180,12 @@ SELECT
   platform,
   model,
   duration_ms,
+  ttft_ms,
+  auth_latency_ms,
+  routing_latency_ms,
+  gateway_prepare_latency_ms,
+  upstream_latency_ms,
+  stream_first_event_ms,
   status_code,
   error_id,
   phase,
@@ -213,9 +233,15 @@ LIMIT $%d OFFSET $%d
 			platform  sql.NullString
 			model     sql.NullString
 
-			durationMs sql.NullInt64
-			statusCode sql.NullInt64
-			errorID    sql.NullInt64
+			durationMs            sql.NullInt64
+			ttftMs                sql.NullInt64
+			authLatencyMs         sql.NullInt64
+			routingLatencyMs      sql.NullInt64
+			gatewayPrepareLatency sql.NullInt64
+			upstreamLatencyMs     sql.NullInt64
+			streamFirstEventMs    sql.NullInt64
+			statusCode            sql.NullInt64
+			errorID               sql.NullInt64
 
 			phase    sql.NullString
 			severity sql.NullString
@@ -236,6 +262,12 @@ LIMIT $%d OFFSET $%d
 			&platform,
 			&model,
 			&durationMs,
+			&ttftMs,
+			&authLatencyMs,
+			&routingLatencyMs,
+			&gatewayPrepareLatency,
+			&upstreamLatencyMs,
+			&streamFirstEventMs,
 			&statusCode,
 			&errorID,
 			&phase,
@@ -257,12 +289,18 @@ LIMIT $%d OFFSET $%d
 			Platform:  strings.TrimSpace(platform.String),
 			Model:     strings.TrimSpace(model.String),
 
-			DurationMs: toIntPtr(durationMs),
-			StatusCode: toIntPtr(statusCode),
-			ErrorID:    toInt64Ptr(errorID),
-			Phase:      phase.String,
-			Severity:   severity.String,
-			Message:    message.String,
+			DurationMs:              toIntPtr(durationMs),
+			TTFTMs:                  toIntPtr(ttftMs),
+			AuthLatencyMs:           toIntPtr(authLatencyMs),
+			RoutingLatencyMs:        toIntPtr(routingLatencyMs),
+			GatewayPrepareLatencyMs: toIntPtr(gatewayPrepareLatency),
+			UpstreamLatencyMs:       toIntPtr(upstreamLatencyMs),
+			StreamFirstEventMs:      toIntPtr(streamFirstEventMs),
+			StatusCode:              toIntPtr(statusCode),
+			ErrorID:                 toInt64Ptr(errorID),
+			Phase:                   phase.String,
+			Severity:                severity.String,
+			Message:                 message.String,
 
 			UserID:    toInt64Ptr(userID),
 			APIKeyID:  toInt64Ptr(apiKeyID),

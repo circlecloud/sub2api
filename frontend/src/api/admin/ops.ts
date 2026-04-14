@@ -95,6 +95,7 @@ export interface OpsDashboardOverview {
   success_count: number
   error_count_total: number
   business_limited_count: number
+  rectifier_retry_count: number
   error_count_sla: number
   request_count_total: number
   request_count_sla: number
@@ -163,7 +164,7 @@ export interface OpsThroughputTrendResponse {
 
 export type OpsRequestKind = 'success' | 'error'
 export type OpsRequestDetailsKind = OpsRequestKind | 'all'
-export type OpsRequestDetailsSort = 'created_at_desc' | 'duration_desc'
+export type OpsRequestDetailsSort = 'created_at_desc' | 'duration_desc' | 'ttft_desc'
 
 export interface OpsRequestDetail {
   kind: OpsRequestKind
@@ -173,6 +174,12 @@ export interface OpsRequestDetail {
   platform?: string
   model?: string
   duration_ms?: number | null
+  ttft_ms?: number | null
+  auth_latency_ms?: number | null
+  routing_latency_ms?: number | null
+  gateway_prepare_latency_ms?: number | null
+  upstream_latency_ms?: number | null
+  stream_first_event_ms?: number | null
   status_code?: number | null
 
   error_id?: number | null
@@ -544,10 +551,15 @@ export interface OpsOpenAIWarmPoolStatsResponse {
   enabled: boolean
   warm_pool_enabled: boolean
   reader_ready: boolean
+  bootstrapping?: boolean
   timestamp?: string
   summary?: OpsOpenAIWarmPoolSummary | null
   buckets: OpsOpenAIWarmPoolBucket[]
   accounts: OpsOpenAIWarmPoolAccount[]
+  page?: number
+  page_size?: number
+  total?: number
+  pages?: number
   global_coverages: OpsOpenAIWarmPoolGroupCoverage[]
   network_error_pool?: OpsOpenAIWarmPoolNetworkErrorPool | null
 }
@@ -586,6 +598,9 @@ export interface OpsRealtimeTrafficSummary {
   end_time: string
   platform: string
   group_id?: number | null
+  recent_request_count: number
+  recent_error_count: number
+  request_count_total: number
   qps: OpsRateSummary
   tps: OpsRateSummary
 }
@@ -617,6 +632,8 @@ export interface GetOpenAIWarmPoolStatsOptions {
   includeAccount?: boolean
   accountState?: 'ready' | 'probing' | 'cooling' | 'network_error' | 'idle' | string
   accountsOnly?: boolean
+  page?: number
+  page_size?: number
 }
 
 export async function getOpenAIWarmPoolStats(
@@ -635,6 +652,12 @@ export async function getOpenAIWarmPoolStats(
   }
   if (options.accountState?.trim()) {
     params.account_state = options.accountState.trim()
+  }
+  if (typeof options.page === 'number' && options.page > 0) {
+    params.page = options.page
+  }
+  if (typeof options.page_size === 'number' && options.page_size > 0) {
+    params.page_size = options.page_size
   }
   const { data } = await apiClient.get<OpsOpenAIWarmPoolStatsResponse>('/admin/ops/openai-warm-pool', { params })
   return data
@@ -980,6 +1003,7 @@ export interface OpsAdvancedSettings {
   ignore_no_available_accounts: boolean
   ignore_invalid_api_key_errors: boolean
   ignore_insufficient_balance_errors: boolean
+  ignore_openai_stream_rectifier_timeouts: boolean
   display_openai_token_stats: boolean
   display_alert_events: boolean
   auto_refresh_enabled: boolean
@@ -1128,9 +1152,11 @@ export interface OpsErrorDetail extends OpsErrorLog {
 
   auth_latency_ms?: number | null
   routing_latency_ms?: number | null
+  gateway_prepare_latency_ms?: number | null
   upstream_latency_ms?: number | null
   response_latency_ms?: number | null
   time_to_first_token_ms?: number | null
+  stream_first_event_latency_ms?: number | null
 
   request_body: string
   request_body_truncated: boolean

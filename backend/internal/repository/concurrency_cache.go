@@ -492,6 +492,103 @@ func (c *concurrencyCache) GetUsersLoadBatch(ctx context.Context, users []servic
 	return loadMap, nil
 }
 
+type loadBatchFastItem struct {
+	id             int64
+	maxConcurrency int
+}
+
+func loadBatchFast[T any](ctx context.Context, c *concurrencyCache, items []loadBatchFastItem, slotKeyPrefix, waitKeyPrefix string, build func(id int64, currentConcurrency, waitingCount, loadRate int) T) (map[int64]T, error) {
+	if len(items) == 0 {
+		return map[int64]T{}, nil
+	}
+
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis TIME: %w", err)
+	}
+	cutoffTime := now.Unix() - int64(c.slotTTLSeconds)
+	activeAfter := fmt.Sprintf("(%d", cutoffTime)
+
+	pipe := c.rdb.Pipeline()
+	type loadBatchFastCmd struct {
+		id             int64
+		maxConcurrency int
+		countCmd       *redis.IntCmd
+		getCmd         *redis.StringCmd
+	}
+	cmds := make([]loadBatchFastCmd, 0, len(items))
+	for _, item := range items {
+		slotKey := slotKeyPrefix + strconv.FormatInt(item.id, 10)
+		waitKey := waitKeyPrefix + strconv.FormatInt(item.id, 10)
+		cmds = append(cmds, loadBatchFastCmd{
+			id:             item.id,
+			maxConcurrency: item.maxConcurrency,
+			countCmd:       pipe.ZCount(ctx, slotKey, activeAfter, "+inf"),
+			getCmd:         pipe.Get(ctx, waitKey),
+		})
+	}
+
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("pipeline exec: %w", err)
+	}
+
+	result := make(map[int64]T, len(items))
+	for _, cmd := range cmds {
+		currentConcurrency := int(cmd.countCmd.Val())
+		waitingCount := 0
+		if v, err := cmd.getCmd.Int(); err == nil {
+			waitingCount = v
+		}
+		loadRate := 0
+		if cmd.maxConcurrency > 0 {
+			loadRate = (currentConcurrency + waitingCount) * 100 / cmd.maxConcurrency
+		}
+		result[cmd.id] = build(cmd.id, currentConcurrency, waitingCount, loadRate)
+	}
+
+	return result, nil
+}
+
+func (c *concurrencyCache) GetAccountsLoadBatchFast(ctx context.Context, accounts []service.AccountWithConcurrency) (map[int64]*service.AccountLoadInfo, error) {
+	if len(accounts) == 0 {
+		return map[int64]*service.AccountLoadInfo{}, nil
+	}
+
+	items := make([]loadBatchFastItem, 0, len(accounts))
+	for _, acc := range accounts {
+		items = append(items, loadBatchFastItem{id: acc.ID, maxConcurrency: acc.MaxConcurrency})
+	}
+
+	return loadBatchFast(ctx, c, items, accountSlotKeyPrefix, accountWaitKeyPrefix, func(id int64, currentConcurrency, waitingCount, loadRate int) *service.AccountLoadInfo {
+		return &service.AccountLoadInfo{
+			AccountID:          id,
+			CurrentConcurrency: currentConcurrency,
+			WaitingCount:       waitingCount,
+			LoadRate:           loadRate,
+		}
+	})
+}
+
+func (c *concurrencyCache) GetUsersLoadBatchFast(ctx context.Context, users []service.UserWithConcurrency) (map[int64]*service.UserLoadInfo, error) {
+	if len(users) == 0 {
+		return map[int64]*service.UserLoadInfo{}, nil
+	}
+
+	items := make([]loadBatchFastItem, 0, len(users))
+	for _, user := range users {
+		items = append(items, loadBatchFastItem{id: user.ID, maxConcurrency: user.MaxConcurrency})
+	}
+
+	return loadBatchFast(ctx, c, items, userSlotKeyPrefix, waitQueueKeyPrefix, func(id int64, currentConcurrency, waitingCount, loadRate int) *service.UserLoadInfo {
+		return &service.UserLoadInfo{
+			UserID:             id,
+			CurrentConcurrency: currentConcurrency,
+			WaitingCount:       waitingCount,
+			LoadRate:           loadRate,
+		}
+	})
+}
+
 func (c *concurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {
 	key := accountSlotKey(accountID)
 	_, err := cleanupExpiredSlotsScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds).Result()

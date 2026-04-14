@@ -53,7 +53,8 @@ type OpsDashboardOverview struct {
 	RequestCountTotal int64 `json:"request_count_total"`
 	RequestCountSLA   int64 `json:"request_count_sla"`
 
-	TokenConsumed int64 `json:"token_consumed"`
+	TokenConsumed       int64 `json:"token_consumed"`
+	RectifierRetryCount int64 `json:"rectifier_retry_count"`
 
 	SLA                          float64 `json:"sla"`
 	ErrorRate                    float64 `json:"error_rate"`

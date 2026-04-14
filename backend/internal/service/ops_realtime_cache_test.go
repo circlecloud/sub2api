@@ -18,18 +18,20 @@ type stubOpsRealtimeListAccountCall struct {
 }
 
 type stubOpsRealtimeCache struct {
-	ready                 bool
-	accounts              map[int64]*OpsRealtimeAccountCacheEntry
-	warmStates            map[int64]*OpsRealtimeWarmAccountState
-	warmBucketMetas       map[int64]*OpsRealtimeWarmBucketMeta
-	warmBucketMembers     map[int64][]string
-	warmGlobal            *OpsRealtimeWarmGlobalState
-	warmOverview          *OpsOpenAIWarmPoolStats
-	listAccountCalls      []stubOpsRealtimeListAccountCall
-	setWarmOverviewCalls  int
-	getWarmOverviewCalls  int
-	deleteWarmOverviewOps int
-	clearWarmStateCall    int
+	ready                       bool
+	accounts                    map[int64]*OpsRealtimeAccountCacheEntry
+	warmStates                  map[int64]*OpsRealtimeWarmAccountState
+	warmBucketMetas             map[int64]*OpsRealtimeWarmBucketMeta
+	warmBucketMembers           map[int64][]string
+	warmGlobal                  *OpsRealtimeWarmGlobalState
+	warmOverview                *OpsOpenAIWarmPoolStats
+	listAccountCalls            []stubOpsRealtimeListAccountCall
+	setWarmOverviewCalls        int
+	getWarmOverviewCalls        int
+	deleteWarmOverviewOps       int
+	clearWarmStateCall          int
+	getWarmBucketMemberCalls    int
+	getWarmBucketMemberBatchOps int
 }
 
 func (s *stubOpsRealtimeCache) IsAccountIndexReady(ctx context.Context) (bool, error) {
@@ -203,7 +205,16 @@ func (s *stubOpsRealtimeCache) GetWarmBucketMetas(ctx context.Context, groupIDs 
 	return result, nil
 }
 func (s *stubOpsRealtimeCache) GetWarmBucketMemberTokens(ctx context.Context, groupID int64, minTouchedAt time.Time) ([]string, error) {
+	s.getWarmBucketMemberCalls++
 	return append([]string(nil), s.warmBucketMembers[groupID]...), nil
+}
+func (s *stubOpsRealtimeCache) GetWarmBucketMemberTokensByGroups(ctx context.Context, groupIDs []int64, minTouchedAt time.Time) (map[int64][]string, error) {
+	s.getWarmBucketMemberBatchOps++
+	result := make(map[int64][]string, len(groupIDs))
+	for _, groupID := range groupIDs {
+		result[groupID] = append([]string(nil), s.warmBucketMembers[groupID]...)
+	}
+	return result, nil
 }
 func (s *stubOpsRealtimeCache) IncrementWarmGlobalTake(ctx context.Context, delta int64) error {
 	return nil
@@ -427,6 +438,45 @@ func TestOpsServiceGetOpenAIWarmPoolStats_CachesRealtimeOverviewSnapshotInRedis(
 	require.Empty(t, cache.listAccountCalls, "命中 Redis 预聚合概览快照后不应再重新扫描账号索引")
 }
 
+func TestOpsServiceGetOpenAIWarmPoolStats_OverviewBuildBatchesWarmBucketMemberReads(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	groupA := &Group{ID: 8125, Name: "group-a", Platform: PlatformOpenAI}
+	groupB := &Group{ID: 8126, Name: "group-b", Platform: PlatformOpenAI}
+	cache := &stubOpsRealtimeCache{
+		ready: true,
+		accounts: map[int64]*OpsRealtimeAccountCacheEntry{
+			81251: BuildOpsRealtimeAccountCacheEntry(&Account{ID: 81251, Name: "a-1", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Groups: []*Group{groupA}, GroupIDs: []int64{groupA.ID}}),
+			81261: BuildOpsRealtimeAccountCacheEntry(&Account{ID: 81261, Name: "b-1", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Groups: []*Group{groupB}, GroupIDs: []int64{groupB.ID}}),
+		},
+		warmStates: map[int64]*OpsRealtimeWarmAccountState{
+			81251: {AccountID: 81251, State: "ready", VerifiedAt: cloneTimePtr(&now), ExpiresAt: cloneTimePtr(warmTestTimePtr(now.Add(5 * time.Minute))), UpdatedAt: now},
+			81261: {AccountID: 81261, State: "ready", VerifiedAt: cloneTimePtr(&now), ExpiresAt: cloneTimePtr(warmTestTimePtr(now.Add(5 * time.Minute))), UpdatedAt: now},
+		},
+		warmBucketMetas: map[int64]*OpsRealtimeWarmBucketMeta{
+			groupA.ID: {GroupID: groupA.ID, LastAccessAt: cloneTimePtr(&now), LastRefillAt: cloneTimePtr(&now), TakeCount: 1},
+			groupB.ID: {GroupID: groupB.ID, LastAccessAt: cloneTimePtr(&now), LastRefillAt: cloneTimePtr(&now), TakeCount: 1},
+		},
+		warmBucketMembers: map[int64][]string{
+			groupA.ID: {warmBucketMemberToken("instance-a", 81251)},
+			groupB.ID: {warmBucketMemberToken("instance-b", 81261)},
+		},
+		warmGlobal: &OpsRealtimeWarmGlobalState{TakeCount: 2, LastBucketMaintenanceAt: cloneTimePtr(&now), LastGlobalMaintenanceAt: cloneTimePtr(&now)},
+	}
+	cfg := newOpenAIWarmPoolTestConfig()
+	cfg.Ops.Enabled = true
+	gatewaySvc := &OpenAIGatewayService{cfg: cfg}
+	gatewaySvc.openaiWarmPool = newOpenAIAccountWarmPoolService(gatewaySvc)
+	svc := ProvideOpsService(&opsRepoMock{}, nil, cfg, stubOpenAIAccountRepo{}, nil, nil, nil, gatewaySvc, nil, nil, cache, nil)
+
+	stats, err := svc.GetOpenAIWarmPoolStatsWithOptions(ctx, nil, false, "", false)
+	require.NoError(t, err)
+	require.NotNil(t, stats)
+	require.Len(t, stats.Buckets, 2)
+	require.Equal(t, 1, cache.getWarmBucketMemberBatchOps)
+	require.Zero(t, cache.getWarmBucketMemberCalls)
+}
+
 func TestOpsServiceGetOpenAIWarmPoolStats_GroupOverviewUsesSnapshotWithoutFullScan(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -459,6 +509,8 @@ func TestOpsServiceGetOpenAIWarmPoolStats_GroupOverviewUsesSnapshotWithoutFullSc
 	cfg.Ops.Enabled = true
 	gatewaySvc := &OpenAIGatewayService{cfg: cfg}
 	gatewaySvc.openaiWarmPool = newOpenAIAccountWarmPoolService(gatewaySvc)
+	gatewaySvc.SetOpenAIWarmPoolUsageReader(&openAIWarmPoolUsageReaderStub{})
+	waitForStartupBootstrapToSettle(t, gatewaySvc.getOpenAIWarmPool())
 	svc := ProvideOpsService(&opsRepoMock{}, nil, cfg, stubOpenAIAccountRepo{}, nil, nil, nil, gatewaySvc, nil, nil, cache, nil)
 
 	stats, err := svc.GetOpenAIWarmPoolStatsWithOptions(ctx, &groupA.ID, false, "", false)
@@ -505,6 +557,8 @@ func TestOpsServiceGetOpenAIWarmPoolStats_GroupAccountsUseGroupScopedRealtimeSca
 	cfg.Ops.Enabled = true
 	gatewaySvc := &OpenAIGatewayService{cfg: cfg}
 	gatewaySvc.openaiWarmPool = newOpenAIAccountWarmPoolService(gatewaySvc)
+	gatewaySvc.SetOpenAIWarmPoolUsageReader(&openAIWarmPoolUsageReaderStub{})
+	waitForStartupBootstrapToSettle(t, gatewaySvc.getOpenAIWarmPool())
 	svc := ProvideOpsService(&opsRepoMock{}, nil, cfg, stubOpenAIAccountRepo{}, nil, nil, nil, gatewaySvc, nil, nil, cache, nil)
 
 	stats, err := svc.GetOpenAIWarmPoolStatsWithOptions(ctx, &groupA.ID, true, "ready", false)

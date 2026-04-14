@@ -150,11 +150,15 @@ func (r stubOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Co
 
 type stubConcurrencyCache struct {
 	ConcurrencyCache
-	loadBatchErr    error
-	loadMap         map[int64]*AccountLoadInfo
-	acquireResults  map[int64]bool
-	waitCounts      map[int64]int
-	skipDefaultLoad bool
+	loadBatchErr         error
+	loadMap              map[int64]*AccountLoadInfo
+	usersLoadErr         error                   //nolint:unused // 预留给后续用户侧负载断言
+	usersLoadBatch       map[int64]*UserLoadInfo //nolint:unused // 预留给后续用户侧负载断言
+	acquireResults       map[int64]bool
+	waitCounts           map[int64]int
+	skipDefaultLoad      bool
+	acquireAccountSlotFn func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error)
+	releaseAccountSlotFn func(ctx context.Context, accountID int64, requestID string) error
 }
 
 type cancelReadCloser struct{}
@@ -177,6 +181,9 @@ func (w *failingGinWriter) Write(p []byte) (int, error) {
 }
 
 func (c stubConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+	if c.acquireAccountSlotFn != nil {
+		return c.acquireAccountSlotFn(ctx, accountID, maxConcurrency, requestID)
+	}
 	if c.acquireResults != nil {
 		if result, ok := c.acquireResults[accountID]; ok {
 			return result, nil
@@ -186,6 +193,9 @@ func (c stubConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID 
 }
 
 func (c stubConcurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int64, requestID string) error {
+	if c.releaseAccountSlotFn != nil {
+		return c.releaseAccountSlotFn(ctx, accountID, requestID)
+	}
 	return nil
 }
 
@@ -210,6 +220,31 @@ func (c stubConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts
 			}
 		}
 		out[acc.ID] = &AccountLoadInfo{AccountID: acc.ID, LoadRate: 0}
+	}
+	return out, nil
+}
+
+func (c stubConcurrencyCache) GetUsersLoadBatch(ctx context.Context, users []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	if c.usersLoadErr != nil {
+		return nil, c.usersLoadErr
+	}
+	out := make(map[int64]*UserLoadInfo, len(users))
+	if c.skipDefaultLoad && c.usersLoadBatch != nil {
+		for _, u := range users {
+			if load, ok := c.usersLoadBatch[u.ID]; ok {
+				out[u.ID] = load
+			}
+		}
+		return out, nil
+	}
+	for _, u := range users {
+		if c.usersLoadBatch != nil {
+			if load, ok := c.usersLoadBatch[u.ID]; ok {
+				out[u.ID] = load
+				continue
+			}
+		}
+		out[u.ID] = &UserLoadInfo{UserID: u.ID, LoadRate: 0}
 	}
 	return out, nil
 }
@@ -404,6 +439,70 @@ func (c *stubGatewayCache) DeleteSessionAccountID(ctx context.Context, groupID i
 	c.deletedSessions[sessionHash]++
 	delete(c.sessionBindings, sessionHash)
 	return nil
+}
+
+type sequentialOpenAISchedulerCache struct {
+	SchedulerCache
+	snapshotAccounts  []*Account
+	getAccountResults []sequentialOpenAISchedulerGetAccountResult
+	getAccountCalls   int
+}
+
+type sequentialOpenAISchedulerGetAccountResult struct {
+	account *Account
+	err     error
+}
+
+func (s *sequentialOpenAISchedulerCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
+	if len(s.snapshotAccounts) == 0 {
+		return nil, false, nil
+	}
+	result := make([]*Account, 0, len(s.snapshotAccounts))
+	for _, account := range s.snapshotAccounts {
+		if account == nil {
+			continue
+		}
+		cloned := *account
+		result = append(result, &cloned)
+	}
+	return result, true, nil
+}
+
+func (s *sequentialOpenAISchedulerCache) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
+	if s.getAccountCalls >= len(s.getAccountResults) {
+		return nil, nil
+	}
+	result := s.getAccountResults[s.getAccountCalls]
+	s.getAccountCalls++
+	if result.account == nil {
+		return nil, result.err
+	}
+	cloned := *result.account
+	return &cloned, result.err
+}
+
+type sequentialOpenAIAccountRepo struct {
+	stubOpenAIAccountRepo
+	getByIDResults []sequentialOpenAIAccountRepoGetByIDResult
+	getByIDCalls   int
+}
+
+type sequentialOpenAIAccountRepoGetByIDResult struct {
+	account *Account
+	err     error
+}
+
+func (r *sequentialOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	if r.getByIDCalls < len(r.getByIDResults) {
+		result := r.getByIDResults[r.getByIDCalls]
+		r.getByIDCalls++
+		if result.account == nil {
+			return nil, result.err
+		}
+		cloned := *result.account
+		return &cloned, result.err
+	}
+	return r.stubOpenAIAccountRepo.GetByID(ctx, id)
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulable(t *testing.T) {
@@ -1003,6 +1102,221 @@ func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
 	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
 		t.Fatalf("expected account 2")
 	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_ReleasesSlotWhenPostAcquireHydrationFails(t *testing.T) {
+	groupID := int64(1)
+	selected := &Account{
+		ID:          41001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4": "gpt-4"}},
+	}
+	snapshotCache := &sequentialOpenAISchedulerCache{
+		snapshotAccounts: []*Account{selected},
+		getAccountResults: []sequentialOpenAISchedulerGetAccountResult{
+			{account: selected},
+			{account: selected},
+			{err: errors.New("hydrate failed after acquire")},
+		},
+	}
+	var releaseCalls int
+	concurrencyCache := stubConcurrencyCache{
+		releaseAccountSlotFn: func(ctx context.Context, accountID int64, requestID string) error {
+			releaseCalls++
+			return nil
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{*selected}},
+		cache:       &stubGatewayCache{},
+		cfg:         &config.Config{},
+		schedulerSnapshot: &SchedulerSnapshotService{
+			cache: snapshotCache,
+			accountRepo: &sequentialOpenAIAccountRepo{getByIDResults: []sequentialOpenAIAccountRepoGetByIDResult{
+				{err: errors.New("hydrate failed after acquire")},
+			}},
+		},
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
+	require.Nil(t, selection)
+	require.ErrorContains(t, err, "hydrate failed after acquire")
+	require.Equal(t, 1, releaseCalls)
+}
+
+func TestOpenAISelectAccountForModelWithExclusions_RechecksHydratedAccountBeforeReturn(t *testing.T) {
+	groupID := int64(1)
+	selected := &Account{
+		ID:          42001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4": "gpt-4"}, "api_key": "db-valid"},
+	}
+	invalidAfterHydration := &Account{
+		ID:          42001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-3.5": "gpt-3.5"}, "api_key": "snapshot-invalid"},
+	}
+	snapshotCache := &sequentialOpenAISchedulerCache{
+		snapshotAccounts: []*Account{selected},
+		getAccountResults: []sequentialOpenAISchedulerGetAccountResult{
+			{account: selected},
+			{account: invalidAfterHydration},
+		},
+	}
+	repo := &sequentialOpenAIAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{*selected}},
+		getByIDResults: []sequentialOpenAIAccountRepoGetByIDResult{
+			{account: selected},
+			{account: invalidAfterHydration},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:       repo,
+		cache:             &stubGatewayCache{},
+		cfg:               &config.Config{},
+		schedulerSnapshot: &SchedulerSnapshotService{cache: snapshotCache},
+	}
+
+	account, err := svc.SelectAccountForModelWithExclusions(context.Background(), &groupID, "", "gpt-4", nil)
+	require.Nil(t, account)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Equal(t, 2, repo.getByIDCalls)
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_WaitPlanUsesHydratedConcurrency(t *testing.T) {
+	groupID := int64(1)
+	sessionHash := "waitplan-hydrated"
+	stale := &Account{
+		ID:          43001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4": "gpt-4"}},
+	}
+	fresh := &Account{
+		ID:          43001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 7,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4": "gpt-4"}},
+	}
+	snapshotCache := &sequentialOpenAISchedulerCache{
+		snapshotAccounts: []*Account{stale},
+		getAccountResults: []sequentialOpenAISchedulerGetAccountResult{
+			{account: stale},
+			{account: fresh},
+		},
+	}
+	cache := &stubGatewayCache{sessionBindings: map[string]int64{"openai:" + sessionHash: stale.ID}}
+	concurrencyCache := stubConcurrencyCache{
+		acquireResults: map[int64]bool{stale.ID: false},
+		waitCounts:     map[int64]int{stale.ID: 0},
+	}
+	svc := &OpenAIGatewayService{
+		cache:              cache,
+		schedulerSnapshot:  &SchedulerSnapshotService{cache: snapshotCache},
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.NotNil(t, selection.WaitPlan)
+	require.Equal(t, 7, selection.Account.Concurrency)
+	require.Equal(t, 7, selection.WaitPlan.MaxConcurrency)
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_ContinuesAfterPostHydrationInvalidation(t *testing.T) {
+	groupID := int64(1)
+	primary := &Account{
+		ID:          44001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4": "gpt-4"}},
+	}
+	primaryInvalidAfterHydration := &Account{
+		ID:          44001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-3.5": "gpt-3.5"}},
+	}
+	backup := &Account{
+		ID:          44002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 2,
+		Priority:    1,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4": "gpt-4"}, "api_key": "backup-key"},
+	}
+	snapshotCache := &sequentialOpenAISchedulerCache{
+		snapshotAccounts: []*Account{primary, backup},
+		getAccountResults: []sequentialOpenAISchedulerGetAccountResult{
+			{account: primary},
+			{account: primaryInvalidAfterHydration},
+			{account: backup},
+			{account: backup},
+		},
+	}
+	var releaseCalls int
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			primary.ID: {AccountID: primary.ID, LoadRate: 10},
+			backup.ID:  {AccountID: backup.ID, LoadRate: 20},
+		},
+		releaseAccountSlotFn: func(ctx context.Context, accountID int64, requestID string) error {
+			releaseCalls++
+			return nil
+		},
+	}
+	svc := &OpenAIGatewayService{
+		cache:              &stubGatewayCache{},
+		schedulerSnapshot:  &SchedulerSnapshotService{cache: snapshotCache},
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, backup.ID, selection.Account.ID)
+	require.Equal(t, 1, releaseCalls)
+	require.NotNil(t, selection.ReleaseFunc)
+	selection.ReleaseFunc()
+	require.Equal(t, 2, releaseCalls)
 }
 
 func TestOpenAIStreamingTimeout(t *testing.T) {

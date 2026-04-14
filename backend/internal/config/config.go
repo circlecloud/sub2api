@@ -357,12 +357,15 @@ type GatewayConfig struct {
 	// OpenAIPassthroughAllowTimeoutHeaders: OpenAI 透传模式是否放行客户端超时头
 	// 关闭（默认）可避免 x-stainless-timeout 等头导致上游提前断流。
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
+	// OpenAIStreamRectifierEnabled: 是否启用 OpenAI 流式整流器。
+	// 启用后对流式请求生效，分别控制响应头阶段与首 Token 阶段的独立超时策略。
+	OpenAIStreamRectifierEnabled bool `mapstructure:"openai_stream_rectifier_enabled"`
+	// OpenAIStreamResponseHeaderRectifierTimeouts: OpenAI 流式响应头整流超时数组（秒）。
+	OpenAIStreamResponseHeaderRectifierTimeouts []int `mapstructure:"openai_stream_response_header_rectifier_timeouts"`
+	// OpenAIStreamFirstTokenRectifierTimeouts: OpenAI 流式首 Token 整流超时数组（秒）。
+	OpenAIStreamFirstTokenRectifierTimeouts []int `mapstructure:"openai_stream_first_token_rectifier_timeouts"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
-	// OpenAI stream rectifier 配置字段，当前提交只保留结构兼容，运行时默认值由 SettingService 兜底。
-	OpenAIStreamRectifierEnabled                bool  `mapstructure:"openai_stream_rectifier_enabled"`
-	OpenAIStreamResponseHeaderRectifierTimeouts []int `mapstructure:"openai_stream_response_header_rectifier_timeouts"`
-	OpenAIStreamFirstTokenRectifierTimeouts     []int `mapstructure:"openai_stream_first_token_rectifier_timeouts"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -1494,6 +1497,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
+	viper.SetDefault("gateway.openai_stream_rectifier_enabled", true)
+	viper.SetDefault("gateway.openai_stream_response_header_rectifier_timeouts", []int{8, 10, 12})
+	viper.SetDefault("gateway.openai_stream_first_token_rectifier_timeouts", []int{5, 8, 10})
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2082,6 +2088,22 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("gateway.connection_pool_isolation must be one of: %s/%s/%s",
 				ConnectionPoolIsolationProxy, ConnectionPoolIsolationAccount, ConnectionPoolIsolationAccountProxy)
+		}
+	}
+	if len(c.Gateway.OpenAIStreamResponseHeaderRectifierTimeouts) == 0 {
+		return fmt.Errorf("gateway.openai_stream_response_header_rectifier_timeouts must not be empty")
+	}
+	for idx, timeout := range c.Gateway.OpenAIStreamResponseHeaderRectifierTimeouts {
+		if timeout <= 0 {
+			return fmt.Errorf("gateway.openai_stream_response_header_rectifier_timeouts[%d] must be positive", idx)
+		}
+	}
+	if len(c.Gateway.OpenAIStreamFirstTokenRectifierTimeouts) == 0 {
+		return fmt.Errorf("gateway.openai_stream_first_token_rectifier_timeouts must not be empty")
+	}
+	for idx, timeout := range c.Gateway.OpenAIStreamFirstTokenRectifierTimeouts {
+		if timeout <= 0 {
+			return fmt.Errorf("gateway.openai_stream_first_token_rectifier_timeouts[%d] must be positive", idx)
 		}
 	}
 	if c.Gateway.MaxIdleConns <= 0 {

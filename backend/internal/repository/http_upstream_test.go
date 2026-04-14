@@ -1,13 +1,18 @@
 package repository
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -59,6 +64,124 @@ func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
 	require.Equal(s.T(), 7*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
+}
+
+func (s *HTTPUpstreamSuite) TestRequestScopedResponseHeaderTimeoutOverride() {
+	svc := s.newService()
+	defaultEntry := mustGetOrCreateClient(s.T(), svc, "", 7, 3)
+	defaultTransport, ok := defaultEntry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 300*time.Second, defaultTransport.ResponseHeaderTimeout)
+
+	overrideEntry, err := svc.getClientEntryWithResponseHeaderTimeout("", 7, 0, 3, 3*time.Second, false, false)
+	require.NoError(s.T(), err)
+	require.NotSame(s.T(), defaultEntry, overrideEntry, "override timeout should use a separate client cache bucket")
+	overrideTransport, ok := overrideEntry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 3*time.Second, overrideTransport.ResponseHeaderTimeout)
+}
+
+func (s *HTTPUpstreamSuite) TestDo_WrapsResponseHeaderTimeoutError() {
+	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "late")
+	}))
+	s.T().Cleanup(upstream.Close)
+
+	svc := s.newService()
+	req, err := http.NewRequestWithContext(
+		service.WithHTTPUpstreamResponseHeaderTimeout(context.Background(), 10*time.Millisecond),
+		http.MethodGet,
+		upstream.URL+"/timeout",
+		nil,
+	)
+	require.NoError(s.T(), err)
+
+	start := time.Now()
+	_, err = svc.Do(req, "", 7, 1)
+	elapsed := time.Since(start)
+	require.Error(s.T(), err)
+	timeoutErr, ok := service.AsUpstreamResponseHeaderTimeoutError(err)
+	require.True(s.T(), ok, "expected wrapped response header timeout error")
+	require.Equal(s.T(), 10*time.Millisecond, timeoutErr.Timeout)
+	require.Less(s.T(), elapsed, 45*time.Millisecond, "response header hard timeout should cut off request promptly")
+}
+
+func (s *HTTPUpstreamSuite) TestDo_HardResponseHeaderTimeoutCoversDialWait() {
+	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	s.T().Cleanup(upstream.Close)
+
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccount}
+	svc := s.newService()
+	overrideEntry, err := svc.getClientEntryWithResponseHeaderTimeout("", 7, 0, 1, 10*time.Millisecond, false, false)
+	require.NoError(s.T(), err)
+	transport, ok := overrideEntry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(80 * time.Millisecond):
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(
+		service.WithHTTPUpstreamResponseHeaderTimeout(context.Background(), 10*time.Millisecond),
+		http.MethodGet,
+		upstream.URL+"/dial-wait-timeout",
+		nil,
+	)
+	require.NoError(s.T(), err)
+
+	start := time.Now()
+	_, err = svc.Do(req, "", 7, 1)
+	elapsed := time.Since(start)
+	require.Error(s.T(), err)
+	timeoutErr, ok := service.AsUpstreamResponseHeaderTimeoutError(err)
+	require.True(s.T(), ok, "expected hard timeout to cover dial wait")
+	require.Equal(s.T(), 10*time.Millisecond, timeoutErr.Timeout)
+	require.Less(s.T(), elapsed, 45*time.Millisecond, "dial wait should be cut off by hard timeout instead of waiting full dial latency")
+}
+
+func (s *HTTPUpstreamSuite) TestDoWithTLS_HardResponseHeaderTimeoutRemainsRequestScoped() {
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy}
+	svc := s.newService()
+	profile := &tlsfingerprint.Profile{Name: "test-profile"}
+
+	overrideEntry, err := svc.getClientEntryWithTLS("", 7, 8, 1, profile, 10*time.Millisecond, false, false)
+	require.NoError(s.T(), err)
+	overrideEntry.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		select {
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		case <-time.After(80 * time.Millisecond):
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("late")),
+				Request:    r,
+			}, nil
+		}
+	})
+
+	ctx := service.WithHTTPUpstreamPoolGroupID(context.Background(), 8)
+	ctx = service.WithHTTPUpstreamResponseHeaderTimeout(ctx, 10*time.Millisecond)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com/tls-timeout", nil)
+	require.NoError(s.T(), err)
+
+	start := time.Now()
+	_, err = svc.DoWithTLS(req, "", 7, 1, profile)
+	elapsed := time.Since(start)
+	require.Error(s.T(), err)
+	timeoutErr, ok := service.AsUpstreamResponseHeaderTimeoutError(err)
+	require.True(s.T(), ok, "expected DoWithTLS to enforce request-scoped hard timeout")
+	require.Equal(s.T(), 10*time.Millisecond, timeoutErr.Timeout)
+	require.Less(s.T(), elapsed, 45*time.Millisecond, "DoWithTLS hard timeout should preempt slow TLS request work")
 }
 
 // TestGetOrCreateClient_InvalidURLReturnsError 测试无效代理 URL 返回错误
@@ -189,6 +312,68 @@ func (s *HTTPUpstreamSuite) TestAccountProxyIsolation_DifferentProxy() {
 	entry2 := mustGetOrCreateClient(s.T(), svc, "http://proxy-b:8080", 1, 3)
 	require.NotSame(s.T(), entry1, entry2, "账号+代理隔离应区分不同代理")
 	require.Equal(s.T(), 2, len(svc.clients), "账号+代理隔离应缓存两个客户端")
+}
+
+func (s *HTTPUpstreamSuite) TestAccountProxyIsolation_SameGroupSharesClient() {
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy}
+	svc := s.newService()
+
+	entry1, err := svc.getClientEntryWithResponseHeaderTimeout("http://proxy-a:8080", 101, 8, 3, 0, false, false)
+	require.NoError(s.T(), err)
+	entry2, err := svc.getClientEntryWithResponseHeaderTimeout("http://proxy-a:8080", 202, 8, 5, 0, false, false)
+	require.NoError(s.T(), err)
+	entry3, err := svc.getClientEntryWithResponseHeaderTimeout("http://proxy-a:8080", 303, 9, 5, 0, false, false)
+	require.NoError(s.T(), err)
+
+	require.Same(s.T(), entry1, entry2, "同分组且同代理的账号应共享连接池")
+	require.NotSame(s.T(), entry1, entry3, "不同分组不应共享连接池")
+	require.Equal(s.T(), 2, len(svc.clients), "分组共享后应只缓存两个客户端")
+
+	transport, ok := entry1.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.NotEqual(s.T(), 3, transport.MaxIdleConns, "分组共享连接池不应被首个账号并发数钉死")
+	require.NotEqual(s.T(), 3, transport.MaxIdleConnsPerHost, "分组共享连接池不应被首个账号并发数钉死")
+}
+
+func (s *HTTPUpstreamSuite) TestAccountProxyIsolation_SameGroupDoesNotSplitBucketByResponseHeaderTimeout() {
+	s.cfg.Gateway = config.GatewayConfig{
+		ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy,
+		ResponseHeaderTimeout:   17,
+	}
+	svc := s.newService()
+
+	entry1, err := svc.getClientEntryWithResponseHeaderTimeout("http://proxy-a:8080", 101, 8, 3, 3*time.Second, false, false)
+	require.NoError(s.T(), err)
+	entry2, err := svc.getClientEntryWithResponseHeaderTimeout("http://proxy-a:8080", 202, 8, 5, 9*time.Second, false, false)
+	require.NoError(s.T(), err)
+
+	require.Same(s.T(), entry1, entry2, "同分组下不同 response header timeout override 不应拆分连接池")
+	require.Equal(s.T(), 1, len(svc.clients), "同分组下不同 response header timeout override 不应创建多个 bucket")
+
+	transport, ok := entry1.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 17*time.Second, transport.ResponseHeaderTimeout, "共享连接池应保留全局 ResponseHeaderTimeout 默认值")
+}
+
+func (s *HTTPUpstreamSuite) TestAccountProxyIsolation_SameGroupDoesNotSplitBucketByResponseHeaderTimeout_TLS() {
+	s.cfg.Gateway = config.GatewayConfig{
+		ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy,
+		ResponseHeaderTimeout:   23,
+	}
+	svc := s.newService()
+	profile := &tlsfingerprint.Profile{Name: "test-profile"}
+
+	entry1, err := svc.getClientEntryWithTLS("", 101, 8, 3, profile, 3*time.Second, false, false)
+	require.NoError(s.T(), err)
+	entry2, err := svc.getClientEntryWithTLS("", 202, 8, 5, profile, 9*time.Second, false, false)
+	require.NoError(s.T(), err)
+
+	require.Same(s.T(), entry1, entry2, "TLS 同分组下不同 response header timeout override 不应拆分连接池")
+	require.Equal(s.T(), 1, len(svc.clients), "TLS 同分组下不同 response header timeout override 不应创建多个 bucket")
+
+	transport, ok := entry1.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 23*time.Second, transport.ResponseHeaderTimeout, "TLS 共享连接池应保留全局 ResponseHeaderTimeout 默认值")
 }
 
 // TestAccountModeProxyChangeClearsPool 测试账户模式下代理变更

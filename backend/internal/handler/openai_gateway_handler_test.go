@@ -19,6 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
@@ -110,6 +112,127 @@ func TestOpenAIHandleStreamingAwareError_NonStreaming(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "upstream_error", errorObj["type"])
 	assert.Equal(t, "test error", errorObj["message"])
+}
+
+func TestHandleRectifierTimeoutExhausted_WritesOpenAIErrorAndMarksOps(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h := &OpenAIGatewayHandler{}
+	timeoutErr := &service.OpenAIRectifierTimeoutError{
+		StatusCode:        http.StatusGatewayTimeout,
+		Phase:             "first_token",
+		Attempt:           3,
+		HeaderAttempt:     1,
+		FirstTokenAttempt: 3,
+	}
+	h.handleRectifierTimeoutExhausted(c, timeoutErr, false)
+
+	require.True(t, service.IsOpsRectifierTimeoutExhausted(c))
+	require.Equal(t, http.StatusGatewayTimeout, w.Code)
+
+	var parsed map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &parsed)
+	require.NoError(t, err)
+	errorObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "upstream_error", errorObj["type"])
+	assert.Equal(t, "Gateway timeout while waiting for upstream first token", errorObj["message"])
+}
+
+func TestHandleAnthropicRectifierTimeoutExhausted_WritesAnthropicErrorAndMarksOps(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h := &OpenAIGatewayHandler{}
+	timeoutErr := &service.OpenAIRectifierTimeoutError{
+		StatusCode:        http.StatusGatewayTimeout,
+		Phase:             "response_header",
+		Attempt:           2,
+		HeaderAttempt:     2,
+		FirstTokenAttempt: 1,
+	}
+	h.handleAnthropicRectifierTimeoutExhausted(c, timeoutErr, false)
+
+	require.True(t, service.IsOpsRectifierTimeoutExhausted(c))
+	require.Equal(t, http.StatusGatewayTimeout, w.Code)
+
+	var parsed map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "error", parsed["type"])
+	errorObj, ok := parsed["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "upstream_error", errorObj["type"])
+	assert.Equal(t, "Gateway timeout while waiting for upstream response headers", errorObj["message"])
+}
+
+func TestLogOpenAIRectifierTimeoutRetry_EmitsMergedLogWithTimeoutAndRetryAttempt(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	reqLog := zap.New(core)
+	timeoutErr := &service.OpenAIRectifierTimeoutError{
+		Phase:             "response_header",
+		Attempt:           1,
+		HeaderAttempt:     1,
+		FirstTokenAttempt: 1,
+		Timeout:           8 * time.Second,
+	}
+	retryState := newOpenAIRectifierAttemptState()
+	retryState.advance(timeoutErr.Phase)
+
+	logOpenAIRectifierTimeoutRetry(reqLog, "openai.rectifier_timeout_retry", 42, "7:openai:single", timeoutErr, retryState, 1, 2)
+
+	entries := logs.All()
+	require.Len(t, entries, 1)
+	require.Equal(t, "openai.rectifier_timeout_retry", entries[0].Message)
+	fields := entries[0].ContextMap()
+	require.EqualValues(t, 42, fields["account_id"])
+	require.Equal(t, "7:openai:single", fields["scheduler_bucket"])
+	require.Equal(t, "response_header", fields["phase"])
+	require.EqualValues(t, 2, fields["attempt"])
+	require.EqualValues(t, 2, fields["retry_attempt"])
+	require.EqualValues(t, 1, fields["timed_out_attempt"])
+	require.EqualValues(t, 3, fields["max_attempts"])
+	require.EqualValues(t, 1, fields["retry_count"])
+	require.EqualValues(t, 2, fields["retry_limit"])
+	require.EqualValues(t, 2, fields["header_attempt"])
+	require.EqualValues(t, 1, fields["first_token_attempt"])
+	require.EqualValues(t, 8000, fields["timeout_ms"])
+	require.EqualValues(t, 8, fields["timeout_seconds"])
+}
+
+func TestLogOpenAIRectifierTimeoutExhausted_EmitsSchedulerBucketAndRetryFields(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	reqLog := zap.New(core)
+	timeoutErr := &service.OpenAIRectifierTimeoutError{
+		Phase:             "first_token",
+		Attempt:           3,
+		HeaderAttempt:     2,
+		FirstTokenAttempt: 3,
+		Timeout:           10 * time.Second,
+	}
+
+	logOpenAIRectifierTimeoutExhausted(reqLog, "openai.rectifier_timeout_exhausted", 42, "0:openai:single", timeoutErr, 2, 2)
+
+	entries := logs.All()
+	require.Len(t, entries, 1)
+	require.Equal(t, "openai.rectifier_timeout_exhausted", entries[0].Message)
+	fields := entries[0].ContextMap()
+	require.EqualValues(t, 42, fields["account_id"])
+	require.Equal(t, "0:openai:single", fields["scheduler_bucket"])
+	require.Equal(t, "first_token", fields["phase"])
+	require.EqualValues(t, 3, fields["attempt"])
+	require.EqualValues(t, 2, fields["retry_count"])
+	require.EqualValues(t, 2, fields["retry_limit"])
+	require.EqualValues(t, 3, fields["max_attempts"])
+	require.EqualValues(t, 2, fields["header_attempt"])
+	require.EqualValues(t, 3, fields["first_token_attempt"])
+	require.EqualValues(t, 10000, fields["timeout_ms"])
+	require.EqualValues(t, 10, fields["timeout_seconds"])
 }
 
 func TestReadRequestBodyWithPrealloc(t *testing.T) {
@@ -415,7 +538,42 @@ func TestResolveOpenAIMessagesDispatchMappedModel(t *testing.T) {
 	})
 }
 
+func TestOpenAIAcquireResponsesAccountSlot_RectifierRetryDetachesCanceledRequestContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	baseCtx, cancel := context.WithCancel(context.Background())
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil).WithContext(baseCtx)
+	cancel()
+
+	cache := &concurrencyCacheMock{
+		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+	}
+	h := &OpenAIGatewayHandler{
+		gatewayService:    &service.OpenAIGatewayService{},
+		concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+	}
+
+	selection := h.newRectifierRetrySelection(&service.Account{ID: 911, Concurrency: 10})
+	streamStarted := false
+
+	release, acquired := h.acquireResponsesAccountSlot(c, nil, "", selection, true, &streamStarted, zap.NewNop())
+	require.True(t, acquired, "rectifier internal retry should not fail just because the original request context was canceled")
+	require.NotNil(t, release)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Empty(t, rec.Body.String())
+
+	release()
+}
+
 func TestOpenAIResponses_MissingDependencies_ReturnsServiceUnavailable(t *testing.T) {
+
 	gin.SetMode(gin.TestMode)
 
 	w := httptest.NewRecorder()
@@ -699,6 +857,45 @@ func TestOpenAIHandler_InstructionsInjection(t *testing.T) {
 	result, setErr := sjson.SetBytes(validBody, "instructions", "hello")
 	require.NoError(t, setErr)
 	require.True(t, gjson.ValidBytes(result))
+}
+
+func TestSetContextLatencyMsIfAbsent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	setContextLatencyMsIfAbsent(c, service.OpsRoutingLatencyMsKey, 12)
+	setContextLatencyMsIfAbsent(c, service.OpsRoutingLatencyMsKey, 99)
+
+	ms, ok := getContextInt64(c, service.OpsRoutingLatencyMsKey)
+	require.True(t, ok)
+	require.EqualValues(t, 12, ms)
+}
+
+func TestAttachOpenAITimingBreakdownFromContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, 11)
+	service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, 22)
+	service.SetOpsLatencyMs(c, service.OpsGatewayPrepareLatencyMsKey, 33)
+	service.SetOpsLatencyMs(c, service.OpsUpstreamLatencyMsKey, 44)
+	service.SetOpsLatencyMs(c, service.OpsStreamFirstEventLatencyMsKey, 55)
+
+	result := &service.OpenAIForwardResult{}
+	attachOpenAITimingBreakdownFromContext(c, result)
+
+	require.NotNil(t, result.AuthLatencyMs)
+	require.NotNil(t, result.RoutingLatencyMs)
+	require.NotNil(t, result.GatewayPrepareMs)
+	require.NotNil(t, result.UpstreamLatencyMs)
+	require.NotNil(t, result.StreamFirstEventMs)
+	assert.Equal(t, 11, *result.AuthLatencyMs)
+	assert.Equal(t, 22, *result.RoutingLatencyMs)
+	assert.Equal(t, 33, *result.GatewayPrepareMs)
+	assert.Equal(t, 44, *result.UpstreamLatencyMs)
+	assert.Equal(t, 55, *result.StreamFirstEventMs)
 }
 
 func newOpenAIHandlerForPreviousResponseIDValidation(t *testing.T, cache *concurrencyCacheMock) *OpenAIGatewayHandler {

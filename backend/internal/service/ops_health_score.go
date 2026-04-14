@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+const (
+	opsHealthErrorHealthyRatio = 0.2
+	opsHealthErrorZeroRatio    = 2.0
+	opsHealthTTFTHealthyRatio  = 2.0
+	opsHealthTTFTZeroRatio     = 6.0
+	opsHealthSLAHealthyBudget  = 10.0
+	opsHealthSLAZeroBudget     = 20.0
+)
+
 // computeDashboardHealthScore computes a 0-100 health score from the metrics returned by the dashboard overview.
 //
 // Design goals:
@@ -12,7 +21,13 @@ import (
 // - Layered scoring: Business Health (70%) + Infrastructure Health (30%)
 // - Avoids double-counting (e.g., DB failure affects both infra and business metrics)
 // - Conservative + stable: penalize clear degradations; avoid overreacting to missing/idle data.
+//
+//nolint:unused // 预留给后续 dashboard 统一健康分入口
 func computeDashboardHealthScore(now time.Time, overview *OpsDashboardOverview) int {
+	return computeDashboardHealthScoreWithThresholds(now, overview, defaultOpsMetricThresholds())
+}
+
+func computeDashboardHealthScoreWithThresholds(now time.Time, overview *OpsDashboardOverview, thresholds *OpsMetricThresholds) int {
 	if overview == nil {
 		return 0
 	}
@@ -23,7 +38,7 @@ func computeDashboardHealthScore(now time.Time, overview *OpsDashboardOverview) 
 		return 100
 	}
 
-	businessHealth := computeBusinessHealth(overview)
+	businessHealth := computeBusinessHealthWithThresholds(overview, thresholds)
 	infraHealth := computeInfraHealth(now, overview)
 
 	// Weighted combination: 70% business + 30% infrastructure
@@ -32,38 +47,52 @@ func computeDashboardHealthScore(now time.Time, overview *OpsDashboardOverview) 
 }
 
 // computeBusinessHealth calculates business health score (0-100)
-// Components: Error Rate (50%) + TTFT (50%)
+// Components: Availability/Error (50%) + TTFT (50%)
+//
+//nolint:unused // 预留给后续 dashboard 业务健康分入口
 func computeBusinessHealth(overview *OpsDashboardOverview) float64 {
-	// Error rate score: 1% → 100, 10% → 0 (linear)
-	// Combines request errors and upstream errors
-	errorScore := 100.0
-	errorPct := clampFloat64(overview.ErrorRate*100, 0, 100)
-	upstreamPct := clampFloat64(overview.UpstreamErrorRate*100, 0, 100)
-	combinedErrorPct := math.Max(errorPct, upstreamPct) // Use worst case
-	if combinedErrorPct > 1.0 {
-		if combinedErrorPct <= 10.0 {
-			errorScore = (10.0 - combinedErrorPct) / 9.0 * 100
-		} else {
-			errorScore = 0
-		}
+	return computeBusinessHealthWithThresholds(overview, defaultOpsMetricThresholds())
+}
+
+func computeBusinessHealthWithThresholds(overview *OpsDashboardOverview, thresholds *OpsMetricThresholds) float64 {
+	if overview == nil {
+		return 0
+	}
+	cfg := resolveOpsMetricThresholds(thresholds)
+
+	availabilityScore := 100.0
+	if overview.RequestCountSLA > 0 {
+		slaPercent := clampFloat64(overview.SLA*100, 0, 100)
+		availabilityScore = scoreLowerIsWorseByThreshold(slaPercent, cfg.slaPercentMin, opsHealthSLAHealthyBudget, opsHealthSLAZeroBudget)
 	}
 
-	// TTFT score: 1s → 100, 3s → 0 (linear)
-	// Time to first token is critical for user experience
+	requestErrorScore := scoreHigherIsWorseByThreshold(
+		clampFloat64(overview.ErrorRate*100, 0, 100),
+		cfg.requestErrorRatePercentMax,
+		opsHealthErrorHealthyRatio,
+		opsHealthErrorZeroRatio,
+	)
+	upstreamErrorScore := scoreHigherIsWorseByThreshold(
+		clampFloat64(overview.UpstreamErrorRate*100, 0, 100),
+		cfg.upstreamErrorRatePercentMax,
+		opsHealthErrorHealthyRatio,
+		opsHealthErrorZeroRatio,
+	)
+	availabilityScore = math.Min(availabilityScore, math.Min(requestErrorScore, upstreamErrorScore))
+
+	// TTFT score: scale against configured threshold so the dashboard tracks the same runtime settings as diagnostics/alerts.
 	ttftScore := 100.0
 	if overview.TTFT.P99 != nil {
-		p99 := float64(*overview.TTFT.P99)
-		if p99 > 1000 {
-			if p99 <= 3000 {
-				ttftScore = (3000 - p99) / 2000 * 100
-			} else {
-				ttftScore = 0
-			}
-		}
+		ttftScore = scoreHigherIsWorseByThreshold(
+			float64(*overview.TTFT.P99),
+			cfg.ttftp99MsMax,
+			opsHealthTTFTHealthyRatio,
+			opsHealthTTFTZeroRatio,
+		)
 	}
 
-	// Weighted combination: 50% error rate + 50% TTFT
-	return errorScore*0.5 + ttftScore*0.5
+	// Weighted combination: 50% availability/error + 50% TTFT
+	return availabilityScore*0.5 + ttftScore*0.5
 }
 
 // computeInfraHealth calculates infrastructure health score (0-100)
@@ -118,9 +147,7 @@ func computeInfraHealth(now time.Time, overview *OpsDashboardOverview) float64 {
 			continue
 		}
 		totalJobs++
-		if hb.LastErrorAt != nil && (hb.LastSuccessAt == nil || hb.LastErrorAt.After(*hb.LastSuccessAt)) {
-			failedJobs++
-		} else if hb.LastSuccessAt != nil && now.Sub(*hb.LastSuccessAt) > 15*time.Minute {
+		if isOpsJobHeartbeatFailed(now, hb) {
 			failedJobs++
 		}
 	}
@@ -130,6 +157,115 @@ func computeInfraHealth(now time.Time, overview *OpsDashboardOverview) float64 {
 
 	// Weighted combination
 	return storageScore*0.4 + computeScore*0.3 + jobScore*0.3
+}
+
+type resolvedOpsMetricThresholds struct {
+	slaPercentMin               float64
+	ttftp99MsMax                float64
+	requestErrorRatePercentMax  float64
+	upstreamErrorRatePercentMax float64
+}
+
+func resolveOpsMetricThresholds(thresholds *OpsMetricThresholds) resolvedOpsMetricThresholds {
+	cfg := resolvedOpsMetricThresholds{}
+	if defaults := defaultOpsMetricThresholds(); defaults != nil {
+		if defaults.SLAPercentMin != nil {
+			cfg.slaPercentMin = *defaults.SLAPercentMin
+		}
+		if defaults.TTFTp99MsMax != nil {
+			cfg.ttftp99MsMax = *defaults.TTFTp99MsMax
+		}
+		if defaults.RequestErrorRatePercentMax != nil {
+			cfg.requestErrorRatePercentMax = *defaults.RequestErrorRatePercentMax
+		}
+		if defaults.UpstreamErrorRatePercentMax != nil {
+			cfg.upstreamErrorRatePercentMax = *defaults.UpstreamErrorRatePercentMax
+		}
+	}
+	if thresholds == nil {
+		return cfg
+	}
+	if thresholds.SLAPercentMin != nil && *thresholds.SLAPercentMin >= 0 && *thresholds.SLAPercentMin <= 100 {
+		cfg.slaPercentMin = *thresholds.SLAPercentMin
+	}
+	if thresholds.TTFTp99MsMax != nil && *thresholds.TTFTp99MsMax >= 0 {
+		cfg.ttftp99MsMax = *thresholds.TTFTp99MsMax
+	}
+	if thresholds.RequestErrorRatePercentMax != nil && *thresholds.RequestErrorRatePercentMax >= 0 && *thresholds.RequestErrorRatePercentMax <= 100 {
+		cfg.requestErrorRatePercentMax = *thresholds.RequestErrorRatePercentMax
+	}
+	if thresholds.UpstreamErrorRatePercentMax != nil && *thresholds.UpstreamErrorRatePercentMax >= 0 && *thresholds.UpstreamErrorRatePercentMax <= 100 {
+		cfg.upstreamErrorRatePercentMax = *thresholds.UpstreamErrorRatePercentMax
+	}
+	return cfg
+}
+
+func scoreHigherIsWorseByThreshold(value float64, threshold float64, healthyRatio float64, zeroRatio float64) float64 {
+	value = math.Max(value, 0)
+	threshold = math.Max(threshold, 0)
+	if threshold == 0 {
+		if value <= 0 {
+			return 100
+		}
+		return 0
+	}
+	healthy := threshold * healthyRatio
+	zero := threshold * zeroRatio
+	if zero <= healthy {
+		if value <= healthy {
+			return 100
+		}
+		return 0
+	}
+	if value <= healthy {
+		return 100
+	}
+	if value >= zero {
+		return 0
+	}
+	return ((zero - value) / (zero - healthy)) * 100
+}
+
+func scoreLowerIsWorseByThreshold(value float64, threshold float64, healthyBudgetMultiplier float64, zeroBudgetMultiplier float64) float64 {
+	value = clampFloat64(value, 0, 100)
+	threshold = clampFloat64(threshold, 0, 100)
+	failureBudget := math.Max(100-threshold, 0.1)
+	healthyDeficit := failureBudget * healthyBudgetMultiplier
+	zeroDeficit := failureBudget * zeroBudgetMultiplier
+	currentDeficit := 100 - value
+	if currentDeficit <= healthyDeficit {
+		return 100
+	}
+	if currentDeficit >= zeroDeficit {
+		return 0
+	}
+	return ((zeroDeficit - currentDeficit) / (zeroDeficit - healthyDeficit)) * 100
+}
+
+func isOpsJobHeartbeatFailed(now time.Time, hb *OpsJobHeartbeat) bool {
+	if hb == nil {
+		return false
+	}
+	if hb.LastErrorAt != nil && (hb.LastSuccessAt == nil || hb.LastErrorAt.After(*hb.LastSuccessAt)) {
+		return true
+	}
+	if hb.LastSuccessAt != nil {
+		return now.Sub(*hb.LastSuccessAt) > opsJobHeartbeatStaleThreshold(hb.JobName)
+	}
+	return false
+}
+
+func opsJobHeartbeatStaleThreshold(jobName string) time.Duration {
+	switch jobName {
+	case opsCleanupJobName:
+		return 30 * time.Hour
+	case opsAggDailyJobName:
+		return 3 * opsAggDailyInterval
+	case opsAggHourlyJobName:
+		return 3 * opsAggHourlyInterval
+	default:
+		return 15 * time.Minute
+	}
 }
 
 func clampFloat64(v float64, min float64, max float64) float64 {

@@ -303,6 +303,36 @@ func (s *ConcurrencyService) GetUsersLoadBatch(ctx context.Context, users []User
 	return s.cache.GetUsersLoadBatch(ctx, users)
 }
 
+func (s *ConcurrencyService) GetAccountsLoadBatchFast(ctx context.Context, accounts []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
+	if len(accounts) == 0 {
+		return map[int64]*AccountLoadInfo{}, nil
+	}
+	if s.cache == nil {
+		return map[int64]*AccountLoadInfo{}, nil
+	}
+	if fastCache, ok := s.cache.(interface {
+		GetAccountsLoadBatchFast(context.Context, []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error)
+	}); ok {
+		return fastCache.GetAccountsLoadBatchFast(ctx, accounts)
+	}
+	return s.cache.GetAccountsLoadBatch(ctx, accounts)
+}
+
+func (s *ConcurrencyService) GetUsersLoadBatchFast(ctx context.Context, users []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
+	if len(users) == 0 {
+		return map[int64]*UserLoadInfo{}, nil
+	}
+	if s.cache == nil {
+		return map[int64]*UserLoadInfo{}, nil
+	}
+	if fastCache, ok := s.cache.(interface {
+		GetUsersLoadBatchFast(context.Context, []UserWithConcurrency) (map[int64]*UserLoadInfo, error)
+	}); ok {
+		return fastCache.GetUsersLoadBatchFast(ctx, users)
+	}
+	return s.cache.GetUsersLoadBatch(ctx, users)
+}
+
 // CleanupExpiredAccountSlots removes expired slots for one account (background task).
 func (s *ConcurrencyService) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {
 	if s.cache == nil {
