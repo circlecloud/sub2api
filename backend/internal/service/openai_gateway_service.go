@@ -24,6 +24,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/cespare/xxhash/v2"
@@ -1894,14 +1895,16 @@ func (s *OpenAIGatewayService) listCandidateOpenAIAccounts(ctx context.Context, 
 	if s == nil || s.accountRepo == nil {
 		return nil, nil
 	}
-	if groupID != nil {
-		accounts, err := s.accountRepo.ListByGroup(ctx, *groupID)
-		if err != nil {
-			return nil, err
-		}
-		return accounts, nil
+
+	filters := AccountListFilters{Platform: PlatformOpenAI}
+	if groupID != nil && *groupID > 0 {
+		filters.GroupIDs = strconv.FormatInt(*groupID, 10)
 	}
-	return s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	accounts, _, err := s.accountRepo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 1000}, filters)
+	if err != nil {
+		return nil, err
+	}
+	return accounts, nil
 }
 
 func openAIAccountUnavailableDueToAuth(account *Account) bool {

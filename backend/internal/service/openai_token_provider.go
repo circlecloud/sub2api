@@ -47,6 +47,13 @@ type openAITokenRuntimeMetricsStore struct {
 	lastObservedUnixMs atomic.Int64
 }
 
+func isRedisNilCacheMiss(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.TrimSpace(err.Error()) == "redis: nil"
+}
+
 func (m *openAITokenRuntimeMetricsStore) snapshot() OpenAITokenRuntimeMetrics {
 	if m == nil {
 		return OpenAITokenRuntimeMetrics{}
@@ -139,15 +146,20 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 	// 1) Try cache first.
 	if p.tokenCache != nil {
-		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
+		token, err := p.tokenCache.GetAccessToken(ctx, cacheKey)
+		switch {
+		case err == nil && strings.TrimSpace(token) != "":
 			slog.Debug("openai_token_cache_hit", "account_id", account.ID)
 			return token, nil
-		} else if err != nil {
-			slog.Warn("openai_token_cache_get_failed", "account_id", account.ID, "error", err)
+		case err != nil:
+			if !isRedisNilCacheMiss(err) {
+				slog.Warn("openai_token_cache_get_failed", "account_id", account.ID, "error", err)
+			}
+
+		case err == nil:
+			slog.Debug("openai_token_cache_miss", "account_id", account.ID)
 		}
 	}
-
-	slog.Debug("openai_token_cache_miss", "account_id", account.ID)
 
 	// 2) Refresh if needed (pre-expiry skew).
 	expiresAt := account.GetCredentialAsTime("expires_at")

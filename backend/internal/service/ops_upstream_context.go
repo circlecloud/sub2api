@@ -44,6 +44,8 @@ const (
 	// OpsRectifierRetryCountKey 保存单个请求内真正发生的 rectifier retry 总次数。
 	// 仅在 advance 分支累加，不包含 reconnect / failover reset 等其他重试语义。
 	OpsRectifierRetryCountKey = "ops_rectifier_retry_count"
+	// OpsOpenAIAccountSelectFailureKey 保存 OpenAI 账号选择失败的结构化排障信息。
+	OpsOpenAIAccountSelectFailureKey = "ops_openai_account_select_failure"
 )
 
 func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
@@ -180,6 +182,59 @@ func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 	if detail := strings.TrimSpace(upstreamDetail); detail != "" {
 		c.Set(OpsUpstreamErrorDetailKey, detail)
 	}
+}
+
+type OpsOpenAIAccountSelectFailure struct {
+	Layer                  string  `json:"layer,omitempty"`
+	FailureReason          string  `json:"failure_reason,omitempty"`
+	FailureDetail          string  `json:"failure_detail,omitempty"`
+	Error                  string  `json:"error,omitempty"`
+	CandidateCount         int     `json:"candidate_count,omitempty"`
+	TopK                   int     `json:"top_k,omitempty"`
+	LoadSkew               float64 `json:"load_skew,omitempty"`
+	WarmPoolTried          bool    `json:"warm_pool_tried,omitempty"`
+	WarmPoolCandidateCount int     `json:"warm_pool_candidate_count,omitempty"`
+	ExcludedAccountCount   int     `json:"excluded_account_count,omitempty"`
+}
+
+func SetOpsOpenAIAccountSelectFailure(c *gin.Context, decision OpenAIAccountScheduleDecision, err error, excludedAccountCount int) {
+	if c == nil {
+		return
+	}
+	failure := OpsOpenAIAccountSelectFailure{
+		Layer:                  strings.TrimSpace(decision.Layer),
+		FailureReason:          strings.TrimSpace(decision.FailureReason),
+		FailureDetail:          strings.TrimSpace(decision.FailureDetail),
+		CandidateCount:         decision.CandidateCount,
+		TopK:                   decision.TopK,
+		LoadSkew:               decision.LoadSkew,
+		WarmPoolTried:          decision.WarmPoolTried,
+		WarmPoolCandidateCount: decision.WarmPoolCandidateCount,
+		ExcludedAccountCount:   excludedAccountCount,
+	}
+	if err != nil {
+		failure.Error = strings.TrimSpace(err.Error())
+	}
+	if failure.FailureReason == "" && failure.FailureDetail == "" && failure.Error == "" {
+		return
+	}
+	c.Set(OpsOpenAIAccountSelectFailureKey, failure)
+}
+
+func GetOpsOpenAIAccountSelectFailure(c *gin.Context) *OpsOpenAIAccountSelectFailure {
+	if c == nil {
+		return nil
+	}
+	v, ok := c.Get(OpsOpenAIAccountSelectFailureKey)
+	if !ok {
+		return nil
+	}
+	failure, ok := v.(OpsOpenAIAccountSelectFailure)
+	if !ok {
+		return nil
+	}
+	copied := failure
+	return &copied
 }
 
 // OpsUpstreamErrorEvent describes one upstream error attempt during a single gateway request.

@@ -9,12 +9,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -159,6 +161,59 @@ type stubConcurrencyCache struct {
 	skipDefaultLoad      bool
 	acquireAccountSlotFn func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error)
 	releaseAccountSlotFn func(ctx context.Context, accountID int64, requestID string) error
+}
+
+type authCandidateAccountRepo struct {
+	AccountRepository
+	accounts []Account
+}
+
+func (r authCandidateAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	var result []Account
+	for _, acc := range r.accounts {
+		if acc.Platform == platform && acc.Status == StatusActive {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (r authCandidateAccountRepo) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
+	var result []Account
+	for _, acc := range r.accounts {
+		if acc.Status == StatusActive && opsRealtimeAccountMatchesGroup(acc, groupID) {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (r authCandidateAccountRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error) {
+	result := make([]Account, 0, len(r.accounts))
+	for _, acc := range r.accounts {
+		if filters.Platform != "" && acc.Platform != filters.Platform {
+			continue
+		}
+		if filters.GroupIDs != "" {
+			if !opsRealtimeAccountMatchesGroup(acc, mustParseSingleGroupID(filters.GroupIDs)) {
+				continue
+			}
+		}
+		result = append(result, acc)
+	}
+	return result, &pagination.PaginationResult{Total: int64(len(result)), Page: params.Page, PageSize: params.PageSize, Pages: 1}, nil
+}
+
+func mustParseSingleGroupID(raw string) int64 {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0
+	}
+	id, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	return id
 }
 
 type cancelReadCloser struct{}
@@ -933,12 +988,24 @@ func TestOpenAISelectAccountForModelWithExclusions_NoAccounts(t *testing.T) {
 	}
 }
 
+func TestOpenAISelectAccountWithLoadAwareness_NoAccountsIncludesDetail(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "gpt-4", nil)
+	require.Error(t, err)
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Contains(t, err.Error(), "schedulable_accounts=0")
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_NoCandidates(t *testing.T) {
 	groupID := int64(1)
-	resetAt := time.Now().Add(1 * time.Hour)
 	repo := stubOpenAIAccountRepo{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, RateLimitResetAt: &resetAt},
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"}}},
 		},
 	}
 	cache := &stubGatewayCache{}
@@ -951,12 +1018,10 @@ func TestOpenAISelectAccountWithLoadAwareness_NoCandidates(t *testing.T) {
 	}
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
-	if err == nil {
-		t.Fatalf("expected error for no candidates")
-	}
-	if selection != nil {
-		t.Fatalf("expected nil selection")
-	}
+	require.Error(t, err)
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Contains(t, err.Error(), "candidate_count=0 filtered_by_load_awareness")
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_AllFullWaitPlan(t *testing.T) {

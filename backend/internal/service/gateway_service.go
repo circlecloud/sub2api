@@ -1330,7 +1330,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		return nil, err
 	}
 	if len(accounts) == 0 {
-		return nil, ErrNoAvailableAccounts
+		return nil, newNoAvailableAccountsError(requestedModel, "schedulable_accounts=0")
 	}
 	ctx = s.withWindowCostPrefetch(ctx, accounts)
 	ctx = s.withRPMPrefetch(ctx, accounts)
@@ -1685,7 +1685,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	if len(candidates) == 0 {
-		return nil, ErrNoAvailableAccounts
+		return nil, newNoAvailableAccountsError(requestedModel, "candidate_count=0 filtered_by_load_awareness")
 	}
 
 	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
@@ -1769,7 +1769,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			MaxWaiting:     cfg.FallbackMaxWaiting,
 		})
 	}
-	return nil, ErrNoAvailableAccounts
+	return nil, newNoAvailableAccountsError(requestedModel, "fallback_wait_exhausted")
 }
 
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
@@ -2953,7 +2953,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		if requestedModel != "" {
 			return nil, fmt.Errorf("%w supporting model: %s (%s)", ErrNoAvailableAccounts, requestedModel, summarizeSelectionFailureStats(stats))
 		}
-		return nil, ErrNoAvailableAccounts
+		return nil, newNoAvailableAccountsError(requestedModel, summarizeSelectionFailureStats(stats))
 	}
 
 	// 4. 建立粘性绑定
@@ -3214,7 +3214,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if requestedModel != "" {
 			return nil, fmt.Errorf("%w supporting model: %s (%s)", ErrNoAvailableAccounts, requestedModel, summarizeSelectionFailureStats(stats))
 		}
-		return nil, ErrNoAvailableAccounts
+		return nil, newNoAvailableAccountsError(requestedModel, summarizeSelectionFailureStats(stats))
 	}
 
 	// 4. 建立粘性绑定
@@ -3384,6 +3384,18 @@ func appendSelectionFailureRateSample(samples []string, accountID int64, remaini
 		return samples
 	}
 	return append(samples, fmt.Sprintf("%d(%s)", accountID, remaining))
+}
+
+func newNoAvailableAccountsError(requestedModel string, detail string) error {
+	prefix := "no available accounts"
+	if requestedModel = strings.TrimSpace(requestedModel); requestedModel != "" {
+		prefix = fmt.Sprintf("%s supporting model: %s", prefix, requestedModel)
+	}
+	detail = strings.TrimSpace(detail)
+	if detail != "" {
+		return fmt.Errorf("%s (%s): %w", prefix, detail, ErrNoAvailableAccounts)
+	}
+	return fmt.Errorf("%s: %w", prefix, ErrNoAvailableAccounts)
 }
 
 func summarizeSelectionFailureStats(stats selectionFailureStats) string {

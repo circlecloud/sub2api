@@ -3,13 +3,16 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -179,6 +182,58 @@ func TestOpenAITokenProvider_CacheMiss_FromCredentials(t *testing.T) {
 	// Should have stored in cache
 	cacheKey := OpenAITokenCacheKey(account)
 	require.Equal(t, "credential-token", cache.tokens[cacheKey])
+}
+
+func TestOpenAITokenProvider_RedisNilDoesNotLog(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	cache.getErr = redis.Nil
+	account := &Account{
+		ID:       1011,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "credential-token",
+			"expires_at":   time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(oldLogger)
+
+	provider := NewOpenAITokenProvider(nil, cache, nil)
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "credential-token", token)
+	require.NotContains(t, buf.String(), "openai_token_cache_get_failed")
+	require.NotContains(t, buf.String(), "openai_token_cache_miss")
+}
+
+func TestOpenAITokenProvider_RealCacheGetErrorLogsWarning(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	cache.getErr = errors.New("redis connection reset")
+	account := &Account{
+		ID:       1012,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "credential-token",
+			"expires_at":   time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(oldLogger)
+
+	provider := NewOpenAITokenProvider(nil, cache, nil)
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "credential-token", token)
+	require.Contains(t, buf.String(), "openai_token_cache_get_failed")
+	require.Contains(t, buf.String(), "redis connection reset")
 }
 
 func TestOpenAITokenProvider_TokenRefresh(t *testing.T) {

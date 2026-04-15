@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
@@ -22,6 +25,61 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
+
+type openAIHandlerAccountRepoStub struct {
+	service.AccountRepository
+	accounts []service.Account
+}
+
+func (r openAIHandlerAccountRepoStub) ListByGroup(ctx context.Context, groupID int64) ([]service.Account, error) {
+	result := make([]service.Account, 0, len(r.accounts))
+	for _, acc := range r.accounts {
+		matched := groupID == 0
+		for _, id := range acc.GroupIDs {
+			if id == groupID {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (r openAIHandlerAccountRepoStub) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	result := make([]service.Account, 0, len(r.accounts))
+	for _, acc := range r.accounts {
+		if acc.Platform == platform {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (r openAIHandlerAccountRepoStub) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, *pagination.PaginationResult, error) {
+	result := make([]service.Account, 0, len(r.accounts))
+	for _, acc := range r.accounts {
+		if filters.Platform != "" && acc.Platform != filters.Platform {
+			continue
+		}
+		if filters.GroupIDs != "" {
+			matched := false
+			for _, id := range acc.GroupIDs {
+				if filters.GroupIDs == fmt.Sprintf("%d", id) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		result = append(result, acc)
+	}
+	return result, &pagination.PaginationResult{Total: int64(len(result)), Page: params.Page, PageSize: params.PageSize, Pages: 1}, nil
+}
 
 func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 	tests := []struct {
@@ -233,6 +291,174 @@ func TestLogOpenAIRectifierTimeoutExhausted_EmitsSchedulerBucketAndRetryFields(t
 	require.EqualValues(t, 3, fields["first_token_attempt"])
 	require.EqualValues(t, 10000, fields["timeout_ms"])
 	require.EqualValues(t, 10, fields["timeout_seconds"])
+}
+
+func TestLogOpenAIAccountSelectFailure_EmitsFailureReasonFields(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	reqLog := zap.New(core)
+	decision := service.OpenAIAccountScheduleDecision{
+		Layer:                  "load_balance",
+		CandidateCount:         0,
+		WarmPoolTried:          true,
+		WarmPoolCandidateCount: 0,
+		FailureReason:          "warm_pool_empty",
+		FailureDetail:          "schedulable_accounts=0 warm_pool_candidates=0",
+	}
+
+	logOpenAIAccountSelectFailure(nil, reqLog, "openai.account_select_failed", decision, service.ErrNoAvailableAccounts, 2)
+
+	entries := logs.All()
+	require.Len(t, entries, 1)
+	require.Equal(t, "openai.account_select_failed", entries[0].Message)
+	fields := entries[0].ContextMap()
+	require.Equal(t, "load_balance", fields["layer"])
+	require.EqualValues(t, 0, fields["candidate_count"])
+	require.EqualValues(t, 2, fields["excluded_account_count"])
+	require.EqualValues(t, true, fields["warm_pool_tried"])
+	require.EqualValues(t, 0, fields["warm_pool_candidate_count"])
+	require.Equal(t, "warm_pool_empty", fields["failure_reason"])
+	require.Equal(t, "schedulable_accounts=0 warm_pool_candidates=0", fields["failure_detail"])
+}
+
+func TestLogOpenAIAccountSelectFailure_InfersReasonFromErrorWhenDecisionMissing(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	reqLog := zap.New(core)
+	err := fmt.Errorf("no available OpenAI accounts supporting model: gpt-5.4: %w", service.ErrNoAvailableAccounts)
+
+	logOpenAIAccountSelectFailure(nil, reqLog, "openai.account_select_failed", service.OpenAIAccountScheduleDecision{}, err, 0)
+
+	entries := logs.All()
+	require.Len(t, entries, 1)
+	fields := entries[0].ContextMap()
+	require.Equal(t, "no_available_accounts", fields["failure_reason"])
+	require.Equal(t, err.Error(), fields["failure_detail"])
+	require.Equal(t, err.Error(), fields["error"])
+}
+
+func TestBuildOpenAIAccountSelectClientMessage_PrefersScheduleDecisionDetails(t *testing.T) {
+	decision := service.OpenAIAccountScheduleDecision{
+		FailureReason: "warm_pool_empty",
+		FailureDetail: "schedulable_accounts=0 warm_pool_candidates=0",
+	}
+
+	message := buildOpenAIAccountSelectClientMessage(decision, service.ErrNoAvailableAccounts)
+	require.Equal(t, "schedulable_accounts=0 warm_pool_candidates=0", message)
+}
+
+func TestBuildOpenAIAccountSelectClientMessage_FallsBackToErrorText(t *testing.T) {
+	err := fmt.Errorf("no available OpenAI accounts supporting model: gpt-5.4: %w", service.ErrNoAvailableAccounts)
+
+	message := buildOpenAIAccountSelectClientMessage(service.OpenAIAccountScheduleDecision{}, err)
+	require.Equal(t, err.Error(), message)
+}
+
+func TestBuildOpenAIAccountSelectClientMessage_DefaultsToGenericMessage(t *testing.T) {
+	message := buildOpenAIAccountSelectClientMessage(service.OpenAIAccountScheduleDecision{}, nil)
+	require.Equal(t, "Service temporarily unavailable", message)
+}
+
+func TestBuildOpenAIAccountSelectClientMessage_ExposesNonSchedulingInternalError(t *testing.T) {
+	err := errors.New("redis unavailable")
+
+	message := buildOpenAIAccountSelectClientMessage(service.OpenAIAccountScheduleDecision{}, err)
+	require.Equal(t, err.Error(), message)
+}
+
+func TestResolveOpenAINoAvailableAccountMessage_PrefersAuthFailureFromTempUnsched401(t *testing.T) {
+	future := time.Now().Add(5 * time.Minute)
+	repo := openAIHandlerAccountRepoStub{accounts: []service.Account{{
+		ID:                      1,
+		Platform:                service.PlatformOpenAI,
+		Type:                    service.AccountTypeOAuth,
+		Status:                  service.StatusActive,
+		Schedulable:             true,
+		GroupIDs:                []int64{10},
+		TempUnschedulableUntil:  &future,
+		TempUnschedulableReason: "OAuth 401: session expired",
+	}}}
+	h := &OpenAIGatewayHandler{gatewayService: service.NewOpenAIGatewayService(
+		repo,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)}
+	groupID := int64(10)
+
+	message := h.resolveOpenAINoAvailableAccountMessage(
+		context.Background(),
+		&groupID,
+		"",
+		service.OpenAIAccountScheduleDecision{},
+		fmt.Errorf("no available OpenAI accounts: %w", service.ErrNoAvailableAccounts),
+		false,
+	)
+	require.Equal(t, "Upstream authentication failed, please contact administrator", message)
+}
+
+func TestResolveOpenAINoAvailableAccountMessage_ExposesSchedulingErrorWhenNoAuthSignal(t *testing.T) {
+	future := time.Now().Add(5 * time.Minute)
+	repo := openAIHandlerAccountRepoStub{accounts: []service.Account{{
+		ID:                      2,
+		Platform:                service.PlatformOpenAI,
+		Type:                    service.AccountTypeOAuth,
+		Status:                  service.StatusActive,
+		Schedulable:             true,
+		GroupIDs:                []int64{10},
+		TempUnschedulableUntil:  &future,
+		TempUnschedulableReason: "temporary overload",
+	}}}
+	h := &OpenAIGatewayHandler{gatewayService: service.NewOpenAIGatewayService(
+		repo,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)}
+	groupID := int64(10)
+	err := fmt.Errorf("no available OpenAI accounts: %w", service.ErrNoAvailableAccounts)
+
+	message := h.resolveOpenAINoAvailableAccountMessage(
+		context.Background(),
+		&groupID,
+		"",
+		service.OpenAIAccountScheduleDecision{},
+		err,
+		false,
+	)
+	require.Equal(t, err.Error(), message)
 }
 
 func TestReadRequestBodyWithPrealloc(t *testing.T) {

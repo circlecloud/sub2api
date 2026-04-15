@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -98,6 +99,23 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_FallsBackToDBWhenSnapsh
 	require.NotNil(t, selection.Account)
 	require.Equal(t, dbAccount.ID, selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
+func TestOpenAIGatewayService_ResolveNoAvailableAccountClientMessage_DetectsAuthBlockedCandidates(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(88)
+	repo := authCandidateAccountRepo{accounts: []Account{{
+		ID:           8801,
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeOAuth,
+		Status:       StatusError,
+		ErrorMessage: "Access forbidden (403): workspace forbidden",
+		GroupIDs:     []int64{groupID},
+	}}}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+
+	msg := svc.ResolveNoAvailableAccountClientMessage(ctx, &groupID, "")
+	require.Equal(t, "Upstream authentication failed, please contact administrator", msg)
 }
 
 func TestOpenAIGatewayService_SelectAccountForModelWithExclusions_SkipsFreshlyRateLimitedSnapshotCandidate(t *testing.T) {
@@ -498,6 +516,47 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
 	require.Nil(t, selection)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.Equal(t, 0, decision.CandidateCount)
+	require.Equal(t, "transport_incompatible", decision.FailureReason)
+	require.Contains(t, decision.FailureDetail, "transport_incompatible=1")
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_ConcurrencyAcquireErrorReportsFailureReason(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10121)
+	accounts := []Account{{
+		ID:          2311,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+	}}
+	concurrencyCache := stubConcurrencyCache{
+		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+			return false, errors.New("redis unavailable")
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+	)
+	require.Error(t, err)
+	require.Nil(t, selection)
+	require.Equal(t, "concurrency_backend_error", decision.FailureReason)
+	require.Contains(t, decision.FailureDetail, "redis unavailable")
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback(t *testing.T) {

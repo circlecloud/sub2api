@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -11,6 +13,57 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type opsIgnoreSettingRepoStub struct {
+	value string
+}
+
+func (s *opsIgnoreSettingRepoStub) Get(ctx context.Context, key string) (*service.Setting, error) {
+	return nil, nil
+}
+
+func (s *opsIgnoreSettingRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	if key == service.SettingKeyOpsAdvancedSettings {
+		return s.value, nil
+	}
+	return "", nil
+}
+
+func (s *opsIgnoreSettingRepoStub) Set(ctx context.Context, key, value string) error {
+	if key == service.SettingKeyOpsAdvancedSettings {
+		s.value = value
+	}
+	return nil
+}
+
+func (s *opsIgnoreSettingRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	result := make(map[string]string, len(keys))
+	for _, key := range keys {
+		value, _ := s.GetValue(ctx, key)
+		result[key] = value
+	}
+	return result, nil
+}
+
+func (s *opsIgnoreSettingRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
+	for key, value := range settings {
+		if err := s.Set(ctx, key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *opsIgnoreSettingRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
+	return map[string]string{service.SettingKeyOpsAdvancedSettings: s.value}, nil
+}
+
+func (s *opsIgnoreSettingRepoStub) Delete(ctx context.Context, key string) error {
+	if key == service.SettingKeyOpsAdvancedSettings {
+		s.value = ""
+	}
+	return nil
+}
 
 func resetOpsErrorLoggerStateForTest(t *testing.T) {
 	t.Helper()
@@ -85,6 +138,33 @@ func TestAttachOpsRequestBodyToEntry_InvalidJSONKeepsSize(t *testing.T) {
 	require.Equal(t, len(raw), *entry.RequestBodyBytes)
 	require.False(t, entry.RequestBodyTruncated)
 	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
+}
+
+func TestAttachOpsOpenAIAccountSelectFailure_MergesStructuredDetailsIntoErrorBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	service.SetOpsOpenAIAccountSelectFailure(c, service.OpenAIAccountScheduleDecision{
+		Layer:                  "load_balance",
+		FailureReason:          "warm_pool_empty",
+		FailureDetail:          "schedulable_accounts=0",
+		CandidateCount:         0,
+		WarmPoolTried:          true,
+		WarmPoolCandidateCount: 0,
+	}, service.ErrNoAvailableAccounts, 2)
+
+	entry := &service.OpsInsertErrorLogInput{ErrorBody: `{"error":{"message":"Service temporarily unavailable"}}`}
+	attachOpsOpenAIAccountSelectFailure(c, entry)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(entry.ErrorBody), &payload))
+	selection, ok := payload["openai_account_select_failure"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "warm_pool_empty", selection["failure_reason"])
+	require.Equal(t, "schedulable_accounts=0", selection["failure_detail"])
+	require.EqualValues(t, 2, selection["excluded_account_count"])
 }
 
 func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
@@ -354,7 +434,36 @@ func TestNormalizeOpsErrorType(t *testing.T) {
 func TestClassifyOpsIsBusinessLimited(t *testing.T) {
 	require.True(t, classifyOpsIsBusinessLimited("api_error", "internal", "API_KEY_QUOTA_EXHAUSTED", 429, "quota exhausted"))
 	require.True(t, classifyOpsIsBusinessLimited("subscription_error", "request", "USAGE_LIMIT_EXCEEDED", 429, "usage limit exceeded"))
+	require.False(t, classifyOpsIsBusinessLimited("api_error", "routing", "", 503, "No available accounts"))
 	require.False(t, classifyOpsIsBusinessLimited("rate_limit_error", "upstream", "", 429, "upstream rate limit"))
+}
+
+func TestShouldSkipOpsErrorLog_IgnoresNoAvailableAccountsWhenEnabled(t *testing.T) {
+	repo := &opsIgnoreSettingRepoStub{value: `{"ignore_no_available_accounts":true}`}
+	ops := service.NewOpsService(nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	require.True(t, shouldSkipOpsErrorLog(nil, ops, "No available accounts", "", "/v1/chat/completions"))
+	require.True(t, shouldSkipOpsErrorLog(nil, ops, "", `{"error":"No available accounts"}`, "/v1/chat/completions"))
+}
+
+func TestUsageLimitExceededNestedErrorCodeExcludedFromSLA(t *testing.T) {
+	body := []byte(`{"error":{"code":"USAGE_LIMIT_EXCEEDED","message":"error: code=429 reason=\"DAILY_LIMIT_EXCEEDED\" message=\"daily usage limit exceeded\" metadata=map[]"}}`)
+
+	parsed := parseOpsErrorResponse(body)
+	normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
+	phase := classifyOpsPhase(normalizedType, parsed.Message, parsed.Code)
+
+	require.True(t, classifyOpsIsBusinessLimited(normalizedType, phase, parsed.Code, 429, parsed.Message))
+}
+
+func TestUsageLimitExceededNestedErrorTypeExcludedFromSLA(t *testing.T) {
+	body := []byte(`{"error":{"type":"USAGE_LIMIT_EXCEEDED","message":"error: code=429 reason=\"DAILY_LIMIT_EXCEEDED\" message=\"daily usage limit exceeded\" metadata=map[]"}}`)
+
+	parsed := parseOpsErrorResponse(body)
+	normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
+	phase := classifyOpsPhase(normalizedType, parsed.Message, parsed.Code)
+
+	require.True(t, classifyOpsIsBusinessLimited(normalizedType, phase, parsed.Code, 429, parsed.Message))
 }
 
 func TestSetOpsEndpointContext_SetsContextKeys(t *testing.T) {

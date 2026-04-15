@@ -377,6 +377,37 @@ func attachOpsRequestBodyToEntry(c *gin.Context, entry *service.OpsInsertErrorLo
 	opsErrorLogSanitized.Add(1)
 }
 
+func attachOpsOpenAIAccountSelectFailure(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
+	if c == nil || entry == nil {
+		return
+	}
+	failure := service.GetOpsOpenAIAccountSelectFailure(c)
+	if failure == nil {
+		return
+	}
+	failurePayload, err := json.Marshal(failure)
+	if err != nil || len(failurePayload) == 0 {
+		return
+	}
+	trimmedBody := strings.TrimSpace(entry.ErrorBody)
+	if trimmedBody == "" {
+		entry.ErrorBody = string(failurePayload)
+		return
+	}
+	var bodyObj map[string]any
+	if err := json.Unmarshal([]byte(trimmedBody), &bodyObj); err == nil && bodyObj != nil {
+		var failureObj map[string]any
+		if err := json.Unmarshal(failurePayload, &failureObj); err == nil && failureObj != nil {
+			bodyObj["openai_account_select_failure"] = failureObj
+			if merged, err := json.Marshal(bodyObj); err == nil {
+				entry.ErrorBody = string(merged)
+				return
+			}
+		}
+	}
+	entry.ErrorBody = trimmedBody + "\n\nopenai_account_select_failure=" + string(failurePayload)
+}
+
 func setOpsSelectedAccount(c *gin.Context, accountID int64, platform ...string) {
 	if c == nil || accountID <= 0 {
 		return
@@ -842,6 +873,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 		applyOpsLatencyFieldsFromContext(c, entry)
 		applyOpsRetryCountFromContext(c, entry)
+		attachOpsOpenAIAccountSelectFailure(c, entry)
 
 		// Capture upstream error context set by gateway services (if present).
 		// This does NOT affect the client response; it enriches Ops troubleshooting data.
@@ -1029,7 +1061,7 @@ func parseOpsErrorResponse(body []byte) parsedOpsError {
 		return parsedOpsError{Message: truncateString(string(body), 1024)}
 	}
 
-	// Claude/OpenAI-style gateway error: { type:"error", error:{ type, message } }
+	// Claude/OpenAI-style gateway error: { type:"error", error:{ type, code, message } }
 	if errObj, ok := m["error"].(map[string]any); ok {
 		t, _ := errObj["type"].(string)
 		msg, _ := errObj["message"].(string)
@@ -1039,19 +1071,24 @@ func parseOpsErrorResponse(body []byte) parsedOpsError {
 				msg, _ = v.(string)
 			}
 		}
-		if t == "" {
-			// Gemini error does not have "type" field.
-			t = "api_error"
-		}
-		// For gemini error, capture numeric code as string for business-limited mapping if needed.
 		var code string
 		if v, ok := errObj["code"]; ok {
 			switch n := v.(type) {
+			case string:
+				code = strings.TrimSpace(n)
 			case float64:
 				code = strconvItoa(int(n))
 			case int:
 				code = strconvItoa(n)
 			}
+		}
+		if code == "" && t != "" && !isKnownOpsErrorType(t) {
+			code = strings.TrimSpace(t)
+			t = ""
+		}
+		if t == "" {
+			// Gemini error and部分网关错误不会提供标准 error.type。
+			t = "api_error"
 		}
 		return parsedOpsError{ErrorType: t, Message: msg, Code: code}
 	}
@@ -1191,6 +1228,7 @@ func classifyOpsIsRetryable(errType string, statusCode int) bool {
 }
 
 func classifyOpsIsBusinessLimited(errType, phase, code string, status int, message string) bool {
+	msgLower := strings.ToLower(message)
 	switch strings.TrimSpace(code) {
 	case opsCodeInsufficientBalance, opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid, opsCodeAPIKeyQuotaExhausted, opsCodeUserInactive:
 		return true
@@ -1200,7 +1238,7 @@ func classifyOpsIsBusinessLimited(errType, phase, code string, status int, messa
 		return true
 	}
 	// Avoid treating upstream rate limits as business-limited.
-	if errType == "rate_limit_error" && strings.Contains(strings.ToLower(message), "upstream") {
+	if errType == "rate_limit_error" && strings.Contains(msgLower, "upstream") {
 		return false
 	}
 	_ = status

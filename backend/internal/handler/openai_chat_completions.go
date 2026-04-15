@@ -143,10 +143,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			)
 		}
 		if err != nil {
-			reqLog.Warn("openai_chat_completions.account_select_failed",
-				zap.Error(err),
-				zap.Int("excluded_account_count", len(failedAccountIDs)),
-			)
+			logOpenAIAccountSelectFailure(c, reqLog, "openai_chat_completions.account_select_failed", scheduleDecision, err, len(failedAccountIDs))
 			if len(failedAccountIDs) == 0 {
 				defaultModel := ""
 				if apiKey.Group != nil {
@@ -170,7 +167,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					}
 				}
 				if err != nil {
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, err, false), streamStarted)
 					return
 				}
 			} else {
@@ -183,7 +180,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 		}
 		if selection == nil || selection.Account == nil {
-			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			logOpenAIAccountSelectFailure(c, reqLog, "openai_chat_completions.account_select_failed", scheduleDecision, service.ErrNoAvailableAccounts, len(failedAccountIDs))
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, service.ErrNoAvailableAccounts, true), streamStarted)
 			return
 		}
 		account := selection.Account

@@ -2011,6 +2011,24 @@ func (m *mockConcurrencyCache) GetUsersLoadBatch(ctx context.Context, users []Us
 func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 	ctx := context.Background()
 
+	t.Run("空账号返回详细错误", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.Gateway.Scheduling.LoadBatchEnabled = true
+
+		svc := &GatewayService{
+			accountRepo:        &mockAccountRepoForPlatform{},
+			cache:              &mockGatewayCacheForPlatform{},
+			cfg:                cfg,
+			concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+		}
+
+		result, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		require.Error(t, err)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrNoAvailableAccounts)
+		require.Contains(t, err.Error(), "schedulable_accounts=0")
+	})
+
 	t.Run("禁用负载批量查询-降级到传统选择", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{

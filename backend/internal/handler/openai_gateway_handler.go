@@ -267,12 +267,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			)
 		}
 		if err != nil {
-			reqLog.Warn("openai.account_select_failed",
-				zap.Error(err),
-				zap.Int("excluded_account_count", len(failedAccountIDs)),
-			)
+			logOpenAIAccountSelectFailure(c, reqLog, "openai.account_select_failed", scheduleDecision, err, len(failedAccountIDs))
 			if len(failedAccountIDs) == 0 {
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, err, false), streamStarted)
 				return
 			}
 			if lastFailoverErr != nil {
@@ -283,7 +280,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		if selection == nil || selection.Account == nil {
-			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, service.ErrNoAvailableAccounts, true), streamStarted)
 			return
 		}
 		if previousResponseID != "" && selection != nil && selection.Account != nil {
@@ -623,7 +620,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			)
 			if len(failedAccountIDs) == 0 {
 				if err != nil {
-					h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
+					h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, currentRoutingModel, scheduleDecision, err, false), streamStarted)
 					return
 				}
 			} else {
@@ -636,7 +633,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}
 		}
 		if selection == nil || selection.Account == nil {
-			h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+			logOpenAIAccountSelectFailure(c, reqLog, "openai_messages.account_select_failed", scheduleDecision, service.ErrNoAvailableAccounts, len(failedAccountIDs))
+			h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, currentRoutingModel, scheduleDecision, service.ErrNoAvailableAccounts, true), streamStarted)
 			return
 		}
 		account := selection.Account
@@ -1377,11 +1375,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		service.OpenAIUpstreamTransportResponsesWebsocketV2,
 	)
 	if err != nil {
-		reqLog.Warn("openai.websocket_account_select_failed", zap.Error(err))
+		logOpenAIAccountSelectFailure(c, reqLog, "openai.websocket_account_select_failed", scheduleDecision, err, 0)
 		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available account")
 		return
 	}
 	if selection == nil || selection.Account == nil {
+		logOpenAIAccountSelectFailure(c, reqLog, "openai.websocket_account_select_failed", scheduleDecision, service.ErrNoAvailableAccounts, 0)
 		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available account")
 		return
 	}
@@ -1792,6 +1791,76 @@ func shouldLogOpenAIForwardFailureAsWarn(c *gin.Context, wroteFallback bool) boo
 		return false
 	}
 	return c.Writer.Written()
+}
+
+func logOpenAIAccountSelectFailure(c *gin.Context, reqLog *zap.Logger, message string, decision service.OpenAIAccountScheduleDecision, err error, excludedAccountCount int) {
+	service.SetOpsOpenAIAccountSelectFailure(c, decision, err, excludedAccountCount)
+	if reqLog == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.Int("excluded_account_count", excludedAccountCount),
+		zap.String("layer", decision.Layer),
+		zap.Int("candidate_count", decision.CandidateCount),
+		zap.Int("top_k", decision.TopK),
+		zap.Float64("load_skew", decision.LoadSkew),
+		zap.Bool("warm_pool_tried", decision.WarmPoolTried),
+		zap.Int("warm_pool_candidate_count", decision.WarmPoolCandidateCount),
+	}
+	if err != nil {
+		fields = append(fields, zap.Error(err))
+	}
+	if decision.FailureReason != "" {
+		fields = append(fields, zap.String("failure_reason", decision.FailureReason))
+	} else if err != nil && errors.Is(err, service.ErrNoAvailableAccounts) {
+		fields = append(fields, zap.String("failure_reason", "no_available_accounts"))
+	}
+	if decision.FailureDetail != "" {
+		fields = append(fields, zap.String("failure_detail", decision.FailureDetail))
+	} else if err != nil && errors.Is(err, service.ErrNoAvailableAccounts) {
+		fields = append(fields, zap.String("failure_detail", strings.TrimSpace(err.Error())))
+	}
+	reqLog.Warn(message, fields...)
+}
+
+func (h *OpenAIGatewayHandler) resolveOpenAINoAvailableAccountMessage(
+	ctx context.Context,
+	groupID *int64,
+	requestedModel string,
+	decision service.OpenAIAccountScheduleDecision,
+	err error,
+	exposeScheduling bool,
+) string {
+	if h != nil && h.gatewayService != nil {
+		if msg := h.gatewayService.ResolveNoAvailableAccountClientMessage(ctx, groupID, requestedModel); strings.TrimSpace(msg) != "" {
+			return msg
+		}
+	}
+	message := buildOpenAIAccountSelectClientMessage(decision, err)
+	if strings.TrimSpace(message) != "" {
+		return message
+	}
+	if exposeScheduling {
+		return message
+	}
+	return "Service temporarily unavailable"
+}
+
+func buildOpenAIAccountSelectClientMessage(decision service.OpenAIAccountScheduleDecision, err error) string {
+	detail := strings.TrimSpace(decision.FailureDetail)
+	if detail != "" {
+		return detail
+	}
+	reason := strings.TrimSpace(decision.FailureReason)
+	if reason != "" {
+		return reason
+	}
+	if err != nil {
+		if detail = strings.TrimSpace(err.Error()); detail != "" {
+			return detail
+		}
+	}
+	return "Service temporarily unavailable"
 }
 
 // errorResponse returns OpenAI API format error response
