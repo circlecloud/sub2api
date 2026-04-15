@@ -709,7 +709,10 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	}
 
 	if user.Balance < 0 {
-		return nil, fmt.Errorf("balance cannot be negative, current balance: %.2f, requested operation would result in: %.2f", oldBalance, user.Balance)
+		return nil, infraerrors.BadRequest(
+			"BALANCE_NEGATIVE",
+			fmt.Sprintf("balance cannot be negative, current balance: %.2f, requested operation would result in: %.2f", oldBalance, user.Balance),
+		)
 	}
 
 	if err := s.userRepo.Update(ctx, user); err != nil {

@@ -2,11 +2,14 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -73,6 +76,34 @@ func TestUserHandlerList_PassesSortParamsAndFilterFlags(t *testing.T) {
 	require.Equal(t, "asc", adminSvc.lastUserListSortOrder)
 	require.NotNil(t, adminSvc.lastUserListFilters.IncludeSubscriptions)
 	require.False(t, *adminSvc.lastUserListFilters.IncludeSubscriptions)
+}
+
+type failingUpdateBalanceAdminService struct {
+	*stubAdminService
+	err error
+}
+
+func (f *failingUpdateBalanceAdminService) UpdateUserBalance(_ context.Context, _ int64, _ float64, _ string, _ string) (*service.User, error) {
+	return nil, f.err
+}
+
+func TestUserHandler_UpdateBalance_NegativeBalanceReturnsBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	userHandler := NewUserHandler(&failingUpdateBalanceAdminService{
+		stubAdminService: newStubAdminService(),
+		err:              infraerrors.BadRequest("BALANCE_NEGATIVE", "balance cannot be negative, current balance: 105.97, requested operation would result in: -0.06"),
+	}, nil)
+	router.POST("/api/v1/admin/users/:id/balance", userHandler.UpdateBalance)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/261/balance", bytes.NewBufferString(`{"balance":106.03,"operation":"subtract"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "BALANCE_NEGATIVE")
+	require.Contains(t, rec.Body.String(), "balance cannot be negative")
 }
 
 func TestUserHandlerEndpoints(t *testing.T) {

@@ -4,8 +4,10 @@ package service
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -94,4 +96,26 @@ func TestAdminService_UpdateUserBalance_NoChangeNoInvalidate(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, invalidator.userIDs)
 	require.Empty(t, redeemRepo.created)
+}
+
+func TestAdminService_UpdateUserBalance_NegativeBalanceReturnsBadRequest(t *testing.T) {
+	baseRepo := &userRepoStub{user: &User{ID: 7, Balance: 105.97}}
+	repo := &balanceUserRepoStub{userRepoStub: baseRepo}
+	redeemRepo := &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}}
+	invalidator := &authCacheInvalidatorStub{}
+	svc := &adminServiceImpl{
+		userRepo:             repo,
+		redeemCodeRepo:       redeemRepo,
+		authCacheInvalidator: invalidator,
+	}
+
+	user, err := svc.UpdateUserBalance(context.Background(), 7, 106.03, "subtract", "")
+	require.Nil(t, user)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "BALANCE_NEGATIVE", infraerrors.Reason(err))
+	require.Contains(t, infraerrors.Message(err), "balance cannot be negative")
+	require.Empty(t, invalidator.userIDs)
+	require.Empty(t, redeemRepo.created)
+	require.Empty(t, repo.updated)
 }
