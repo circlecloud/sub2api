@@ -23,6 +23,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -132,21 +133,37 @@ type UpdateAccountRequest struct {
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
+type BulkAccountFilterRequest struct {
+	Platform          string `json:"platform"`
+	AccountType       string `json:"type"`
+	Status            string `json:"status"`
+	Group             string `json:"group"`
+	GroupExclude      string `json:"group_exclude"`
+	GroupMatch        string `json:"group_match"`
+	Search            string `json:"search"`
+	PrivacyMode       string `json:"privacy_mode"`
+	LastUsedFilter    string `json:"last_used_filter"`
+	LastUsedStartDate string `json:"last_used_start_date"`
+	LastUsedEndDate   string `json:"last_used_end_date"`
+	Timezone          string `json:"timezone"`
+}
+
 // BulkUpdateAccountsRequest represents the payload for bulk editing accounts
 type BulkUpdateAccountsRequest struct {
-	AccountIDs              []int64        `json:"account_ids" binding:"required,min=1"`
-	Name                    string         `json:"name"`
-	ProxyID                 *int64         `json:"proxy_id"`
-	Concurrency             *int           `json:"concurrency"`
-	Priority                *int           `json:"priority"`
-	RateMultiplier          *float64       `json:"rate_multiplier"`
-	LoadFactor              *int           `json:"load_factor"`
-	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
-	Schedulable             *bool          `json:"schedulable"`
-	GroupIDs                *[]int64       `json:"group_ids"`
-	Credentials             map[string]any `json:"credentials"`
-	Extra                   map[string]any `json:"extra"`
-	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	AccountIDs              []int64                   `json:"account_ids"`
+	Filters                 *BulkAccountFilterRequest `json:"filters"`
+	Name                    string                    `json:"name"`
+	ProxyID                 *int64                    `json:"proxy_id"`
+	Concurrency             *int                      `json:"concurrency"`
+	Priority                *int                      `json:"priority"`
+	RateMultiplier          *float64                  `json:"rate_multiplier"`
+	LoadFactor              *int                      `json:"load_factor"`
+	Status                  string                    `json:"status" binding:"omitempty,oneof=active inactive error"`
+	Schedulable             *bool                     `json:"schedulable"`
+	GroupIDs                *[]int64                  `json:"group_ids"`
+	Credentials             map[string]any            `json:"credentials"`
+	Extra                   map[string]any            `json:"extra"`
+	ConfirmMixedChannelRisk *bool                     `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
 // CheckMixedChannelRequest represents check mixed channel risk request
@@ -165,8 +182,6 @@ type AccountWithConcurrency struct {
 	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
 	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
 }
-
-const accountListGroupUngroupedQueryValue = "ungrouped"
 
 func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, account *service.Account) AccountWithConcurrency {
 	item := AccountWithConcurrency{
@@ -212,8 +227,8 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 	return item
 }
 
-func parseAccountLastUsedFilter(c *gin.Context) (string, *time.Time, *time.Time, error) {
-	filter := strings.TrimSpace(c.Query("last_used_filter"))
+func parseLastUsedFilterInput(filter, startDate, endDate, userTZ string) (string, *time.Time, *time.Time, error) {
+	filter = strings.TrimSpace(filter)
 	if filter == "" {
 		return "", nil, nil, nil
 	}
@@ -224,13 +239,12 @@ func parseAccountLastUsedFilter(c *gin.Context) (string, *time.Time, *time.Time,
 		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_FILTER", "invalid last used filter")
 	}
 
-	startDate := strings.TrimSpace(c.Query("last_used_start_date"))
-	endDate := strings.TrimSpace(c.Query("last_used_end_date"))
+	startDate = strings.TrimSpace(startDate)
+	endDate = strings.TrimSpace(endDate)
 	if startDate == "" || endDate == "" {
 		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_RANGE", "last used range requires start and end date")
 	}
 
-	userTZ := c.Query("timezone")
 	startTime, err := timezone.ParseInUserLocation("2006-01-02", startDate, userTZ)
 	if err != nil {
 		return "", nil, nil, infraerrors.BadRequest("INVALID_LAST_USED_START_DATE", "invalid last used start date")
@@ -247,48 +261,122 @@ func parseAccountLastUsedFilter(c *gin.Context) (string, *time.Time, *time.Time,
 	return filter, &startTime, &endExclusive, nil
 }
 
+type accountListFilterInput struct {
+	Platform          string
+	AccountType       string
+	Status            string
+	Search            string
+	Group             string
+	GroupExclude      string
+	GroupMatch        string
+	PrivacyMode       string
+	LastUsedFilter    string
+	LastUsedStartDate string
+	LastUsedEndDate   string
+	Timezone          string
+}
+
+func normalizeAccountListFilters(input accountListFilterInput) (service.AccountListFilters, error) {
+	search := strings.TrimSpace(input.Search)
+	if len(search) > 100 {
+		search = search[:100]
+	}
+	groupFilter, err := service.NormalizeAccountGroupFilter(input.Group)
+	if err != nil {
+		return service.AccountListFilters{}, err
+	}
+	groupExcludeFilter, err := service.NormalizeAccountGroupExcludeFilter(input.GroupExclude)
+	if err != nil {
+		return service.AccountListFilters{}, err
+	}
+	groupExact, err := service.ParseAccountGroupMatch(input.GroupMatch)
+	if err != nil {
+		return service.AccountListFilters{}, err
+	}
+	if groupFilter == "" || groupFilter == service.AccountListGroupUngroupedQueryValue {
+		groupExact = false
+	}
+	if groupFilter == service.AccountListGroupUngroupedQueryValue {
+		groupExcludeFilter = ""
+	}
+	lastUsedFilter, lastUsedStart, lastUsedEnd, err := parseLastUsedFilterInput(input.LastUsedFilter, input.LastUsedStartDate, input.LastUsedEndDate, input.Timezone)
+	if err != nil {
+		return service.AccountListFilters{}, err
+	}
+	return service.AccountListFilters{
+		Platform:        strings.TrimSpace(input.Platform),
+		AccountType:     strings.TrimSpace(input.AccountType),
+		Status:          strings.TrimSpace(input.Status),
+		Search:          search,
+		GroupIDs:        groupFilter,
+		GroupExcludeIDs: groupExcludeFilter,
+		GroupExact:      groupExact,
+		PrivacyMode:     strings.TrimSpace(input.PrivacyMode),
+		LastUsedFilter:  lastUsedFilter,
+		LastUsedStart:   lastUsedStart,
+		LastUsedEnd:     lastUsedEnd,
+	}, nil
+}
+
+func parseAccountListFilters(c *gin.Context) (service.AccountListFilters, error) {
+	return normalizeAccountListFilters(accountListFilterInput{
+		Platform:          c.Query("platform"),
+		AccountType:       c.Query("type"),
+		Status:            c.Query("status"),
+		Search:            c.Query("search"),
+		Group:             c.Query("group"),
+		GroupExclude:      c.Query("group_exclude"),
+		GroupMatch:        c.Query("group_match"),
+		PrivacyMode:       c.Query("privacy_mode"),
+		LastUsedFilter:    c.Query("last_used_filter"),
+		LastUsedStartDate: c.Query("last_used_start_date"),
+		LastUsedEndDate:   c.Query("last_used_end_date"),
+		Timezone:          c.Query("timezone"),
+	})
+}
+
+func normalizeBulkAccountFilterRequest(req *BulkAccountFilterRequest) (*service.AccountListFilters, error) {
+	if req == nil {
+		return nil, nil
+	}
+	filters, err := normalizeAccountListFilters(accountListFilterInput{
+		Platform:          req.Platform,
+		AccountType:       req.AccountType,
+		Status:            req.Status,
+		Search:            req.Search,
+		Group:             req.Group,
+		GroupExclude:      req.GroupExclude,
+		GroupMatch:        req.GroupMatch,
+		PrivacyMode:       req.PrivacyMode,
+		LastUsedFilter:    req.LastUsedFilter,
+		LastUsedStartDate: req.LastUsedStartDate,
+		LastUsedEndDate:   req.LastUsedEndDate,
+		Timezone:          req.Timezone,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &filters, nil
+}
+
 // List handles listing all accounts with pagination
 // GET /api/v1/admin/accounts
 func (h *AccountHandler) List(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
-	platform := c.Query("platform")
-	accountType := c.Query("type")
-	status := c.Query("status")
-	search := c.Query("search")
-	privacyMode := strings.TrimSpace(c.Query("privacy_mode"))
-	sortBy := c.DefaultQuery("sort_by", "name")
-	sortOrder := c.DefaultQuery("sort_order", "asc")
-	// 标准化和验证 search 参数
-	search = strings.TrimSpace(search)
-	if len(search) > 100 {
-		search = search[:100]
-	}
-	lastUsedFilter, lastUsedStart, lastUsedEnd, err := parseAccountLastUsedFilter(c)
+	filters, err := parseAccountListFilters(c)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
+	params := pagination.PaginationParams{
+		Page:      page,
+		PageSize:  pageSize,
+		SortBy:    strings.TrimSpace(c.DefaultQuery("sort_by", "id")),
+		SortOrder: strings.TrimSpace(c.DefaultQuery("sort_order", "desc")),
+	}
 	lite := parseBoolQueryWithDefault(c.Query("lite"), false)
 
-	var groupID int64
-	if groupIDStr := c.Query("group"); groupIDStr != "" {
-		if groupIDStr == accountListGroupUngroupedQueryValue {
-			groupID = service.AccountListGroupUngrouped
-		} else {
-			parsedGroupID, parseErr := strconv.ParseInt(groupIDStr, 10, 64)
-			if parseErr != nil {
-				response.ErrorFrom(c, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
-				return
-			}
-			if parsedGroupID < 0 {
-				response.ErrorFrom(c, infraerrors.BadRequest("INVALID_GROUP_FILTER", "invalid group filter"))
-				return
-			}
-			groupID = parsedGroupID
-		}
-	}
-
-	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, lastUsedFilter, lastUsedStart, lastUsedEnd, sortBy, sortOrder)
+	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), params, filters)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -410,7 +498,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 		result[i] = item
 	}
 
-	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, lite)
+	etag := buildAccountsListETag(result, total, page, pageSize, filters.Platform, filters.AccountType, filters.Status, filters.Search, lite)
 	if etag != "" {
 		c.Header("ETag", etag)
 		c.Header("Vary", "If-None-Match")
@@ -1402,6 +1490,58 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 	})
 }
 
+// PreviewBulkUpdateTargets previews the affected accounts for bulk update filters.
+// POST /api/v1/admin/accounts/bulk-update/preview
+func (h *AccountHandler) PreviewBulkUpdateTargets(c *gin.Context) {
+	var req BulkAccountFilterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	filters, err := normalizeBulkAccountFilterRequest(&req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	preview, err := h.adminService.PreviewBulkUpdateTargets(c.Request.Context(), *filters)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, preview)
+}
+
+// ResolveBulkUpdateTargets resolves the affected account IDs for bulk update filters.
+// POST /api/v1/admin/accounts/bulk-update/resolve
+func (h *AccountHandler) ResolveBulkUpdateTargets(c *gin.Context) {
+	var req BulkAccountFilterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	filters, err := normalizeBulkAccountFilterRequest(&req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	resolved, err := h.adminService.ResolveBulkUpdateTargets(c.Request.Context(), *filters)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	accountIDs := make([]int64, 0, len(resolved))
+	for _, target := range resolved {
+		if target.ID <= 0 {
+			continue
+		}
+		accountIDs = append(accountIDs, target.ID)
+	}
+	response.Success(c, gin.H{
+		"count":       len(accountIDs),
+		"account_ids": accountIDs,
+	})
+}
+
 // BulkUpdate handles bulk updating accounts with selected fields/credentials.
 // POST /api/v1/admin/accounts/bulk-update
 func (h *AccountHandler) BulkUpdate(c *gin.Context) {
@@ -1412,6 +1552,15 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 	}
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
+		return
+	}
+	filters, err := normalizeBulkAccountFilterRequest(req.Filters)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if (len(req.AccountIDs) == 0) == (filters == nil) {
+		response.BadRequest(c, "exactly one of account_ids or filters must be provided")
 		return
 	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
@@ -1439,6 +1588,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 
 	result, err := h.adminService.BulkUpdateAccounts(c.Request.Context(), &service.BulkUpdateAccountsInput{
 		AccountIDs:            req.AccountIDs,
+		Filters:               filters,
 		Name:                  req.Name,
 		ProxyID:               req.ProxyID,
 		Concurrency:           req.Concurrency,
@@ -2084,7 +2234,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	accounts := make([]*service.Account, 0)
 
 	if len(req.AccountIDs) == 0 {
-		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", 0, "", "", nil, nil, "name", "asc")
+		allAccounts, _, err := h.adminService.ListAccounts(ctx, pagination.PaginationParams{Page: 1, PageSize: 10000, SortBy: "name", SortOrder: "asc"}, service.AccountListFilters{Platform: "gemini", AccountType: "oauth"})
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return

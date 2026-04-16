@@ -45,6 +45,13 @@
       >
         {{ refreshUsageWindowLabel || t('admin.accounts.bulkActions.refreshUsageWindow') }}
       </button>
+      <button
+        @click="$emit('set-privacy')"
+        :disabled="settingPrivacy"
+        class="btn btn-secondary btn-sm disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {{ settingPrivacy ? t('admin.accounts.bulkActions.settingPrivacyAction') : t('admin.accounts.bulkActions.setPrivacy') }}
+      </button>
       <button @click="$emit('toggle-schedulable', true)" class="btn btn-success btn-sm">{{ t('admin.accounts.bulkActions.enableScheduling') }}</button>
       <button @click="$emit('toggle-schedulable', false)" class="btn btn-warning btn-sm">{{ t('admin.accounts.bulkActions.disableScheduling') }}</button>
       <button
@@ -67,6 +74,7 @@ withDefaults(defineProps<{
   testingAccounts?: boolean
   refreshingUsageWindow?: boolean
   refreshUsageWindowLabel?: string
+  settingPrivacy?: boolean
   preparingEdit?: boolean
   editLabel?: string
 }>(), {
@@ -74,11 +82,13 @@ withDefaults(defineProps<{
   testingAccounts: false,
   refreshingUsageWindow: false,
   refreshUsageWindowLabel: '',
+  settingPrivacy: false,
   preparingEdit: false,
+
   editLabel: ''
 })
 
-defineEmits(['delete', 'edit', 'test', 'clear', 'select-page', 'toggle-schedulable', 'reset-status', 'refresh-token', 'refresh-usage-window'])
+defineEmits(['delete', 'edit', 'test', 'clear', 'select-page', 'toggle-schedulable', 'reset-status', 'refresh-token', 'refresh-usage-window', 'set-privacy'])
 
 const { t } = useI18n()
 </script>

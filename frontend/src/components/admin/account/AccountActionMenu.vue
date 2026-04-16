@@ -45,7 +45,7 @@
               <Icon name="refresh" size="sm" :class="isRefreshingUsageWindow ? 'animate-spin' : ''" />
               {{ isRefreshingUsageWindow ? t('common.loading') : t('admin.accounts.refreshUsageWindow') }}
             </button>
-            <button v-if="supportsPrivacy" @click="$emit('set-privacy', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+            <button v-if="supportsPrivacy" @click="$emit('set-privacy', account); $emit('close')" :disabled="isSetPrivacyDisabled" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-dark-700">
               <Icon name="shield" size="sm" />
               {{ t('admin.accounts.setPrivacy') }}
             </button>
@@ -79,6 +79,7 @@ const props = defineProps<{
   refreshingUsageWindowAccountId?: number | null
   bulkRefreshingToken?: boolean
   bulkRefreshingUsageWindow?: boolean
+  bulkSettingPrivacy?: boolean
 }>()
 const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'reauth', 'refresh-token', 'refresh-usage-window', 'recover-state', 'reset-quota', 'set-privacy'])
 const { t } = useI18n()
@@ -120,6 +121,7 @@ const isRefreshingToken = computed(() => props.account != null && props.refreshi
 const isRefreshTokenDisabled = computed(() => isRefreshingToken.value || props.bulkRefreshingToken === true)
 const isRefreshingUsageWindow = computed(() => props.account != null && props.refreshingUsageWindowAccountId != null && props.account.id === props.refreshingUsageWindowAccountId)
 const isRefreshUsageWindowDisabled = computed(() => isRefreshingUsageWindow.value || props.bulkRefreshingUsageWindow === true)
+const isSetPrivacyDisabled = computed(() => props.bulkSettingPrivacy === true)
 const hasQuotaLimit = computed(() => {
   return (props.account?.type === 'apikey' || props.account?.type === 'bedrock') && (
     (props.account?.quota_limit ?? 0) > 0 ||

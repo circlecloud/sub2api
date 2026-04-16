@@ -164,6 +164,7 @@ const dropdownRef = ref<HTMLElement | null>(null)
 const optionsListRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<'bottom' | 'top'>('bottom')
 const triggerRect = ref<DOMRect | null>(null)
+const dropdownWidth = ref<number | null>(null)
 
 // i18n placeholders
 const placeholderText = computed(() => props.placeholder ?? t('common.selectOption'))
@@ -177,18 +178,22 @@ const dropdownStyle = computed(() => {
   const rect = triggerRect.value
   const viewportPadding = 8
   const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : rect.width
-  const availableWidth = Math.max(rect.width, viewportWidth - viewportPadding * 2)
-  const minWidth = Math.min(rect.width, viewportWidth - viewportPadding * 2)
+  const viewportMaxWidth = Math.max(0, viewportWidth - viewportPadding * 2)
+  const minWidth = Math.min(rect.width, viewportMaxWidth)
+  const effectiveWidth = Math.min(
+    viewportMaxWidth,
+    Math.max(rect.width, dropdownWidth.value ?? rect.width)
+  )
   const left = Math.min(
     Math.max(viewportPadding, rect.left),
-    Math.max(viewportPadding, viewportWidth - availableWidth - viewportPadding)
+    Math.max(viewportPadding, viewportWidth - effectiveWidth - viewportPadding)
   )
 
   const style: Record<string, string> = {
     position: 'fixed',
     left: `${left}px`,
     minWidth: `${Math.max(0, minWidth)}px`,
-    maxWidth: `${Math.max(0, viewportWidth - viewportPadding * 2)}px`,
+    maxWidth: `${viewportMaxWidth}px`,
     zIndex: '100000020'
   }
 
@@ -296,17 +301,19 @@ const handleOptionMouseEnter = (option: any, index: number) => {
 
 // Update trigger rect periodically while open to follow scroll/resize
 const updateTriggerRect = () => {
-  if (containerRef.value) {
-    triggerRect.value = containerRef.value.getBoundingClientRect()
+  const anchor = triggerRef.value ?? containerRef.value
+  if (anchor) {
+    triggerRect.value = anchor.getBoundingClientRect()
   }
 }
 
 const calculateDropdownPosition = () => {
-  if (!containerRef.value) return
+  if (!containerRef.value && !triggerRef.value) return
   updateTriggerRect()
 
   nextTick(() => {
     if (!dropdownRef.value || !triggerRect.value) return
+    dropdownWidth.value = dropdownRef.value.offsetWidth || triggerRect.value.width
     const dropdownHeight = dropdownRef.value.offsetHeight || 240
     const spaceBelow = window.innerHeight - triggerRect.value.bottom
     const spaceAbove = triggerRect.value.top
@@ -347,6 +354,7 @@ watch(isOpen, (open) => {
   } else {
     searchQuery.value = ''
     focusedIndex.value = -1
+    dropdownWidth.value = null
     window.removeEventListener('scroll', updateTriggerRect, { capture: true })
     window.removeEventListener('resize', calculateDropdownPosition)
   }

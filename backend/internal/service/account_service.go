@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -14,8 +17,118 @@ var (
 	ErrAccountNilInput = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
 )
 
-const AccountListGroupUngrouped int64 = -1
+const AccountListGroupUngroupedQueryValue = "ungrouped"
+const AccountListGroupMatchContainsQueryValue = "contains"
+const AccountListGroupMatchExactQueryValue = "exact"
 const AccountPrivacyModeUnsetFilter = "__unset__"
+
+func parseAccountGroupIDList(raw, errorCode, errorMessage string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[int64]struct{}, len(parts))
+	groupIDs := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, infraerrors.BadRequest(errorCode, errorMessage)
+		}
+		groupID, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || groupID <= 0 {
+			return nil, infraerrors.BadRequest(errorCode, errorMessage)
+		}
+		if _, exists := seen[groupID]; exists {
+			continue
+		}
+		seen[groupID] = struct{}{}
+		groupIDs = append(groupIDs, groupID)
+	}
+	sort.Slice(groupIDs, func(i, j int) bool { return groupIDs[i] < groupIDs[j] })
+	return groupIDs, nil
+}
+
+func normalizeAccountGroupIDList(raw, errorCode, errorMessage string) (string, error) {
+	groupIDs, err := parseAccountGroupIDList(raw, errorCode, errorMessage)
+	if err != nil {
+		return "", err
+	}
+	if len(groupIDs) == 0 {
+		return "", nil
+	}
+	parts := make([]string, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		parts = append(parts, strconv.FormatInt(groupID, 10))
+	}
+	return strings.Join(parts, ","), nil
+}
+
+func ParseAccountGroupFilter(raw string) (bool, []int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false, nil, nil
+	}
+	if raw == AccountListGroupUngroupedQueryValue {
+		return true, nil, nil
+	}
+	groupIDs, err := parseAccountGroupIDList(raw, "INVALID_GROUP_FILTER", "invalid group filter")
+	if err != nil {
+		return false, nil, err
+	}
+	return false, groupIDs, nil
+}
+
+func NormalizeAccountGroupFilter(raw string) (string, error) {
+	ungrouped, groupIDs, err := ParseAccountGroupFilter(raw)
+	if err != nil {
+		return "", err
+	}
+	if ungrouped {
+		return AccountListGroupUngroupedQueryValue, nil
+	}
+	if len(groupIDs) == 0 {
+		return "", nil
+	}
+	parts := make([]string, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		parts = append(parts, strconv.FormatInt(groupID, 10))
+	}
+	return strings.Join(parts, ","), nil
+}
+
+func ParseAccountGroupExcludeFilter(raw string) ([]int64, error) {
+	return parseAccountGroupIDList(raw, "INVALID_GROUP_EXCLUDE_FILTER", "invalid group exclude filter")
+}
+
+func NormalizeAccountGroupExcludeFilter(raw string) (string, error) {
+	return normalizeAccountGroupIDList(raw, "INVALID_GROUP_EXCLUDE_FILTER", "invalid group exclude filter")
+}
+
+func ParseAccountGroupMatch(raw string) (bool, error) {
+	switch strings.TrimSpace(raw) {
+	case "", AccountListGroupMatchContainsQueryValue:
+		return false, nil
+	case AccountListGroupMatchExactQueryValue:
+		return true, nil
+	default:
+		return false, infraerrors.BadRequest("INVALID_GROUP_MATCH", "invalid group match")
+	}
+}
+
+type AccountListFilters struct {
+	Platform        string
+	AccountType     string
+	Status          string
+	Search          string
+	GroupIDs        string
+	GroupExcludeIDs string
+	GroupExact      bool
+	PrivacyMode     string
+	LastUsedFilter  string
+	LastUsedStart   *time.Time
+	LastUsedEnd     *time.Time
+}
 
 type AccountRepository interface {
 	Create(ctx context.Context, account *Account) error
@@ -37,7 +150,7 @@ type AccountRepository interface {
 	Delete(ctx context.Context, id int64) error
 
 	List(ctx context.Context, params pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error)
-	ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]Account, *pagination.PaginationResult, error)
+	ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error)
 	ListByGroup(ctx context.Context, groupID int64) ([]Account, error)
 	ListActive(ctx context.Context) ([]Account, error)
 	ListByPlatform(ctx context.Context, platform string) ([]Account, error)
@@ -89,6 +202,20 @@ type AccountBulkUpdate struct {
 	Schedulable    *bool
 	Credentials    map[string]any
 	Extra          map[string]any
+}
+
+type AccountBulkFilter = AccountListFilters
+
+type BulkAccountTargetPreview struct {
+	Count     int64    `json:"count"`
+	Platforms []string `json:"platforms"`
+	Types     []string `json:"types"`
+}
+
+type BulkAccountTargetRef struct {
+	ID       int64  `json:"id"`
+	Platform string `json:"platform"`
+	Type     string `json:"type"`
 }
 
 // CreateAccountRequest 创建账号请求

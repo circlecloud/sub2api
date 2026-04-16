@@ -2,9 +2,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock } = vi.hoisted(() => ({
+const {
+  updateAccountMock,
+  checkMixedChannelRiskMock,
+  getWebSearchEmulationConfigMock,
+  listTLSFingerprintProfilesMock
+} = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
-  checkMixedChannelRiskMock: vi.fn()
+  checkMixedChannelRiskMock: vi.fn(),
+  getWebSearchEmulationConfigMock: vi.fn(),
+  listTLSFingerprintProfilesMock: vi.fn()
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -26,6 +33,12 @@ vi.mock('@/api/admin', () => ({
     accounts: {
       update: updateAccountMock,
       checkMixedChannelRisk: checkMixedChannelRiskMock
+    },
+    settings: {
+      getWebSearchEmulationConfig: getWebSearchEmulationConfigMock
+    },
+    tlsFingerprintProfiles: {
+      list: listTLSFingerprintProfilesMock
     }
   }
 }))
@@ -33,6 +46,25 @@ vi.mock('@/api/admin', () => ({
 vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
+
+vi.mock('@/composables/useQuotaNotifyState', async () => {
+  const { ref } = await vi.importActual<typeof import('vue')>('vue')
+
+  return {
+    useQuotaNotifyState: () => ({
+      globalEnabled: ref(false),
+      state: {
+        daily: { enabled: false, threshold: null, thresholdType: 'percentage' },
+        weekly: { enabled: false, threshold: null, thresholdType: 'percentage' },
+        total: { enabled: false, threshold: null, thresholdType: 'percentage' }
+      },
+      loadGlobalState: vi.fn(),
+      loadFromExtra: vi.fn(),
+      writeToExtra: vi.fn(),
+      reset: vi.fn()
+    })
+  }
+})
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
@@ -82,7 +114,33 @@ const ModelWhitelistSelectorStub = defineComponent({
   `
 })
 
-function buildAccount() {
+const SelectStub = defineComponent({
+  name: 'Select',
+  props: {
+    modelValue: {
+      type: [String, Number, Boolean],
+      default: ''
+    },
+    options: {
+      type: Array,
+      default: () => []
+    }
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <select :value="modelValue" @change="$emit('update:modelValue', $event.target.value)">
+      <option
+        v-for="option in options"
+        :key="typeof option === 'object' ? option.value : option"
+        :value="typeof option === 'object' ? option.value : option"
+      >
+        {{ typeof option === 'object' ? option.label : option }}
+      </option>
+    </select>
+  `
+})
+
+function buildAccount(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
     name: 'OpenAI Key',
@@ -104,7 +162,8 @@ function buildAccount() {
     status: 'active',
     group_ids: [],
     expires_at: null,
-    auto_pause_on_expired: false
+    auto_pause_on_expired: false,
+    ...overrides
   } as any
 }
 
@@ -119,7 +178,7 @@ function mountModal(account = buildAccount()) {
     global: {
       stubs: {
         BaseDialog: BaseDialogStub,
-        Select: true,
+        Select: SelectStub,
         Icon: true,
         ProxySelector: true,
         GroupSelector: true,
@@ -130,8 +189,21 @@ function mountModal(account = buildAccount()) {
 }
 
 describe('EditAccountModal', () => {
+  it('shows ctx_pool in OpenAI WS mode options', () => {
+    getWebSearchEmulationConfigMock.mockResolvedValue({ enabled: false, providers: [] })
+    listTLSFingerprintProfilesMock.mockResolvedValue([])
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+
+    const wrapper = mountModal(buildAccount({ type: 'oauth', credentials: {} }))
+
+    expect(wrapper.text()).toContain('admin.accounts.openai.wsModeCtxPool')
+  })
+
   it('reopening the same account rehydrates the OpenAI whitelist from props', async () => {
     const account = buildAccount()
+    getWebSearchEmulationConfigMock.mockResolvedValue({ enabled: false, providers: [] })
+    listTLSFingerprintProfilesMock.mockResolvedValue([])
     updateAccountMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })

@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -207,18 +208,27 @@ func (s *AccountRepoSuite) TestList() {
 }
 
 func (s *AccountRepoSuite) TestListWithFilters() {
+	singleGroupFilter := ""
+	multipleGroupFilter := ""
+	excludeGroupFilter := ""
+	exactExcludeGroupFilter := ""
 	tests := []struct {
-		name        string
-		setup       func(client *dbent.Client)
-		platform    string
-		accType     string
-		status      string
-		search      string
-		groupID     int64
-		privacyMode string
-		wantCount   int
-		validate    func(accounts []service.Account)
+		name                      string
+		setup                     func(client *dbent.Client)
+		platform                  string
+		accType                   string
+		status                    string
+		search                    string
+		groupFilter               string
+		groupExcludeFilter        string
+		groupExact                bool
+		resolveGroupFilter        func(client *dbent.Client) string
+		resolveGroupExcludeFilter func(client *dbent.Client) string
+		privacyMode               string
+		wantCount                 int
+		validate                  func(accounts []service.Account)
 	}{
+
 		{
 			name: "filter_by_platform",
 			setup: func(client *dbent.Client) {
@@ -383,11 +393,170 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 				mustCreateAccount(s.T(), client, &service.Account{Name: "ungrouped-account"})
 				mustBindAccountToGroup(s.T(), client, grouped.ID, group.ID, 1)
 			},
-			groupID:   service.AccountListGroupUngrouped,
-			wantCount: 1,
+			groupFilter: service.AccountListGroupUngroupedQueryValue,
+			wantCount:   1,
 			validate: func(accounts []service.Account) {
 				s.Require().Equal("ungrouped-account", accounts[0].Name)
 				s.Require().Empty(accounts[0].GroupIDs)
+			},
+		},
+		{
+			name: "filter_by_exact_single_group",
+			setup: func(client *dbent.Client) {
+				groupA := mustCreateGroup(s.T(), client, &service.Group{Name: "group-a"})
+				groupB := mustCreateGroup(s.T(), client, &service.Group{Name: "group-b"})
+				onlyA := mustCreateAccount(s.T(), client, &service.Account{Name: "only-a"})
+				aAndB := mustCreateAccount(s.T(), client, &service.Account{Name: "a-and-b"})
+				mustBindAccountToGroup(s.T(), client, onlyA.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndB.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndB.ID, groupB.ID, 1)
+				singleGroupFilter = strconv.FormatInt(groupA.ID, 10)
+			},
+			groupExact: true,
+			resolveGroupFilter: func(_ *dbent.Client) string {
+				return singleGroupFilter
+			},
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("only-a", accounts[0].Name)
+			},
+		},
+		{
+			name: "filter_by_contains_multiple_groups",
+			setup: func(client *dbent.Client) {
+				groupA := mustCreateGroup(s.T(), client, &service.Group{Name: "group-a"})
+				groupB := mustCreateGroup(s.T(), client, &service.Group{Name: "group-b"})
+				groupC := mustCreateGroup(s.T(), client, &service.Group{Name: "group-c"})
+				groupD := mustCreateGroup(s.T(), client, &service.Group{Name: "group-d"})
+				exact := mustCreateAccount(s.T(), client, &service.Account{Name: "exact-abc"})
+				extra := mustCreateAccount(s.T(), client, &service.Account{Name: "extra-abcd"})
+				partial := mustCreateAccount(s.T(), client, &service.Account{Name: "partial-ab"})
+				mustBindAccountToGroup(s.T(), client, exact.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exact.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exact.ID, groupC.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupC.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupD.ID, 1)
+				mustBindAccountToGroup(s.T(), client, partial.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, partial.ID, groupB.ID, 1)
+				multipleGroupFilter, _ = service.NormalizeAccountGroupFilter(strconv.FormatInt(groupC.ID, 10) + "," + strconv.FormatInt(groupA.ID, 10) + "," + strconv.FormatInt(groupB.ID, 10))
+			},
+			resolveGroupFilter: func(_ *dbent.Client) string {
+				return multipleGroupFilter
+			},
+			wantCount: 3,
+			validate: func(accounts []service.Account) {
+				names := []string{accounts[0].Name, accounts[1].Name, accounts[2].Name}
+				s.ElementsMatch([]string{"exact-abc", "extra-abcd", "partial-ab"}, names)
+			},
+		},
+		{
+			name: "filter_by_exact_multiple_groups",
+			setup: func(client *dbent.Client) {
+				groupA := mustCreateGroup(s.T(), client, &service.Group{Name: "group-a"})
+				groupB := mustCreateGroup(s.T(), client, &service.Group{Name: "group-b"})
+				groupC := mustCreateGroup(s.T(), client, &service.Group{Name: "group-c"})
+				groupD := mustCreateGroup(s.T(), client, &service.Group{Name: "group-d"})
+				exact := mustCreateAccount(s.T(), client, &service.Account{Name: "exact-abc"})
+				extra := mustCreateAccount(s.T(), client, &service.Account{Name: "extra-abcd"})
+				partial := mustCreateAccount(s.T(), client, &service.Account{Name: "partial-ab"})
+				mustBindAccountToGroup(s.T(), client, exact.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exact.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exact.ID, groupC.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupC.ID, 1)
+				mustBindAccountToGroup(s.T(), client, extra.ID, groupD.ID, 1)
+				mustBindAccountToGroup(s.T(), client, partial.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, partial.ID, groupB.ID, 1)
+				multipleGroupFilter, _ = service.NormalizeAccountGroupFilter(strconv.FormatInt(groupC.ID, 10) + "," + strconv.FormatInt(groupA.ID, 10) + "," + strconv.FormatInt(groupB.ID, 10))
+			},
+			groupExact: true,
+			resolveGroupFilter: func(_ *dbent.Client) string {
+				return multipleGroupFilter
+			},
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("exact-abc", accounts[0].Name)
+			},
+		},
+		{
+			name: "filter_by_exact_with_excluded_groups",
+			setup: func(client *dbent.Client) {
+				groupA := mustCreateGroup(s.T(), client, &service.Group{Name: "group-a"})
+				groupB := mustCreateGroup(s.T(), client, &service.Group{Name: "group-b"})
+				groupC := mustCreateGroup(s.T(), client, &service.Group{Name: "group-c"})
+				exactKeep := mustCreateAccount(s.T(), client, &service.Account{Name: "exact-keep"})
+				exactBlocked := mustCreateAccount(s.T(), client, &service.Account{Name: "exact-blocked"})
+				mustBindAccountToGroup(s.T(), client, exactKeep.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exactKeep.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exactBlocked.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exactBlocked.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, exactBlocked.ID, groupC.ID, 1)
+				exactExcludeGroupFilter, _ = service.NormalizeAccountGroupFilter(strconv.FormatInt(groupA.ID, 10) + "," + strconv.FormatInt(groupB.ID, 10))
+				excludeGroupFilter, _ = service.NormalizeAccountGroupExcludeFilter(strconv.FormatInt(groupB.ID, 10))
+			},
+			groupExact: true,
+			resolveGroupFilter: func(_ *dbent.Client) string {
+				return exactExcludeGroupFilter
+			},
+			resolveGroupExcludeFilter: func(_ *dbent.Client) string {
+				return excludeGroupFilter
+			},
+			wantCount: 0,
+		},
+		{
+			name: "filter_by_excluded_groups_only",
+			setup: func(client *dbent.Client) {
+				groupA := mustCreateGroup(s.T(), client, &service.Group{Name: "group-a"})
+				groupB := mustCreateGroup(s.T(), client, &service.Group{Name: "group-b"})
+				onlyA := mustCreateAccount(s.T(), client, &service.Account{Name: "only-a"})
+				onlyB := mustCreateAccount(s.T(), client, &service.Account{Name: "only-b"})
+				aAndB := mustCreateAccount(s.T(), client, &service.Account{Name: "a-and-b"})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "ungrouped"})
+				mustBindAccountToGroup(s.T(), client, onlyA.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, onlyB.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndB.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndB.ID, groupB.ID, 1)
+				excludeGroupFilter, _ = service.NormalizeAccountGroupExcludeFilter(strconv.FormatInt(groupB.ID, 10))
+			},
+			resolveGroupExcludeFilter: func(_ *dbent.Client) string {
+				return excludeGroupFilter
+			},
+			wantCount: 2,
+			validate: func(accounts []service.Account) {
+				names := []string{accounts[0].Name, accounts[1].Name}
+				s.ElementsMatch([]string{"only-a", "ungrouped"}, names)
+			},
+		},
+		{
+			name: "filter_by_contains_with_excluded_groups",
+			setup: func(client *dbent.Client) {
+				groupA := mustCreateGroup(s.T(), client, &service.Group{Name: "group-a"})
+				groupB := mustCreateGroup(s.T(), client, &service.Group{Name: "group-b"})
+				groupC := mustCreateGroup(s.T(), client, &service.Group{Name: "group-c"})
+				onlyA := mustCreateAccount(s.T(), client, &service.Account{Name: "only-a"})
+				aAndB := mustCreateAccount(s.T(), client, &service.Account{Name: "a-and-b"})
+				aAndC := mustCreateAccount(s.T(), client, &service.Account{Name: "a-and-c"})
+				mustBindAccountToGroup(s.T(), client, onlyA.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndB.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndB.ID, groupB.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndC.ID, groupA.ID, 1)
+				mustBindAccountToGroup(s.T(), client, aAndC.ID, groupC.ID, 1)
+				singleGroupFilter = strconv.FormatInt(groupA.ID, 10)
+				excludeGroupFilter, _ = service.NormalizeAccountGroupExcludeFilter(strconv.FormatInt(groupB.ID, 10))
+			},
+			resolveGroupFilter: func(_ *dbent.Client) string {
+				return singleGroupFilter
+			},
+			resolveGroupExcludeFilter: func(_ *dbent.Client) string {
+				return excludeGroupFilter
+			},
+			wantCount: 2,
+			validate: func(accounts []service.Account) {
+				names := []string{accounts[0].Name, accounts[1].Name}
+				s.ElementsMatch([]string{"only-a", "a-and-c"}, names)
 			},
 		},
 		{
@@ -427,8 +596,26 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 			ctx := context.Background()
 
 			tt.setup(client)
+			groupFilter := tt.groupFilter
+			if tt.resolveGroupFilter != nil {
+				groupFilter = tt.resolveGroupFilter(client)
+			}
+			groupExcludeFilter := tt.groupExcludeFilter
+			if tt.resolveGroupExcludeFilter != nil {
+				groupExcludeFilter = tt.resolveGroupExcludeFilter(client)
+			}
+			groupExact := tt.groupExact
 
-			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, tt.groupID, tt.privacyMode, "", nil, nil, "id", "desc")
+			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10, SortBy: "id", SortOrder: "desc"}, service.AccountListFilters{
+				Platform:        tt.platform,
+				AccountType:     tt.accType,
+				Status:          tt.status,
+				Search:          tt.search,
+				GroupIDs:        groupFilter,
+				GroupExcludeIDs: groupExcludeFilter,
+				GroupExact:      groupExact,
+				PrivacyMode:     tt.privacyMode,
+			})
 			s.Require().NoError(err)
 			s.Require().Len(accounts, tt.wantCount)
 			if tt.validate != nil {
@@ -451,10 +638,46 @@ func (s *AccountRepoSuite) TestListWithFilters_MultiSort() {
 	s.Require().NoError(s.client.Account.UpdateOneID(accB.ID).SetLastUsedAt(recent).Exec(s.ctx))
 	s.Require().NoError(s.client.Account.UpdateOneID(accC.ID).SetLastUsedAt(older).Exec(s.ctx))
 
-	accounts, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "sort-", 0, "", "", nil, nil, "last_used_at,id", "desc,asc")
+	accounts, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10, SortBy: "last_used_at,id", SortOrder: "desc,asc"}, service.AccountListFilters{Search: "sort-"})
 	s.Require().NoError(err)
 	s.Require().Len(accounts, 3)
 	s.Require().Equal([]int64{accA.ID, accB.ID, accC.ID}, []int64{accounts[0].ID, accounts[1].ID, accounts[2].ID})
+}
+
+func (s *AccountRepoSuite) TestListWithFilters_LastUsedFilters() {
+	unused := mustCreateAccount(s.T(), s.client, &service.Account{Name: "last-used-unused", Status: service.StatusActive})
+	inRange := mustCreateAccount(s.T(), s.client, &service.Account{Name: "last-used-in-range", Status: service.StatusActive})
+	outOfRange := mustCreateAccount(s.T(), s.client, &service.Account{Name: "last-used-out-of-range", Status: service.StatusActive})
+
+	now := time.Now().UTC().Truncate(time.Second)
+	start := now.Add(-30 * time.Minute)
+	end := now.Add(-5 * time.Minute)
+	inRangeAt := now.Add(-10 * time.Minute)
+	outOfRangeAt := now.Add(-2 * time.Hour)
+	inRangeID := inRange.ID
+	outOfRangeID := outOfRange.ID
+	unusedID := unused.ID
+
+	s.Require().NoError(s.client.Account.UpdateOneID(inRangeID).SetLastUsedAt(inRangeAt).Exec(s.ctx))
+	s.Require().NoError(s.client.Account.UpdateOneID(outOfRangeID).SetLastUsedAt(outOfRangeAt).Exec(s.ctx))
+
+	unusedAccounts, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10, SortBy: "id", SortOrder: "asc"}, service.AccountListFilters{
+		Search:         "last-used-",
+		LastUsedFilter: "unused",
+	})
+	s.Require().NoError(err)
+	s.Require().Len(unusedAccounts, 1)
+	s.Require().Equal(unusedID, unusedAccounts[0].ID)
+
+	rangeAccounts, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10, SortBy: "id", SortOrder: "asc"}, service.AccountListFilters{
+		Search:         "last-used-",
+		LastUsedFilter: "range",
+		LastUsedStart:  &start,
+		LastUsedEnd:    &end,
+	})
+	s.Require().NoError(err)
+	s.Require().Len(rangeAccounts, 1)
+	s.Require().Equal(inRangeID, rangeAccounts[0].ID)
 }
 
 func (s *AccountRepoSuite) TestListByGroup() {
@@ -479,6 +702,119 @@ func (s *AccountRepoSuite) TestListActive() {
 	s.Require().NoError(err, "ListActive")
 	s.Require().Len(accounts, 1)
 	s.Require().Equal("active1", accounts[0].Name)
+}
+
+func (s *AccountRepoSuite) TestListOpsRealtimeAccounts_FiltersAndReturnsLightweightProjection() {
+	proxy := mustCreateProxy(s.T(), s.client, &service.Proxy{Name: "ops-proxy"})
+	targetGroup := mustCreateGroup(s.T(), s.client, &service.Group{Name: "ops-target-group"})
+	otherGroup := mustCreateGroup(s.T(), s.client, &service.Group{Name: "ops-other-group"})
+
+	rateLimitResetAt := time.Now().UTC().Add(20 * time.Minute).Truncate(time.Second)
+	overloadUntil := rateLimitResetAt.Add(5 * time.Minute)
+	tempUnschedulableUntil := rateLimitResetAt.Add(10 * time.Minute)
+
+	matchingOlder := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:             "ops-match-older",
+		Platform:         service.PlatformOpenAI,
+		ProxyID:          &proxy.ID,
+		Concurrency:      7,
+		Status:           service.StatusError,
+		ErrorMessage:     "ops-error",
+		RateLimitResetAt: &rateLimitResetAt,
+		OverloadUntil:    &overloadUntil,
+		Credentials:      map[string]any{"refresh_token": "secret"},
+		Extra:            map[string]any{"privacy_mode": service.PrivacyModeTrainingOff},
+	})
+	s.Require().NoError(s.client.Account.UpdateOneID(matchingOlder.ID).SetTempUnschedulableUntil(tempUnschedulableUntil).Exec(s.ctx))
+	mustBindAccountToGroup(s.T(), s.client, matchingOlder.ID, targetGroup.ID, 1)
+
+	matchingNewer := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:        "ops-match-newer",
+		Platform:    service.PlatformOpenAI,
+		Concurrency: 5,
+		Priority:    10,
+	})
+	mustBindAccountToGroup(s.T(), s.client, matchingNewer.ID, targetGroup.ID, 2)
+
+	wrongPlatform := mustCreateAccount(s.T(), s.client, &service.Account{Name: "ops-wrong-platform", Platform: service.PlatformAnthropic})
+	mustBindAccountToGroup(s.T(), s.client, wrongPlatform.ID, targetGroup.ID, 1)
+
+	wrongGroup := mustCreateAccount(s.T(), s.client, &service.Account{Name: "ops-wrong-group", Platform: service.PlatformOpenAI})
+	mustBindAccountToGroup(s.T(), s.client, wrongGroup.ID, otherGroup.ID, 1)
+
+	targetGroupID := targetGroup.ID
+	accounts, err := s.repo.ListOpsRealtimeAccounts(s.ctx, service.PlatformOpenAI, &targetGroupID)
+	s.Require().NoError(err)
+	s.Require().Equal([]int64{matchingNewer.ID, matchingOlder.ID}, idsOfAccounts(accounts))
+
+	byID := make(map[int64]service.Account, len(accounts))
+	for _, account := range accounts {
+		byID[account.ID] = account
+	}
+
+	got := byID[matchingOlder.ID]
+	s.Require().Equal("ops-match-older", got.Name)
+	s.Require().Equal(service.PlatformOpenAI, got.Platform)
+	s.Require().Equal(7, got.Concurrency)
+	s.Require().Equal(service.StatusError, got.Status)
+	s.Require().Equal("ops-error", got.ErrorMessage)
+	s.Require().NotNil(got.RateLimitResetAt)
+	s.Require().WithinDuration(rateLimitResetAt, *got.RateLimitResetAt, time.Second)
+	s.Require().NotNil(got.OverloadUntil)
+	s.Require().WithinDuration(overloadUntil, *got.OverloadUntil, time.Second)
+	s.Require().NotNil(got.TempUnschedulableUntil)
+	s.Require().WithinDuration(tempUnschedulableUntil, *got.TempUnschedulableUntil, time.Second)
+	s.Require().Equal([]int64{targetGroup.ID}, got.GroupIDs)
+	s.Require().Len(got.Groups, 1)
+	s.Require().Equal(targetGroup.ID, got.Groups[0].ID)
+	s.Require().Nil(got.Proxy)
+	s.Require().Nil(got.ProxyID)
+	s.Require().Nil(got.Credentials)
+	s.Require().Nil(got.Extra)
+	s.Require().Empty(got.AccountGroups)
+	s.Require().Nil(got.RateMultiplier)
+	s.Require().Empty(got.Type)
+	_, hasWrongPlatform := byID[wrongPlatform.ID]
+	s.Require().False(hasWrongPlatform)
+	_, hasWrongGroup := byID[wrongGroup.ID]
+	s.Require().False(hasWrongGroup)
+}
+
+func (s *AccountRepoSuite) TestListActiveForTokenRefresh_ReturnsCoreFieldsWithoutRelationHydration() {
+	proxy := mustCreateProxy(s.T(), s.client, &service.Proxy{Name: "refresh-proxy"})
+	group := mustCreateGroup(s.T(), s.client, &service.Group{Name: "refresh-group"})
+
+	refreshable := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:        "refreshable",
+		Platform:    service.PlatformOpenAI,
+		ProxyID:     &proxy.ID,
+		Priority:    10,
+		Credentials: map[string]any{"refresh_token": "rt-1"},
+		Extra:       map[string]any{"privacy_mode": service.PrivacyModeTrainingOff},
+	})
+	mustBindAccountToGroup(s.T(), s.client, refreshable.ID, group.ID, 1)
+
+	second := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:     "refreshable-second",
+		Platform: service.PlatformAnthropic,
+		Priority: 20,
+	})
+	mustCreateAccount(s.T(), s.client, &service.Account{Name: "disabled-refresh", Status: service.StatusDisabled, Priority: 5})
+
+	accounts, err := s.repo.ListActiveForTokenRefresh(s.ctx)
+	s.Require().NoError(err)
+	s.Require().Equal([]int64{refreshable.ID, second.ID}, idsOfAccounts(accounts))
+
+	got := accounts[0]
+	s.Require().Equal(refreshable.ID, got.ID)
+	s.Require().NotNil(got.ProxyID)
+	s.Require().Equal(proxy.ID, *got.ProxyID)
+	s.Require().Equal("rt-1", got.Credentials["refresh_token"])
+	s.Require().Equal(service.PrivacyModeTrainingOff, got.Extra["privacy_mode"])
+	s.Require().Nil(got.Proxy)
+	s.Require().Empty(got.Groups)
+	s.Require().Empty(got.GroupIDs)
+	s.Require().Empty(got.AccountGroups)
 }
 
 func (s *AccountRepoSuite) TestListByPlatform() {
@@ -512,7 +848,7 @@ func (s *AccountRepoSuite) TestPreload_And_VirtualFields() {
 	s.Require().Len(got.Groups, 1, "expected Groups to be populated")
 	s.Require().Equal(group.ID, got.Groups[0].ID)
 
-	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0, "", "", nil, nil, "id", "desc")
+	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10, SortBy: "id", SortOrder: "desc"}, service.AccountListFilters{Search: "acc"})
 	s.Require().NoError(err, "ListWithFilters")
 	s.Require().Equal(int64(1), page.Total)
 	s.Require().Len(accounts, 1)
@@ -556,6 +892,51 @@ func (s *AccountRepoSuite) TestBindGroups_EmptyList() {
 	groups, err := s.repo.GetGroups(s.ctx, account.ID)
 	s.Require().NoError(err)
 	s.Require().Empty(groups, "expected 0 groups after binding empty list")
+}
+
+func (s *AccountRepoSuite) TestPreviewAndResolveBulkUpdateTargets() {
+	g1 := mustCreateGroup(s.T(), s.client, &service.Group{Name: "preview-g1"})
+	a1 := mustCreateAccount(s.T(), s.client, &service.Account{Name: "preview-a1", Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth})
+	a2 := mustCreateAccount(s.T(), s.client, &service.Account{Name: "preview-a2", Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey})
+	mustCreateAccount(s.T(), s.client, &service.Account{Name: "preview-a3", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth})
+	mustBindAccountToGroup(s.T(), s.client, a1.ID, g1.ID, 1)
+	mustBindAccountToGroup(s.T(), s.client, a2.ID, g1.ID, 1)
+
+	filter := service.AccountBulkFilter{
+		Platform: service.PlatformAnthropic,
+		GroupIDs: strconv.FormatInt(g1.ID, 10),
+	}
+	preview, err := s.repo.PreviewBulkUpdateTargets(s.ctx, filter)
+	s.Require().NoError(err)
+	s.Require().Equal(int64(2), preview.Count)
+	s.Require().Equal([]string{service.PlatformAnthropic}, preview.Platforms)
+	s.Require().Equal([]string{service.AccountTypeAPIKey, service.AccountTypeOAuth}, preview.Types)
+
+	resolved, err := s.repo.ResolveBulkUpdateTargets(s.ctx, filter)
+	s.Require().NoError(err)
+	s.Require().Len(resolved, 2)
+	resolvedIDs := make([]int64, 0, len(resolved))
+	for _, target := range resolved {
+		resolvedIDs = append(resolvedIDs, target.ID)
+		s.Require().Equal(service.PlatformAnthropic, target.Platform)
+	}
+	s.Require().ElementsMatch([]int64{a1.ID, a2.ID}, resolvedIDs)
+}
+
+func (s *AccountRepoSuite) TestPreviewAndResolveBulkUpdateTargets_EmptyResult() {
+	mustCreateAccount(s.T(), s.client, &service.Account{Name: "bulk-preview-existing", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth})
+
+	filter := service.AccountBulkFilter{Search: "bulk-preview-missing"}
+	preview, err := s.repo.PreviewBulkUpdateTargets(s.ctx, filter)
+	s.Require().NoError(err)
+	s.Require().NotNil(preview)
+	s.Require().Zero(preview.Count)
+	s.Require().Empty(preview.Platforms)
+	s.Require().Empty(preview.Types)
+
+	resolved, err := s.repo.ResolveBulkUpdateTargets(s.ctx, filter)
+	s.Require().NoError(err)
+	s.Require().Empty(resolved)
 }
 
 // --- Schedulable ---

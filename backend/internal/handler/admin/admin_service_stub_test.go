@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -26,22 +27,19 @@ type stubAdminService struct {
 	updateAccountErr     error
 	bulkUpdateAccountErr error
 	checkMixedErr        error
+	lastBulkUpdateInput  *service.BulkUpdateAccountsInput
+	lastBulkPreview      *service.AccountBulkFilter
+	lastBulkResolve      *service.AccountBulkFilter
+	bulkResolveTargets   []service.BulkAccountTargetRef
 	lastMixedCheck       struct {
 		accountID int64
 		platform  string
 		groupIDs  []int64
 	}
 	lastListAccounts struct {
-		platform       string
-		accountType    string
-		status         string
-		search         string
-		groupID        int64
-		privacyMode    string
-		lastUsedFilter string
-		sortBy         string
-		sortOrder      string
-		calls          int
+		params  pagination.PaginationParams
+		filters service.AccountListFilters
+		calls   int
 	}
 	lastListProxies struct {
 		protocol  string
@@ -127,6 +125,11 @@ func newStubAdminService() *stubAdminService {
 		proxies:     []service.Proxy{proxy},
 		proxyCounts: []service.ProxyWithAccountCount{{Proxy: proxy, AccountCount: 1}},
 		redeems:     []service.RedeemCode{redeem},
+		bulkResolveTargets: []service.BulkAccountTargetRef{{
+			ID:       account.ID,
+			Platform: account.Platform,
+			Type:     account.Type,
+		}},
 	}
 }
 
@@ -221,16 +224,9 @@ func (s *stubAdminService) BatchSetGroupRateMultipliers(_ context.Context, _ int
 	return nil
 }
 
-func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]service.Account, int64, error) {
-	s.lastListAccounts.platform = platform
-	s.lastListAccounts.accountType = accountType
-	s.lastListAccounts.status = status
-	s.lastListAccounts.search = search
-	s.lastListAccounts.groupID = groupID
-	s.lastListAccounts.privacyMode = privacyMode
-	s.lastListAccounts.lastUsedFilter = lastUsedFilter
-	s.lastListAccounts.sortBy = sortBy
-	s.lastListAccounts.sortOrder = sortOrder
+func (s *stubAdminService) ListAccounts(ctx context.Context, params pagination.PaginationParams, filters service.AccountListFilters) ([]service.Account, int64, error) {
+	s.lastListAccounts.params = params
+	s.lastListAccounts.filters = filters
 	s.lastListAccounts.calls++
 	return s.accounts, int64(len(s.accounts)), nil
 }
@@ -292,10 +288,24 @@ func (s *stubAdminService) SetAccountSchedulable(ctx context.Context, id int64, 
 }
 
 func (s *stubAdminService) BulkUpdateAccounts(ctx context.Context, input *service.BulkUpdateAccountsInput) (*service.BulkUpdateAccountsResult, error) {
+	s.lastBulkUpdateInput = input
 	if s.bulkUpdateAccountErr != nil {
 		return nil, s.bulkUpdateAccountErr
 	}
+	if input.Filters != nil {
+		return &service.BulkUpdateAccountsResult{Success: 128, Failed: 0}, nil
+	}
 	return &service.BulkUpdateAccountsResult{Success: len(input.AccountIDs), Failed: 0, SuccessIDs: input.AccountIDs}, nil
+}
+
+func (s *stubAdminService) PreviewBulkUpdateTargets(ctx context.Context, filter service.AccountBulkFilter) (*service.BulkAccountTargetPreview, error) {
+	s.lastBulkPreview = &filter
+	return &service.BulkAccountTargetPreview{Count: 128, Platforms: []string{service.PlatformAnthropic}, Types: []string{service.AccountTypeOAuth}}, nil
+}
+
+func (s *stubAdminService) ResolveBulkUpdateTargets(ctx context.Context, filter service.AccountBulkFilter) ([]service.BulkAccountTargetRef, error) {
+	s.lastBulkResolve = &filter
+	return append([]service.BulkAccountTargetRef(nil), s.bulkResolveTargets...), nil
 }
 
 func (s *stubAdminService) CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error {

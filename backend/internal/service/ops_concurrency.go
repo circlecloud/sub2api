@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -280,10 +281,16 @@ func (s *OpsService) listAllAccountsForOpsUncached(ctx context.Context, platform
 	out := make([]Account, 0, 128)
 	page := 1
 	for {
+		groupFilter := ""
+		if resolvedGroupID > 0 {
+			groupFilter = strconv.FormatInt(resolvedGroupID, 10)
+		}
 		accounts, pageInfo, err := s.accountRepo.ListWithFilters(ctx, pagination.PaginationParams{
-			Page:     page,
-			PageSize: opsAccountsPageSize,
-		}, platformFilter, "", "", "", resolvedGroupID, "", "", nil, nil, "id", "desc")
+			Page:      page,
+			PageSize:  opsAccountsPageSize,
+			SortBy:    "id",
+			SortOrder: "desc",
+		}, AccountListFilters{Platform: platformFilter, GroupIDs: groupFilter})
 		if err != nil {
 			return nil, err
 		}

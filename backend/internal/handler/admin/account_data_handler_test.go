@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -188,14 +190,44 @@ func TestExportDataPassesAccountFiltersAndSort(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	require.Equal(t, 1, adminSvc.lastListAccounts.calls)
-	require.Equal(t, "openai", adminSvc.lastListAccounts.platform)
-	require.Equal(t, "oauth", adminSvc.lastListAccounts.accountType)
-	require.Equal(t, "active", adminSvc.lastListAccounts.status)
-	require.Equal(t, int64(12), adminSvc.lastListAccounts.groupID)
-	require.Equal(t, "blocked", adminSvc.lastListAccounts.privacyMode)
-	require.Equal(t, "keyword", adminSvc.lastListAccounts.search)
-	require.Equal(t, "priority", adminSvc.lastListAccounts.sortBy)
-	require.Equal(t, "desc", adminSvc.lastListAccounts.sortOrder)
+	require.Equal(t, service.AccountListFilters{
+		Platform:    "openai",
+		AccountType: "oauth",
+		Status:      "active",
+		Search:      "keyword",
+		GroupIDs:    "12",
+		PrivacyMode: "blocked",
+	}, adminSvc.lastListAccounts.filters)
+	require.Equal(t, pagination.PaginationParams{Page: 1, PageSize: dataPageCap, SortBy: "priority", SortOrder: "desc"}, adminSvc.lastListAccounts.params)
+}
+
+func TestExportDataPassesExtendedAccountFilters(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+	adminSvc.accounts = []service.Account{
+		{ID: 1, Name: "acc-1", Status: service.StatusActive},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/admin/accounts/data?group=3,1,2&group_exclude=5,4&group_match=exact&last_used_filter=range&last_used_start_date=2026-01-01&last_used_end_date=2026-01-31&timezone=UTC",
+		nil,
+	)
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Equal(t, 1, adminSvc.lastListAccounts.calls)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	require.Equal(t, service.AccountListFilters{
+		GroupIDs:        "1,2,3",
+		GroupExcludeIDs: "4,5",
+		GroupExact:      true,
+		LastUsedFilter:  "range",
+		LastUsedStart:   &start,
+		LastUsedEnd:     &end,
+	}, adminSvc.lastListAccounts.filters)
+	require.Equal(t, pagination.PaginationParams{Page: 1, PageSize: dataPageCap, SortBy: "name", SortOrder: "asc"}, adminSvc.lastListAccounts.params)
 }
 
 func TestExportDataSelectedIDsOverrideFilters(t *testing.T) {

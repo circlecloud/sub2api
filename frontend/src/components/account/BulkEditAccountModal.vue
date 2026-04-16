@@ -17,7 +17,7 @@
               d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
             />
           </svg>
-          {{ t('admin.accounts.bulkEdit.selectionInfo', { count: accountIds.length }) }}
+          {{ t('admin.accounts.bulkEdit.selectionInfo', { count: resolvedTargetCount }) }}
         </p>
       </div>
 
@@ -661,8 +661,8 @@
         </div>
       </div>
 
-      <!-- OpenAI OAuth WS mode -->
-      <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <!-- OpenAI WS mode（仅在所选账号类型一致时显示） -->
+      <div v-if="allOpenAIWSModeEditable" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-openai-ws-mode-label"
@@ -690,7 +690,7 @@
             {{ t(openAIWSModeConcurrencyHintKey) }}
           </p>
           <Select
-            v-model="openaiOAuthResponsesWebSocketV2Mode"
+            v-model="openaiResponsesWebSocketV2Mode"
             data-testid="bulk-edit-openai-ws-mode-select"
             :options="openAIWSModeOptions"
             aria-labelledby="bulk-edit-openai-ws-mode-label"
@@ -906,6 +906,7 @@ import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
+import type { BulkAccountFilters } from '@/api/admin/accounts'
 import type { Proxy as ProxyConfig, AdminGroup, AccountPlatform, AccountType } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -929,6 +930,8 @@ import type { OpenAIWSMode } from '@/utils/openaiWsMode'
 interface Props {
   show: boolean
   accountIds: number[]
+  targetCount?: number
+  targetFilters?: BulkAccountFilters | null
   selectedPlatforms: AccountPlatform[]
   selectedTypes: AccountType[]
   proxies: ProxyConfig[]
@@ -945,6 +948,15 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 
+const resolvedTargetCount = computed(() => {
+  if (typeof props.targetCount === 'number' && props.targetCount > 0) {
+    return props.targetCount
+  }
+  return props.accountIds.length
+})
+
+const isFilterScoped = computed(() => !!props.targetFilters && props.accountIds.length === 0)
+
 // Platform awareness
 const isMixedPlatform = computed(() => props.selectedPlatforms.length > 1)
 
@@ -957,14 +969,25 @@ const allOpenAIPassthroughCapable = computed(() => {
   )
 })
 
-const allOpenAIOAuth = computed(() => {
-  return (
-    props.selectedPlatforms.length === 1 &&
-    props.selectedPlatforms[0] === 'openai' &&
-    props.selectedTypes.length > 0 &&
-    props.selectedTypes.every(t => t === 'oauth')
-  )
+const selectedOpenAIWSModeAccountType = computed<'oauth' | 'apikey' | null>(() => {
+  if (
+    props.selectedPlatforms.length !== 1 ||
+    props.selectedPlatforms[0] !== 'openai' ||
+    props.selectedTypes.length === 0
+  ) {
+    return null
+  }
+
+  const uniqueTypes = Array.from(new Set(props.selectedTypes))
+  if (uniqueTypes.length !== 1) {
+    return null
+  }
+
+  const [accountType] = uniqueTypes
+  return accountType === 'oauth' || accountType === 'apikey' ? accountType : null
 })
+
+const allOpenAIWSModeEditable = computed(() => selectedOpenAIWSModeAccountType.value !== null)
 
 // 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
 const allAnthropicOAuthOrSetupToken = computed(() => {
@@ -994,7 +1017,7 @@ const filteredPresets = computed(() => {
 const effectiveBatchSize = computed(() => {
   const raw = Number(props.batchSize)
   if (!Number.isFinite(raw) || raw <= 0) {
-    return Math.max(1, props.accountIds.length)
+    return Math.max(1, resolvedTargetCount.value)
   }
   return Math.min(1000, Math.max(1, Math.trunc(raw)))
 })
@@ -1056,6 +1079,7 @@ const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
 const openaiPassthroughEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const rpmLimitEnabled = ref(false)
 const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
@@ -1094,8 +1118,21 @@ const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') },
   { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
 ])
+const openaiResponsesWebSocketV2Mode = computed<OpenAIWSMode>({
+  get: () =>
+    selectedOpenAIWSModeAccountType.value === 'apikey'
+      ? openaiAPIKeyResponsesWebSocketV2Mode.value
+      : openaiOAuthResponsesWebSocketV2Mode.value,
+  set: (mode) => {
+    if (selectedOpenAIWSModeAccountType.value === 'apikey') {
+      openaiAPIKeyResponsesWebSocketV2Mode.value = mode
+      return
+    }
+    openaiOAuthResponsesWebSocketV2Mode.value = mode
+  }
+})
 const openAIWSModeConcurrencyHintKey = computed(() =>
-  resolveOpenAIWSModeConcurrencyHintKey(openaiOAuthResponsesWebSocketV2Mode.value)
+  resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2Mode.value)
 )
 
 // Model mapping helpers
@@ -1267,12 +1304,19 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.credentials = credentials
   }
 
-  if (enableOpenAIWSMode.value) {
+  if (enableOpenAIWSMode.value && selectedOpenAIWSModeAccountType.value) {
     const extra = ensureExtra()
-    extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
-    extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(
-      openaiOAuthResponsesWebSocketV2Mode.value
-    )
+    if (selectedOpenAIWSModeAccountType.value === 'apikey') {
+      extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
+      extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(
+        openaiAPIKeyResponsesWebSocketV2Mode.value
+      )
+    } else {
+      extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
+      extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(
+        openaiOAuthResponsesWebSocketV2Mode.value
+      )
+    }
   }
 
   // RPM limit settings (写入 extra 字段)
@@ -1415,6 +1459,30 @@ const submitBulkUpdateInChunks = async (updates: Record<string, unknown>) => {
   }
 }
 
+const submitBulkUpdateByFilters = async (updates: Record<string, unknown>) => {
+  if (!props.targetFilters) {
+    return {
+      success: 0,
+      failed: 0,
+      success_ids: [],
+      failed_ids: [],
+      results: [] as Array<{ account_id: number; success: boolean; error?: string }>
+    }
+  }
+
+  submitProcessedCount.value = 0
+  submitTotalCount.value = resolvedTargetCount.value
+  const res = await adminAPI.accounts.bulkUpdate({ filters: props.targetFilters }, updates)
+  submitProcessedCount.value = resolvedTargetCount.value
+  return {
+    success: res.success || 0,
+    failed: res.failed || 0,
+    success_ids: res.success_ids,
+    failed_ids: res.failed_ids,
+    results: res.results ?? []
+  }
+}
+
 const mixedChannelConfirmed = ref(false)
 
 // 是否需要预检查：改了分组 + 全是单一的 antigravity 或 anthropic 平台
@@ -1456,7 +1524,7 @@ const preCheckMixedChannelRisk = async (built: Record<string, unknown>): Promise
 }
 
 const handleSubmit = async () => {
-  if (props.accountIds.length === 0) {
+  if (resolvedTargetCount.value === 0) {
     appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
     return
   }
@@ -1503,10 +1571,12 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
 
   submitting.value = true
   submitProcessedCount.value = 0
-  submitTotalCount.value = props.accountIds.length
+  submitTotalCount.value = resolvedTargetCount.value
 
   try {
-    const res = await submitBulkUpdateInChunks(updates)
+    const res = isFilterScoped.value
+      ? await submitBulkUpdateByFilters(updates)
+      : await submitBulkUpdateInChunks(updates)
     const success = res.success || 0
     const failed = res.failed || 0
 
@@ -1591,6 +1661,7 @@ watch(
       status.value = 'active'
       groupIds.value = []
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+      openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       rpmLimitEnabled.value = false
       bulkBaseRpm.value = null
       bulkRpmStrategy.value = 'tiered'

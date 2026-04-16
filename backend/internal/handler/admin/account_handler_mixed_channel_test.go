@@ -17,6 +17,8 @@ func setupAccountMixedChannelRouter(adminSvc *stubAdminService) *gin.Engine {
 	router := gin.New()
 	accountHandler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/check-mixed-channel", accountHandler.CheckMixedChannel)
+	router.POST("/api/v1/admin/accounts/bulk-update/preview", accountHandler.PreviewBulkUpdateTargets)
+	router.POST("/api/v1/admin/accounts/bulk-update/resolve", accountHandler.ResolveBulkUpdateTargets)
 	router.POST("/api/v1/admin/accounts", accountHandler.Create)
 	router.PUT("/api/v1/admin/accounts/:id", accountHandler.Update)
 	router.POST("/api/v1/admin/accounts/bulk-update", accountHandler.BulkUpdate)
@@ -171,6 +173,94 @@ func TestAccountHandlerBulkUpdateMixedChannelConflict(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, "mixed_channel_warning", resp["error"])
 	require.Contains(t, resp["message"], "claude-max")
+}
+
+func TestAccountHandlerBulkUpdateAcceptsFilterScope(t *testing.T) {
+	adminSvc := newStubAdminService()
+	router := setupAccountMixedChannelRouter(adminSvc)
+
+	body, _ := json.Marshal(map[string]any{
+		"filters": map[string]any{
+			"platform":      "anthropic",
+			"group":         "1,2,3",
+			"group_exclude": "4,5",
+			"group_match":   "exact",
+		},
+		"schedulable": false,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/bulk-update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, adminSvc.lastBulkUpdateInput)
+	require.Nil(t, adminSvc.lastBulkUpdateInput.AccountIDs)
+	require.NotNil(t, adminSvc.lastBulkUpdateInput.Filters)
+	require.Equal(t, service.PlatformAnthropic, adminSvc.lastBulkUpdateInput.Filters.Platform)
+	require.Equal(t, "1,2,3", adminSvc.lastBulkUpdateInput.Filters.GroupIDs)
+	require.Equal(t, "4,5", adminSvc.lastBulkUpdateInput.Filters.GroupExcludeIDs)
+	require.True(t, adminSvc.lastBulkUpdateInput.Filters.GroupExact)
+}
+
+func TestAccountHandlerPreviewBulkUpdateTargets(t *testing.T) {
+	adminSvc := newStubAdminService()
+	router := setupAccountMixedChannelRouter(adminSvc)
+
+	body, _ := json.Marshal(map[string]any{
+		"platform":    "anthropic",
+		"group":       "1,2,3",
+		"group_match": "exact",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/bulk-update/preview", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, adminSvc.lastBulkPreview)
+	require.Equal(t, service.PlatformAnthropic, adminSvc.lastBulkPreview.Platform)
+	require.Equal(t, "1,2,3", adminSvc.lastBulkPreview.GroupIDs)
+	require.True(t, adminSvc.lastBulkPreview.GroupExact)
+}
+
+func TestAccountHandlerResolveBulkUpdateTargets(t *testing.T) {
+	adminSvc := newStubAdminService()
+	adminSvc.bulkResolveTargets = []service.BulkAccountTargetRef{
+		{ID: 11, Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth},
+		{ID: 22, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey},
+	}
+	router := setupAccountMixedChannelRouter(adminSvc)
+
+	body, _ := json.Marshal(map[string]any{
+		"platform":      "anthropic",
+		"group":         "1,2,3",
+		"group_exclude": "4,5",
+		"group_match":   "exact",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/bulk-update/resolve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, adminSvc.lastBulkResolve)
+	require.Equal(t, service.PlatformAnthropic, adminSvc.lastBulkResolve.Platform)
+	require.Equal(t, "1,2,3", adminSvc.lastBulkResolve.GroupIDs)
+	require.Equal(t, "4,5", adminSvc.lastBulkResolve.GroupExcludeIDs)
+	require.True(t, adminSvc.lastBulkResolve.GroupExact)
+
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			Count      int64   `json:"count"`
+			AccountIDs []int64 `json:"account_ids"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, int64(2), resp.Data.Count)
+	require.Equal(t, []int64{11, 22}, resp.Data.AccountIDs)
 }
 
 func TestAccountHandlerBulkUpdateMixedChannelConfirmSkips(t *testing.T) {

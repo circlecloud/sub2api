@@ -55,7 +55,7 @@ type AdminService interface {
 	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
 
 	// Account management
-	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]Account, int64, error)
+	ListAccounts(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, int64, error)
 	GetAccount(ctx context.Context, id int64) (*Account, error)
 	GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error)
@@ -73,6 +73,8 @@ type AdminService interface {
 	// ForceAntigravityPrivacy 强制重新设置 Antigravity OAuth 账号隐私，无论当前状态。
 	ForceAntigravityPrivacy(ctx context.Context, account *Account) string
 	SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error)
+	PreviewBulkUpdateTargets(ctx context.Context, filter AccountBulkFilter) (*BulkAccountTargetPreview, error)
+	ResolveBulkUpdateTargets(ctx context.Context, filter AccountBulkFilter) ([]BulkAccountTargetRef, error)
 	BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error)
 	CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error
 
@@ -239,6 +241,7 @@ type UpdateAccountInput struct {
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
 type BulkUpdateAccountsInput struct {
 	AccountIDs     []int64
+	Filters        *AccountBulkFilter
 	Name           string
 	ProxyID        *int64
 	Concurrency    *int
@@ -1464,9 +1467,8 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 }
 
 // Account management implementations
-func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]Account, int64, error) {
-	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
-	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, platform, accountType, status, search, groupID, privacyMode, lastUsedFilter, lastUsedStart, lastUsedEnd, sortBy, sortOrder)
+func (s *adminServiceImpl) ListAccounts(ctx context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, int64, error) {
+	accounts, result, err := s.accountRepo.ListWithFilters(ctx, params, filters)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1720,18 +1722,82 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	return updated, nil
 }
 
+type bulkUpdateTargetPreviewer interface {
+	PreviewBulkUpdateTargets(ctx context.Context, filter AccountBulkFilter) (*BulkAccountTargetPreview, error)
+}
+
+type bulkUpdateTargetResolver interface {
+	ResolveBulkUpdateTargets(ctx context.Context, filter AccountBulkFilter) ([]BulkAccountTargetRef, error)
+}
+
+type bulkGroupBatchBinder interface {
+	BindGroupsBatch(ctx context.Context, accountIDs []int64, groupIDs []int64) error
+}
+
+func (s *adminServiceImpl) PreviewBulkUpdateTargets(ctx context.Context, filter AccountBulkFilter) (*BulkAccountTargetPreview, error) {
+	if previewer, ok := s.accountRepo.(bulkUpdateTargetPreviewer); ok {
+		return previewer.PreviewBulkUpdateTargets(ctx, filter)
+	}
+	return nil, errors.New("account repository does not support bulk target previews")
+}
+
+func (s *adminServiceImpl) ResolveBulkUpdateTargets(ctx context.Context, filter AccountBulkFilter) ([]BulkAccountTargetRef, error) {
+	if resolver, ok := s.accountRepo.(bulkUpdateTargetResolver); ok {
+		return resolver.ResolveBulkUpdateTargets(ctx, filter)
+	}
+	return nil, errors.New("account repository does not support bulk target resolution")
+}
+
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
-	result := &BulkUpdateAccountsResult{
-		SuccessIDs: make([]int64, 0, len(input.AccountIDs)),
-		FailedIDs:  make([]int64, 0, len(input.AccountIDs)),
-		Results:    make([]BulkUpdateAccountResult, 0, len(input.AccountIDs)),
+	hasAccountIDs := len(input.AccountIDs) > 0
+	hasFilters := input.Filters != nil
+	if hasAccountIDs == hasFilters {
+		return nil, errors.New("exactly one of account_ids or filters must be provided")
 	}
 
-	if len(input.AccountIDs) == 0 {
+	var targetIDs []int64
+	var targetPlatforms []string
+	if hasFilters {
+		resolver, ok := s.accountRepo.(bulkUpdateTargetResolver)
+		if !ok {
+			return nil, errors.New("account repository does not support bulk target resolution")
+		}
+		resolved, err := resolver.ResolveBulkUpdateTargets(ctx, *input.Filters)
+		if err != nil {
+			return nil, err
+		}
+		seenPlatforms := make(map[string]struct{}, len(resolved))
+		targetIDs = make([]int64, 0, len(resolved))
+		targetPlatforms = make([]string, 0, len(resolved))
+		for _, target := range resolved {
+			if target.ID <= 0 {
+				continue
+			}
+			targetIDs = append(targetIDs, target.ID)
+			if target.Platform == "" {
+				continue
+			}
+			if _, exists := seenPlatforms[target.Platform]; exists {
+				continue
+			}
+			seenPlatforms[target.Platform] = struct{}{}
+			targetPlatforms = append(targetPlatforms, target.Platform)
+		}
+	} else {
+		targetIDs = append([]int64(nil), input.AccountIDs...)
+	}
+
+	result := &BulkUpdateAccountsResult{
+		SuccessIDs: make([]int64, 0, len(targetIDs)),
+		FailedIDs:  make([]int64, 0, len(targetIDs)),
+		Results:    make([]BulkUpdateAccountResult, 0, len(targetIDs)),
+	}
+	if len(targetIDs) == 0 {
 		return result, nil
 	}
+
 	if input.GroupIDs != nil {
 		if err := s.validateGroupIDsExist(ctx, *input.GroupIDs); err != nil {
 			return nil, err
@@ -1739,31 +1805,26 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
-
-	// 预加载账号平台信息（混合渠道检查需要）。
-	platformByID := map[int64]string{}
 	if needMixedChannelCheck {
-		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
-		if err != nil {
-			return nil, err
-		}
-		for _, account := range accounts {
-			if account != nil {
-				platformByID[account.ID] = account.Platform
-			}
-		}
-	}
-
-	// 预检查混合渠道风险：在任何写操作之前，若发现风险立即返回错误。
-	if needMixedChannelCheck {
-		for _, accountID := range input.AccountIDs {
-			platform := platformByID[accountID]
-			if platform == "" {
-				continue
-			}
-			if err := s.checkMixedChannelRisk(ctx, accountID, platform, *input.GroupIDs); err != nil {
+		if !hasFilters {
+			accounts, err := s.accountRepo.GetByIDs(ctx, targetIDs)
+			if err != nil {
 				return nil, err
 			}
+			seenPlatforms := make(map[string]struct{}, len(accounts))
+			for _, account := range accounts {
+				if account == nil || account.Platform == "" {
+					continue
+				}
+				if _, exists := seenPlatforms[account.Platform]; exists {
+					continue
+				}
+				seenPlatforms[account.Platform] = struct{}{}
+				targetPlatforms = append(targetPlatforms, account.Platform)
+			}
+		}
+		if err := s.checkMixedChannelRiskForPlatforms(ctx, targetPlatforms, *input.GroupIDs); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1810,29 +1871,30 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 
 	// Run bulk update for column/jsonb fields first.
-	if _, err := s.accountRepo.BulkUpdate(ctx, input.AccountIDs, repoUpdates); err != nil {
+	if _, err := s.accountRepo.BulkUpdate(ctx, targetIDs, repoUpdates); err != nil {
 		return nil, err
 	}
 
-	// Handle group bindings per account (requires individual operations).
-	for _, accountID := range input.AccountIDs {
-		entry := BulkUpdateAccountResult{AccountID: accountID}
-
-		if input.GroupIDs != nil {
-			if err := s.accountRepo.BindGroups(ctx, accountID, *input.GroupIDs); err != nil {
-				entry.Success = false
-				entry.Error = err.Error()
-				result.Failed++
-				result.FailedIDs = append(result.FailedIDs, accountID)
-				result.Results = append(result.Results, entry)
-				continue
+	if input.GroupIDs != nil {
+		if binder, ok := s.accountRepo.(bulkGroupBatchBinder); ok {
+			if err := binder.BindGroupsBatch(ctx, targetIDs, *input.GroupIDs); err != nil {
+				return nil, err
+			}
+		} else {
+			for _, accountID := range targetIDs {
+				if err := s.accountRepo.BindGroups(ctx, accountID, *input.GroupIDs); err != nil {
+					return nil, err
+				}
 			}
 		}
+	}
 
-		entry.Success = true
-		result.Success++
-		result.SuccessIDs = append(result.SuccessIDs, accountID)
-		result.Results = append(result.Results, entry)
+	result.Success = len(targetIDs)
+	if !hasFilters {
+		result.SuccessIDs = append(result.SuccessIDs, targetIDs...)
+		for _, accountID := range targetIDs {
+			result.Results = append(result.Results, BulkUpdateAccountResult{AccountID: accountID, Success: true})
+		}
 	}
 
 	return result, nil
@@ -2453,6 +2515,68 @@ func (s *adminServiceImpl) probeProxyLatency(ctx context.Context, proxy *Proxy) 
 		City:        exitInfo.City,
 		UpdatedAt:   time.Now(),
 	})
+}
+
+func (s *adminServiceImpl) checkMixedChannelRiskForPlatforms(ctx context.Context, platforms []string, groupIDs []int64) error {
+	channels := make([]string, 0, len(platforms))
+	seen := make(map[string]struct{}, len(platforms))
+	for _, platform := range platforms {
+		channel := getAccountPlatform(platform)
+		if channel == "" {
+			continue
+		}
+		if _, exists := seen[channel]; exists {
+			continue
+		}
+		seen[channel] = struct{}{}
+		channels = append(channels, channel)
+	}
+	if len(channels) == 0 || len(groupIDs) == 0 {
+		return nil
+	}
+	if len(channels) > 1 {
+		groupID := groupIDs[0]
+		groupName := fmt.Sprintf("Group %d", groupID)
+		if s.groupRepo != nil {
+			if group, _ := s.groupRepo.GetByID(ctx, groupID); group != nil {
+				groupName = group.Name
+			}
+		}
+		return &MixedChannelError{
+			GroupID:         groupID,
+			GroupName:       groupName,
+			CurrentPlatform: channels[0],
+			OtherPlatform:   channels[1],
+		}
+	}
+
+	currentChannel := channels[0]
+	for _, groupID := range groupIDs {
+		accounts, err := s.accountRepo.ListByGroup(ctx, groupID)
+		if err != nil {
+			return fmt.Errorf("get accounts in group %d: %w", groupID, err)
+		}
+		for _, account := range accounts {
+			otherPlatform := getAccountPlatform(account.Platform)
+			if otherPlatform == "" || otherPlatform == currentChannel {
+				continue
+			}
+			groupName := fmt.Sprintf("Group %d", groupID)
+			if s.groupRepo != nil {
+				if group, _ := s.groupRepo.GetByID(ctx, groupID); group != nil {
+					groupName = group.Name
+				}
+			}
+			return &MixedChannelError{
+				GroupID:         groupID,
+				GroupName:       groupName,
+				CurrentPlatform: currentChannel,
+				OtherPlatform:   otherPlatform,
+			}
+		}
+	}
+
+	return nil
 }
 
 // checkMixedChannelRisk 检查分组中是否存在混合渠道（Antigravity + Anthropic）

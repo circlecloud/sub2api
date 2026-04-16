@@ -36,27 +36,15 @@
       @update:model-value="updatePrivacyMode"
       @change="$emit('change')"
     />
-    <Select
-      :model-value="filters.group"
-      class="w-40"
-      :options="groupOptions"
-      @update:model-value="updateGroup"
+    <AccountGroupFilterPopover
+      :filters="filters"
+      :groups="groups"
+      @update:filters="emitFilters"
       @change="$emit('change')"
     />
-    <Select
-      :model-value="currentLastUsedFilter"
-      class="w-44"
-      :options="lastUsedOptions"
-      @update:model-value="updateLastUsedFilter"
-      @change="$emit('change')"
-    />
-    <DateRangePicker
-      v-if="currentLastUsedFilter === 'range'"
-      class="w-full sm:w-auto"
-      :start-date="lastUsedStartDate"
-      :end-date="lastUsedEndDate"
-      @update:startDate="updateLastUsedStartDate"
-      @update:endDate="updateLastUsedEndDate"
+    <AccountLastUsedFilterPopover
+      :filters="filters"
+      @update:filters="emitFilters"
       @change="$emit('change')"
     />
   </div>
@@ -67,114 +55,51 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select from '@/components/common/Select.vue'
 import SearchInput from '@/components/common/SearchInput.vue'
-import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import AccountGroupFilterPopover from './AccountGroupFilterPopover.vue'
+import AccountLastUsedFilterPopover from './AccountLastUsedFilterPopover.vue'
 import type { AdminGroup } from '@/types'
+import type { AccountTableParams } from '@/views/admin/accounts/query'
 
-const props = defineProps<{
+type AccountTableFilterPatch = Partial<AccountTableParams>
+
+defineProps<{
   searchQuery: string
-  filters: Record<string, any>
+  filters: Partial<AccountTableParams>
   groups?: AdminGroup[]
 }>()
 
 const emit = defineEmits<{
   (e: 'update:searchQuery', value: string): void
-  (e: 'update:filters', value: Record<string, any>): void
+  (e: 'update:filters', value: AccountTableFilterPatch): void
   (e: 'change'): void
 }>()
 
 const { t } = useI18n()
 
-const formatDateInput = (date: Date): string => {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+const emitFilters = (patch: AccountTableFilterPatch) => {
+  emit('update:filters', patch)
 }
 
-const getDefaultLastUsedRange = () => {
-  const end = new Date()
-  const start = new Date()
-  start.setDate(start.getDate() - 6)
-  return {
-    start: formatDateInput(start),
-    end: formatDateInput(end)
-  }
-}
-
-const currentLastUsedFilter = computed(() => {
-  const raw = props.filters.last_used_filter
-  return typeof raw === 'string' ? raw : ''
-})
-
-const lastUsedStartDate = computed(() => {
-  const raw = props.filters.last_used_start_date
-  return typeof raw === 'string' ? raw : ''
-})
-
-const lastUsedEndDate = computed(() => {
-  const raw = props.filters.last_used_end_date
-  return typeof raw === 'string' ? raw : ''
-})
-
-const emitFilters = (nextFilters: Record<string, any>) => {
-  emit('update:filters', nextFilters)
+const normalizeFilterValue = (value: string | number | boolean | null) => {
+  if (typeof value === 'string') return value
+  if (value === null) return ''
+  return String(value)
 }
 
 const updatePlatform = (value: string | number | boolean | null) => {
-  emitFilters({ ...props.filters, platform: value })
+  emitFilters({ platform: normalizeFilterValue(value) })
 }
 
 const updateType = (value: string | number | boolean | null) => {
-  emitFilters({ ...props.filters, type: value })
+  emitFilters({ type: normalizeFilterValue(value) })
 }
 
 const updateStatus = (value: string | number | boolean | null) => {
-  emitFilters({ ...props.filters, status: value })
+  emitFilters({ status: normalizeFilterValue(value) })
 }
 
 const updatePrivacyMode = (value: string | number | boolean | null) => {
-  emitFilters({ ...props.filters, privacy_mode: value })
-}
-
-const updateGroup = (value: string | number | boolean | null) => {
-  emitFilters({ ...props.filters, group: value })
-}
-
-const updateLastUsedFilter = (value: string | number | boolean | null) => {
-  const nextValue = typeof value === 'string' ? value : ''
-  if (nextValue === 'range') {
-    const fallbackRange = getDefaultLastUsedRange()
-    emitFilters({
-      ...props.filters,
-      last_used_filter: 'range',
-      last_used_start_date: lastUsedStartDate.value || fallbackRange.start,
-      last_used_end_date: lastUsedEndDate.value || fallbackRange.end
-    })
-    return
-  }
-
-  emitFilters({
-    ...props.filters,
-    last_used_filter: nextValue,
-    last_used_start_date: '',
-    last_used_end_date: ''
-  })
-}
-
-const updateLastUsedStartDate = (value: string) => {
-  emitFilters({
-    ...props.filters,
-    last_used_filter: 'range',
-    last_used_start_date: value
-  })
-}
-
-const updateLastUsedEndDate = (value: string) => {
-  emitFilters({
-    ...props.filters,
-    last_used_filter: 'range',
-    last_used_end_date: value
-  })
+  emitFilters({ privacy_mode: normalizeFilterValue(value) })
 }
 
 const platformOptions = computed(() => [
@@ -205,23 +130,10 @@ const statusOptions = computed(() => [
 ])
 
 const privacyOptions = computed(() => [
-
   { value: '', label: t('admin.accounts.allPrivacyModes') },
   { value: '__unset__', label: t('admin.accounts.privacyUnset') },
   { value: 'training_off', label: 'Privacy' },
   { value: 'training_set_cf_blocked', label: 'CF' },
   { value: 'training_set_failed', label: 'Fail' }
-])
-
-const groupOptions = computed(() => [
-  { value: '', label: t('admin.accounts.allGroups') },
-  { value: 'ungrouped', label: t('admin.accounts.ungroupedGroup') },
-  ...(props.groups || []).map((group) => ({ value: String(group.id), label: group.name }))
-])
-
-const lastUsedOptions = computed(() => [
-  { value: '', label: t('admin.accounts.lastUsedFilters.all') },
-  { value: 'unused', label: t('admin.accounts.lastUsedFilters.unused') },
-  { value: 'range', label: t('admin.accounts.lastUsedFilters.range') }
 ])
 </script>

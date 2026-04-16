@@ -460,276 +460,7 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *accountRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Account, *pagination.PaginationResult, error) {
-	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "", "", nil, nil, "id", "desc")
-}
-
-func buildAccountOrderOptions(sortBy, sortOrder string) []dbaccount.OrderOption {
-	fieldMap := map[string]string{
-		"id":              dbaccount.FieldID,
-		"name":            dbaccount.FieldName,
-		"status":          dbaccount.FieldStatus,
-		"schedulable":     dbaccount.FieldSchedulable,
-		"priority":        dbaccount.FieldPriority,
-		"rate_multiplier": dbaccount.FieldRateMultiplier,
-		"last_used_at":    dbaccount.FieldLastUsedAt,
-		"expires_at":      dbaccount.FieldExpiresAt,
-		"created_at":      dbaccount.FieldCreatedAt,
-	}
-
-	parseList := func(raw string) []string {
-		parts := strings.Split(raw, ",")
-		result := make([]string, 0, len(parts))
-		for _, part := range parts {
-			trimmed := strings.ToLower(strings.TrimSpace(part))
-			if trimmed != "" {
-				result = append(result, trimmed)
-			}
-		}
-		return result
-	}
-
-	sortFields := parseList(sortBy)
-	sortOrders := parseList(sortOrder)
-	options := make([]dbaccount.OrderOption, 0, len(sortFields)+1)
-	seen := make(map[string]struct{}, len(sortFields))
-	idIncluded := false
-
-	for index, sortField := range sortFields {
-		field, ok := fieldMap[sortField]
-		if !ok {
-			continue
-		}
-		if _, exists := seen[sortField]; exists {
-			continue
-		}
-		seen[sortField] = struct{}{}
-		if sortField == "id" {
-			idIncluded = true
-		}
-
-		order := "asc"
-		if index < len(sortOrders) && sortOrders[index] == "desc" {
-			order = "desc"
-		}
-		if order == "desc" {
-			options = append(options, dbent.Desc(field))
-		} else {
-			options = append(options, dbent.Asc(field))
-		}
-	}
-
-	if len(options) == 0 {
-		return []dbaccount.OrderOption{dbent.Desc(dbaccount.FieldID)}
-	}
-	if !idIncluded {
-		options = append(options, dbent.Desc(dbaccount.FieldID))
-	}
-	return options
-}
-
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]service.Account, *pagination.PaginationResult, error) {
-	q := r.client.Account.Query()
-
-	if platform != "" {
-		q = q.Where(dbaccount.PlatformEQ(platform))
-	}
-	if accountType != "" {
-		q = q.Where(dbaccount.TypeEQ(accountType))
-	}
-	if status != "" {
-		now := time.Now()
-		switch status {
-		case service.StatusActive:
-			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
-				dbaccount.SchedulableEQ(true),
-				tempUnschedulablePredicate(),
-				notExpiredPredicate(now),
-				dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-				dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
-			)
-		case "rate_limited":
-			q = q.Where(dbaccount.RateLimitResetAtGT(now))
-		case "temp_unschedulable":
-			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.And(
-						entsql.Not(entsql.IsNull(col)),
-						entsql.GT(col, entsql.Expr("NOW()")),
-					))
-				}),
-			)
-		case "unschedulable":
-			q = q.Where(
-				dbaccount.StatusEQ(service.StatusActive),
-				dbaccount.SchedulableEQ(false),
-				dbaccount.Or(
-					dbaccount.RateLimitResetAtIsNil(),
-					dbaccount.RateLimitResetAtLTE(time.Now()),
-				),
-				dbpredicate.Account(func(s *entsql.Selector) {
-					col := s.C("temp_unschedulable_until")
-					s.Where(entsql.Or(
-						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
-					))
-				}),
-			)
-		default:
-			q = q.Where(dbaccount.StatusEQ(status))
-		}
-	}
-	if search != "" {
-		q = q.Where(dbaccount.NameContainsFold(search))
-	}
-	if groupID == service.AccountListGroupUngrouped {
-		q = q.Where(dbaccount.Not(dbaccount.HasAccountGroups()))
-	} else if groupID > 0 {
-		q = q.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(groupID)))
-	}
-	if privacyMode != "" {
-		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
-			path := sqljson.Path("privacy_mode")
-			switch privacyMode {
-			case service.AccountPrivacyModeUnsetFilter:
-				s.Where(entsql.Or(
-					entsql.Not(sqljson.HasKey(dbaccount.FieldExtra, path)),
-					sqljson.ValueEQ(dbaccount.FieldExtra, "", path),
-				))
-			default:
-				s.Where(sqljson.ValueEQ(dbaccount.FieldExtra, privacyMode, path))
-			}
-		}))
-	}
-	if lastUsedFilter != "" {
-		switch lastUsedFilter {
-		case "unused":
-			q = q.Where(dbaccount.LastUsedAtIsNil())
-		case "range":
-			predicates := []dbpredicate.Account{dbaccount.LastUsedAtNotNil()}
-			if lastUsedStart != nil {
-				predicates = append(predicates, dbaccount.LastUsedAtGTE(*lastUsedStart))
-			}
-			if lastUsedEnd != nil {
-				predicates = append(predicates, dbaccount.LastUsedAtLT(*lastUsedEnd))
-			}
-			q = q.Where(predicates...)
-		}
-	}
-
-	total, err := q.Count(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	accounts, err := q.
-		Offset(params.Offset()).
-		Limit(params.Limit()).
-		Order(buildAccountOrderOptions(sortBy, sortOrder)...).
-		All(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	outAccounts, err := r.accountsToService(ctx, accounts)
-	if err != nil {
-		return nil, nil, err
-	}
-	return outAccounts, paginationResultFromTotal(int64(total), params), nil
-}
-
-//nolint:unused // 保留旧排序构造逻辑，避免本次提交引入更大结构性改动
-func accountListOrder(params pagination.PaginationParams) []func(*entsql.Selector) {
-	sortBy := strings.ToLower(strings.TrimSpace(params.SortBy))
-	sortOrder := params.NormalizedSortOrder(pagination.SortOrderAsc)
-
-	field := dbaccount.FieldName
-	defaultOrder := true
-	switch sortBy {
-	case "", "name":
-		field = dbaccount.FieldName
-	case "id":
-		field = dbaccount.FieldID
-		defaultOrder = false
-	case "status":
-		field = dbaccount.FieldStatus
-		defaultOrder = false
-	case "schedulable":
-		field = dbaccount.FieldSchedulable
-		defaultOrder = false
-	case "priority":
-		field = dbaccount.FieldPriority
-		defaultOrder = false
-	case "rate_multiplier":
-		field = dbaccount.FieldRateMultiplier
-		defaultOrder = false
-	case "last_used_at":
-		field = dbaccount.FieldLastUsedAt
-		defaultOrder = false
-	case "expires_at":
-		field = dbaccount.FieldExpiresAt
-		defaultOrder = false
-	case "created_at":
-		field = dbaccount.FieldCreatedAt
-		defaultOrder = false
-	}
-
-	if sortOrder == pagination.SortOrderDesc {
-		return []func(*entsql.Selector){dbent.Desc(field), dbent.Desc(dbaccount.FieldID)}
-	}
-	if defaultOrder {
-		return []func(*entsql.Selector){dbent.Asc(dbaccount.FieldName), dbent.Asc(dbaccount.FieldID)}
-	}
-	return []func(*entsql.Selector){dbent.Asc(field), dbent.Asc(dbaccount.FieldID)}
-}
-
-// ListOpsRealtimeAccounts returns a lightweight account projection for ops realtime dashboards.
-//
-// It avoids the generic paginated list path so high-cardinality ops panels do not spend time on
-// repeated COUNT/OFFSET queries or loading heavyweight fields like credentials / proxy metadata.
-func (r *accountRepository) ListOpsRealtimeAccounts(ctx context.Context, platformFilter string, groupIDFilter *int64) ([]service.Account, error) {
-	q := r.client.Account.Query().
-		Select(
-			dbaccount.FieldID,
-			dbaccount.FieldName,
-			dbaccount.FieldPlatform,
-			dbaccount.FieldConcurrency,
-			dbaccount.FieldStatus,
-			dbaccount.FieldSchedulable,
-			dbaccount.FieldErrorMessage,
-			dbaccount.FieldRateLimitResetAt,
-			dbaccount.FieldOverloadUntil,
-			dbaccount.FieldTempUnschedulableUntil,
-		).
-		Order(dbent.Desc(dbaccount.FieldID))
-
-	if platformFilter != "" {
-		q = q.Where(dbaccount.PlatformEQ(platformFilter))
-	}
-	if groupIDFilter != nil && *groupIDFilter > 0 {
-		q = q.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(*groupIDFilter)))
-	}
-
-	accounts, err := q.All(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	accountIDs := make([]int64, 0, len(accounts))
-	for _, acc := range accounts {
-		if acc == nil || acc.ID <= 0 {
-			continue
-		}
-		accountIDs = append(accountIDs, acc.ID)
-	}
-	groupsByAccount, groupIDsByAccount, _, err := r.loadAccountGroups(ctx, accountIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	return r.opsRealtimeAccountsToService(accounts, groupsByAccount, groupIDsByAccount), nil
+	return r.ListWithFilters(ctx, params, service.AccountListFilters{})
 }
 
 func (r *accountRepository) ListByGroup(ctx context.Context, groupID int64) ([]service.Account, error) {
@@ -751,28 +482,6 @@ func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, 
 		return nil, err
 	}
 	return r.accountsToService(ctx, accounts)
-}
-
-// ListActiveForTokenRefresh returns active accounts without loading proxy/group relations.
-// Token refresh only needs account core fields and will resolve proxy details lazily when privacy
-// checks run, so skipping relation hydration avoids huge ID fan-out queries on large account sets.
-func (r *accountRepository) ListActiveForTokenRefresh(ctx context.Context) ([]service.Account, error) {
-	accounts, err := r.client.Account.Query().
-		Where(dbaccount.StatusEQ(service.StatusActive)).
-		Order(dbent.Asc(dbaccount.FieldPriority)).
-		All(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]service.Account, 0, len(accounts))
-	for _, acc := range accounts {
-		mapped := accountEntityToService(acc)
-		if mapped == nil {
-			continue
-		}
-		out = append(out, *mapped)
-	}
-	return out, nil
 }
 
 func (r *accountRepository) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
@@ -1065,6 +774,10 @@ func (r *accountRepository) ListSchedulableByGroupID(ctx context.Context, groupI
 		status:      service.StatusActive,
 		schedulable: true,
 	})
+}
+
+func (r *accountRepository) ListGroupCapacitySnapshotAccounts(ctx context.Context, groupID int64) ([]service.GroupCapacitySnapshotAccountRecord, error) {
+	return r.listGroupCapacitySnapshotAccounts(ctx, groupID)
 }
 
 func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
@@ -1736,29 +1449,6 @@ func (r *accountRepository) accountsToService(ctx context.Context, accounts []*d
 	return outAccounts, nil
 }
 
-func (r *accountRepository) opsRealtimeAccountsToService(accounts []*dbent.Account, groupsByAccount map[int64][]*service.Group, groupIDsByAccount map[int64][]int64) []service.Account {
-	if len(accounts) == 0 {
-		return []service.Account{}
-	}
-
-	outAccounts := make([]service.Account, 0, len(accounts))
-	for _, acc := range accounts {
-		out := accountEntityToOpsRealtimeService(acc)
-		if out == nil {
-			continue
-		}
-		if groups, ok := groupsByAccount[acc.ID]; ok && len(groups) > 0 {
-			out.Groups = groups
-		}
-		if groupIDs, ok := groupIDsByAccount[acc.ID]; ok && len(groupIDs) > 0 {
-			out.GroupIDs = groupIDs
-		}
-		outAccounts = append(outAccounts, *out)
-	}
-
-	return outAccounts
-}
-
 func tempUnschedulablePredicate() dbpredicate.Account {
 	return dbpredicate.Account(func(s *entsql.Selector) {
 		col := s.C("temp_unschedulable_until")
@@ -1889,32 +1579,6 @@ func chunkPositiveInt64s(ids []int64, chunkSize int) [][]int64 {
 	return chunks
 }
 
-func mergeGroupIDs(a []int64, b []int64) []int64 {
-	seen := make(map[int64]struct{}, len(a)+len(b))
-	out := make([]int64, 0, len(a)+len(b))
-	for _, id := range a {
-		if id <= 0 {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	for _, id := range b {
-		if id <= 0 {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
-}
-
 func buildSchedulerGroupPayload(groupIDs []int64) map[string]any {
 	if len(groupIDs) == 0 {
 		return nil
@@ -1958,24 +1622,6 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		SessionWindowStart:      m.SessionWindowStart,
 		SessionWindowEnd:        m.SessionWindowEnd,
 		SessionWindowStatus:     derefString(m.SessionWindowStatus),
-	}
-}
-
-func accountEntityToOpsRealtimeService(m *dbent.Account) *service.Account {
-	if m == nil {
-		return nil
-	}
-	return &service.Account{
-		ID:                     m.ID,
-		Name:                   m.Name,
-		Platform:               m.Platform,
-		Concurrency:            m.Concurrency,
-		Status:                 m.Status,
-		ErrorMessage:           derefString(m.ErrorMessage),
-		Schedulable:            m.Schedulable,
-		RateLimitResetAt:       m.RateLimitResetAt,
-		OverloadUntil:          m.OverloadUntil,
-		TempUnschedulableUntil: m.TempUnschedulableUntil,
 	}
 }
 

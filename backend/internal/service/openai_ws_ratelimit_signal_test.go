@@ -73,13 +73,8 @@ func (r *openAICodexExtraListRepo) SetRateLimited(_ context.Context, _ int64, re
 	return nil
 }
 
-func (r *openAICodexExtraListRepo) ListWithFilters(_ context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, lastUsedFilter string, lastUsedStart, lastUsedEnd *time.Time, sortBy, sortOrder string) ([]Account, *pagination.PaginationResult, error) {
-	_ = platform
-	_ = accountType
-	_ = status
-	_ = search
-	_ = groupID
-	_ = privacyMode
+func (r *openAICodexExtraListRepo) ListWithFilters(_ context.Context, params pagination.PaginationParams, filters AccountListFilters) ([]Account, *pagination.PaginationResult, error) {
+	_ = filters
 	return r.accounts, &pagination.PaginationResult{Total: int64(len(r.accounts)), Page: params.Page, PageSize: params.PageSize}, nil
 }
 
@@ -487,7 +482,7 @@ func TestAdminService_ListAccounts_ExhaustedCodexExtraDoesNotSetRateLimit(t *tes
 	}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	accounts, total, err := svc.ListAccounts(context.Background(), 1, 20, PlatformOpenAI, AccountTypeOAuth, "", "", 0, "", "", nil, nil, "id", "desc")
+	accounts, total, err := svc.ListAccounts(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 20, SortBy: "id", SortOrder: "desc"}, AccountListFilters{Platform: PlatformOpenAI, AccountType: AccountTypeOAuth})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), total)
 	require.Len(t, accounts, 1)

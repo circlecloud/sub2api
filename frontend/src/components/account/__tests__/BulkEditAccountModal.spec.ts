@@ -169,13 +169,24 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it('OpenAI API Key 批量编辑不显示 WS mode 入口', () => {
+  it('OpenAI API Key 批量编辑应提交 API Key 专属 WS mode 字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['apikey']
     })
 
-    expect(wrapper.find('#bulk-edit-openai-ws-mode-enabled').exists()).toBe(false)
+    await wrapper.get('#bulk-edit-openai-ws-mode-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-edit-openai-ws-mode-select"]').setValue('passthrough')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        openai_apikey_responses_websockets_v2_mode: 'passthrough',
+        openai_apikey_responses_websockets_v2_enabled: true
+      }
+    })
   })
 
   it('OpenAI 账号批量编辑可关闭自动透传', async () => {
@@ -216,6 +227,39 @@ describe('BulkEditAccountModal', () => {
       }
     })
     expect(wrapper.text()).toContain('admin.accounts.openai.modelRestrictionDisabledByPassthrough')
+  })
+
+  it('按筛选结果批量编辑时直接提交 filters 而不是全量账号 ID', async () => {
+    const wrapper = mountModal({
+      accountIds: [],
+      targetCount: 128,
+      targetFilters: {
+        platform: 'anthropic',
+        group: '1,2,3',
+        group_exclude: '4,5',
+        group_match: 'exact'
+      },
+      selectedPlatforms: ['anthropic'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith({
+      filters: {
+        platform: 'anthropic',
+        group: '1,2,3',
+        group_exclude: '4,5',
+        group_match: 'exact'
+      }
+    }, {
+      credentials: {
+        model_mapping: {}
+      }
+    })
   })
 
   it('按当前分页大小分批执行批量更新', async () => {

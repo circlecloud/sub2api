@@ -1,6 +1,7 @@
 <template>
   <div class="relative" ref="containerRef">
     <button
+      v-if="!props.inline"
       type="button"
       @click="toggle"
       :class="['date-picker-trigger', isOpen && 'date-picker-trigger-open']"
@@ -20,9 +21,56 @@
       </span>
     </button>
 
-    <Transition name="date-picker-dropdown">
+    <div v-if="props.inline" class="date-picker-dropdown date-picker-dropdown-inline">
+      <div class="date-picker-presets">
+        <button
+          v-for="preset in presets"
+          :key="preset.value"
+          @click="selectPreset(preset)"
+          :class="['date-picker-preset', isPresetActive(preset) && 'date-picker-preset-active']"
+        >
+          {{ t(preset.labelKey) }}
+        </button>
+      </div>
+
+      <div class="date-picker-divider"></div>
+
+      <div class="date-picker-custom">
+        <div class="date-picker-field">
+          <label class="date-picker-label">{{ t('dates.startDate') }}</label>
+          <input
+            type="date"
+            v-model="localStartDate"
+            :max="localEndDate || tomorrow"
+            class="date-picker-input"
+            @change="onDateChange"
+          />
+        </div>
+        <div class="date-picker-separator">
+          <Icon name="arrowRight" size="sm" class="text-gray-400" />
+        </div>
+        <div class="date-picker-field">
+          <label class="date-picker-label">{{ t('dates.endDate') }}</label>
+          <input
+            type="date"
+            v-model="localEndDate"
+            :min="localStartDate"
+            :max="tomorrow"
+            class="date-picker-input"
+            @change="onDateChange"
+          />
+        </div>
+      </div>
+
+      <div class="date-picker-actions">
+        <button @click="apply" class="date-picker-apply">
+          {{ t('dates.apply') }}
+        </button>
+      </div>
+    </div>
+
+    <Transition v-else name="date-picker-dropdown">
       <div v-if="isOpen" class="date-picker-dropdown">
-        <!-- Quick presets -->
         <div class="date-picker-presets">
           <button
             v-for="preset in presets"
@@ -36,7 +84,6 @@
 
         <div class="date-picker-divider"></div>
 
-        <!-- Custom date range inputs -->
         <div class="date-picker-custom">
           <div class="date-picker-field">
             <label class="date-picker-label">{{ t('dates.startDate') }}</label>
@@ -64,7 +111,6 @@
           </div>
         </div>
 
-        <!-- Apply button -->
         <div class="date-picker-actions">
           <button @click="apply" class="date-picker-apply">
             {{ t('dates.apply') }}
@@ -89,6 +135,7 @@ interface DatePreset {
 interface Props {
   startDate: string
   endDate: string
+  inline?: boolean
 }
 
 interface Emits {
@@ -97,7 +144,9 @@ interface Emits {
   (e: 'change', range: { startDate: string; endDate: string; preset: string | null }): void
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  inline: false
+})
 const emit = defineEmits<Emits>()
 
 const { t, locale } = useI18n()
@@ -264,6 +313,7 @@ const onDateChange = () => {
 }
 
 const toggle = () => {
+  if (props.inline) return
   isOpen.value = !isOpen.value
 }
 
@@ -275,16 +325,20 @@ const apply = () => {
     endDate: localEndDate.value,
     preset: activePreset.value
   })
-  isOpen.value = false
+  if (!props.inline) {
+    isOpen.value = false
+  }
 }
 
 const handleClickOutside = (event: MouseEvent) => {
+  if (props.inline) return
   if (containerRef.value && !containerRef.value.contains(event.target as Node)) {
     isOpen.value = false
   }
 }
 
 const handleEscape = (event: KeyboardEvent) => {
+  if (props.inline) return
   if (event.key === 'Escape' && isOpen.value) {
     isOpen.value = false
   }
@@ -308,15 +362,18 @@ watch(
 )
 
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-  document.addEventListener('keydown', handleEscape)
-  // Initialize active preset detection
+  if (!props.inline) {
+    document.addEventListener('click', handleClickOutside)
+    document.addEventListener('keydown', handleEscape)
+  }
   onDateChange()
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-  document.removeEventListener('keydown', handleEscape)
+  if (!props.inline) {
+    document.removeEventListener('click', handleClickOutside)
+    document.removeEventListener('keydown', handleEscape)
+  }
 })
 </script>
 
@@ -357,6 +414,10 @@ onUnmounted(() => {
   @apply shadow-lg shadow-black/10 dark:shadow-black/30;
   @apply overflow-hidden;
   @apply min-w-[320px];
+}
+
+.date-picker-dropdown-inline {
+  @apply static mt-0 min-w-0 rounded-none border-0 bg-transparent shadow-none;
 }
 
 .date-picker-presets {

@@ -8,14 +8,14 @@ import (
 )
 
 func (s *AccountRepoSuite) TestList_DefaultSortByNameAsc() {
-	mustCreateAccount(s.T(), s.client, &service.Account{Name: "z-account"})
+	mustCreateAccount(s.T(), s.client, &service.Account{Name: "b-account"})
 	mustCreateAccount(s.T(), s.client, &service.Account{Name: "a-account"})
+	mustCreateAccount(s.T(), s.client, &service.Account{Name: "c-account"})
 
 	accounts, _, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10})
 	s.Require().NoError(err)
-	s.Require().Len(accounts, 2)
-	s.Require().Equal("a-account", accounts[0].Name)
-	s.Require().Equal("z-account", accounts[1].Name)
+	s.Require().Len(accounts, 3)
+	s.Require().Equal([]string{"a-account", "b-account", "c-account"}, []string{accounts[0].Name, accounts[1].Name, accounts[2].Name})
 }
 
 func (s *AccountRepoSuite) TestListWithFilters_SortByPriorityDesc() {
@@ -27,7 +27,7 @@ func (s *AccountRepoSuite) TestListWithFilters_SortByPriorityDesc() {
 		PageSize:  10,
 		SortBy:    "priority",
 		SortOrder: "desc",
-	}, "", "", "", "", 0, "")
+	}, service.AccountListFilters{})
 	s.Require().NoError(err)
 	s.Require().Len(accounts, 2)
 	s.Require().Equal("high-priority", accounts[0].Name)

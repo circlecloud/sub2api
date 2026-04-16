@@ -6,6 +6,8 @@
 import { apiClient } from '../client'
 import type {
   Account,
+  AccountPlatform,
+  AccountType,
   CreateAccountRequest,
   UpdateAccountRequest,
   PaginatedResponse,
@@ -20,6 +22,129 @@ import type {
   CheckMixedChannelResponse
 } from '@/types'
 
+export interface AccountSortParams {
+  sort_by?: string
+  sort_order?: string
+}
+
+export interface AccountListFilters extends BulkAccountFilters {
+  lite?: string
+}
+
+export type AccountListParams = AccountListFilters & AccountSortParams
+
+type AccountRequestOptions = {
+  signal?: AbortSignal
+}
+
+type AccountListWithEtagOptions = AccountRequestOptions & {
+  etag?: string | null
+}
+
+const ACCOUNT_LIST_FILTER_KEYS = [
+  'platform',
+  'type',
+  'status',
+  'group',
+  'group_exclude',
+  'group_match',
+  'search',
+  'privacy_mode',
+  'lite',
+  'last_used_filter',
+  'last_used_start_date',
+  'last_used_end_date'
+] as const
+
+const ACCOUNT_SORT_KEYS = ['sort_by', 'sort_order'] as const
+
+const pickAccountParams = <K extends readonly string[]>(
+  source: Record<string, unknown> | undefined,
+  keys: K
+): Record<K[number], unknown> => {
+  const result: Record<string, unknown> = {}
+  if (!source) return result as Record<K[number], unknown>
+
+  keys.forEach((key) => {
+    const value = source[key]
+    if (value !== undefined) {
+      result[key] = value
+    }
+  })
+
+  return result as Record<K[number], unknown>
+}
+
+export const splitAccountListParams = (params?: AccountListParams): {
+  filters: AccountListFilters
+  sort: AccountSortParams
+} => ({
+  filters: pickAccountParams(params as Record<string, unknown> | undefined, ACCOUNT_LIST_FILTER_KEYS) as AccountListFilters,
+  sort: pickAccountParams(params as Record<string, unknown> | undefined, ACCOUNT_SORT_KEYS) as AccountSortParams
+})
+
+const buildAccountListRequestParams = (
+  filters?: AccountListFilters,
+  sort?: AccountSortParams
+): AccountListParams => ({
+  ...pickAccountParams(filters as Record<string, unknown> | undefined, ACCOUNT_LIST_FILTER_KEYS),
+  ...pickAccountParams(sort as Record<string, unknown> | undefined, ACCOUNT_SORT_KEYS)
+}) as AccountListParams
+
+const hasAccountSortParams = (value: unknown): value is AccountSortParams => {
+  return typeof value === 'object' && value !== null && ACCOUNT_SORT_KEYS.some((key) => key in value)
+}
+
+const isAccountRequestOptions = (value: unknown): value is AccountRequestOptions => {
+  return typeof value === 'object' && value !== null && 'signal' in value
+}
+
+const isAccountListWithEtagOptions = (value: unknown): value is AccountListWithEtagOptions => {
+  return typeof value === 'object' && value !== null && ('signal' in value || 'etag' in value)
+}
+
+const resolveListRequestArgs = (
+  paramsOrFilters?: AccountListParams | AccountListFilters,
+  sortOrOptions?: AccountSortParams | AccountRequestOptions,
+  options?: AccountRequestOptions
+) => {
+  if (hasAccountSortParams(sortOrOptions)) {
+    return {
+      filters: paramsOrFilters,
+      sort: sortOrOptions,
+      options
+    }
+  }
+
+  const { filters, sort } = splitAccountListParams(paramsOrFilters as AccountListParams | undefined)
+  return {
+    filters,
+    sort,
+    options: isAccountRequestOptions(sortOrOptions) ? sortOrOptions : options
+  }
+}
+
+const resolveListWithEtagRequestArgs = (
+  paramsOrFilters?: AccountListParams | AccountListFilters,
+  sortOrOptions?: AccountSortParams | AccountListWithEtagOptions,
+  options?: AccountListWithEtagOptions
+) => {
+  if (hasAccountSortParams(sortOrOptions)) {
+    return {
+      filters: paramsOrFilters,
+      sort: sortOrOptions,
+      options
+    }
+  }
+
+  const { filters, sort } = splitAccountListParams(paramsOrFilters as AccountListParams | undefined)
+  return {
+    filters,
+    sort,
+    options: isAccountListWithEtagOptions(sortOrOptions) ? sortOrOptions : options
+  }
+}
+
 /**
  * List all accounts with pagination
  * @param page - Page number (default: 1)
@@ -28,33 +153,35 @@ import type {
  * @returns Paginated list of accounts
  */
 export async function list(
+  page?: number,
+  pageSize?: number,
+  params?: AccountListParams,
+  options?: AccountRequestOptions
+): Promise<PaginatedResponse<Account>>
+export async function list(
+  page?: number,
+  pageSize?: number,
+  filters?: AccountListFilters,
+  sort?: AccountSortParams,
+  options?: AccountRequestOptions
+): Promise<PaginatedResponse<Account>>
+export async function list(
   page: number = 1,
   pageSize: number = 20,
-  filters?: {
-    platform?: string
-    type?: string
-    status?: string
-    group?: string
-    search?: string
-    privacy_mode?: string
-    lite?: string
-    sort_by?: string
-    sort_order?: string
-    last_used_filter?: string
-    last_used_start_date?: string
-    last_used_end_date?: string
-  },
-  options?: {
-    signal?: AbortSignal
-  }
+  paramsOrFilters?: AccountListParams | AccountListFilters,
+  sortOrOptions?: AccountSortParams | AccountRequestOptions,
+  options?: AccountRequestOptions
 ): Promise<PaginatedResponse<Account>> {
+  const resolved = resolveListRequestArgs(paramsOrFilters, sortOrOptions, options)
+  const requestParams = buildAccountListRequestParams(resolved.filters, resolved.sort)
+
   const { data } = await apiClient.get<PaginatedResponse<Account>>('/admin/accounts', {
     params: {
       page,
       page_size: pageSize,
-      ...filters
+      ...requestParams
     },
-    signal: options?.signal
+    signal: resolved.options?.signal
   })
   return data
 }
@@ -66,40 +193,40 @@ export interface AccountListWithEtagResult {
 }
 
 export async function listWithEtag(
+  page?: number,
+  pageSize?: number,
+  params?: AccountListParams,
+  options?: AccountListWithEtagOptions
+): Promise<AccountListWithEtagResult>
+export async function listWithEtag(
+  page?: number,
+  pageSize?: number,
+  filters?: AccountListFilters,
+  sort?: AccountSortParams,
+  options?: AccountListWithEtagOptions
+): Promise<AccountListWithEtagResult>
+export async function listWithEtag(
   page: number = 1,
   pageSize: number = 20,
-  filters?: {
-    platform?: string
-    type?: string
-    status?: string
-    group?: string
-    search?: string
-    privacy_mode?: string
-    lite?: string
-    sort_by?: string
-    sort_order?: string
-    last_used_filter?: string
-    last_used_start_date?: string
-    last_used_end_date?: string
-  },
-  options?: {
-    signal?: AbortSignal
-    etag?: string | null
-  }
+  paramsOrFilters?: AccountListParams | AccountListFilters,
+  sortOrOptions?: AccountSortParams | AccountListWithEtagOptions,
+  options?: AccountListWithEtagOptions
 ): Promise<AccountListWithEtagResult> {
+  const resolved = resolveListWithEtagRequestArgs(paramsOrFilters, sortOrOptions, options)
+  const requestParams = buildAccountListRequestParams(resolved.filters, resolved.sort)
   const headers: Record<string, string> = {}
-  if (options?.etag) {
-    headers['If-None-Match'] = options.etag
+  if (resolved.options?.etag) {
+    headers['If-None-Match'] = resolved.options.etag
   }
 
   const response = await apiClient.get<PaginatedResponse<Account>>('/admin/accounts', {
     params: {
       page,
       page_size: pageSize,
-      ...filters
+      ...requestParams
     },
     headers,
-    signal: options?.signal,
+    signal: resolved.options?.signal,
     validateStatus: (status) => (status >= 200 && status < 300) || status === 304
   })
 
@@ -361,6 +488,41 @@ export async function batchCreate(accounts: CreateAccountRequest[]): Promise<{
   return data
 }
 
+export interface BulkAccountFilters {
+  platform?: string
+  type?: string
+  status?: string
+  group?: string
+  group_exclude?: string
+  group_match?: string
+  search?: string
+  privacy_mode?: string
+  last_used_filter?: string
+  last_used_start_date?: string
+  last_used_end_date?: string
+}
+
+export interface BulkAccountTargetPreview {
+  count: number
+  platforms: AccountPlatform[]
+  types: AccountType[]
+}
+
+export interface BulkAccountTargetResolution {
+  count: number
+  account_ids: number[]
+}
+
+export async function previewBulkUpdateTargets(filters: BulkAccountFilters): Promise<BulkAccountTargetPreview> {
+  const { data } = await apiClient.post<BulkAccountTargetPreview>('/admin/accounts/bulk-update/preview', filters)
+  return data
+}
+
+export async function resolveBulkUpdateTargets(filters: BulkAccountFilters): Promise<BulkAccountTargetResolution> {
+  const { data } = await apiClient.post<BulkAccountTargetResolution>('/admin/accounts/bulk-update/resolve', filters)
+  return data
+}
+
 /**
  * Batch update credentials fields for multiple accounts
  * @param request - Batch update request containing account IDs, field name, and value
@@ -390,7 +552,7 @@ export async function batchUpdateCredentials(request: {
  * @returns Success confirmation
  */
 export async function bulkUpdate(
-  accountIds: number[],
+  target: number[] | { filters: BulkAccountFilters },
   updates: Record<string, unknown>
 ): Promise<{
   success: number
@@ -399,16 +561,17 @@ export async function bulkUpdate(
   failed_ids?: number[]
   results: Array<{ account_id: number; success: boolean; error?: string }>
   }> {
+  const payload = Array.isArray(target)
+    ? { account_ids: target, ...updates }
+    : { filters: target.filters, ...updates }
+
   const { data } = await apiClient.post<{
     success: number
     failed: number
     success_ids?: number[]
     failed_ids?: number[]
     results: Array<{ account_id: number; success: boolean; error?: string }>
-  }>('/admin/accounts/bulk-update', {
-    account_ids: accountIds,
-    ...updates
-  })
+  }>('/admin/accounts/bulk-update', payload)
   return data
 }
 
@@ -518,38 +681,52 @@ export async function syncFromCrs(params: {
   return data
 }
 
-export async function exportData(options?: {
+export interface AccountExportOptions {
   ids?: number[]
-  filters?: {
-    platform?: string
-    type?: string
-    status?: string
-    group?: string
-    privacy_mode?: string
-    search?: string
-    sort_by?: string
-    sort_order?: string
-  }
+  filters?: BulkAccountFilters
+  sort?: AccountSortParams
   includeProxies?: boolean
-}): Promise<AdminDataPayload> {
+}
+
+const buildAccountExportParams = (options?: AccountExportOptions): Record<string, string> => {
   const params: Record<string, string> = {}
+
   if (options?.ids && options.ids.length > 0) {
     params.ids = options.ids.join(',')
-  } else if (options?.filters) {
-    const { platform, type, status, group, privacy_mode, search, sort_by, sort_order } = options.filters
-    if (platform) params.platform = platform
-    if (type) params.type = type
-    if (status) params.status = status
-    if (group) params.group = group
-    if (privacy_mode) params.privacy_mode = privacy_mode
-    if (search) params.search = search
-    if (sort_by) params.sort_by = sort_by
-    if (sort_order) params.sort_order = sort_order
+  } else {
+    const filters = pickAccountParams(options?.filters as Record<string, unknown> | undefined, [
+      'platform',
+      'type',
+      'status',
+      'group',
+      'group_exclude',
+      'group_match',
+      'privacy_mode',
+      'search',
+      'last_used_filter',
+      'last_used_start_date',
+      'last_used_end_date'
+    ] as const)
+    const sort = pickAccountParams(options?.sort as Record<string, unknown> | undefined, ACCOUNT_SORT_KEYS)
+
+    Object.entries({ ...filters, ...sort }).forEach(([key, value]) => {
+      if (typeof value === 'string' && value !== '') {
+        params[key] = value
+      }
+    })
   }
+
   if (options?.includeProxies === false) {
     params.include_proxies = 'false'
   }
-  const { data } = await apiClient.get<AdminDataPayload>('/admin/accounts/data', { params })
+
+  return params
+}
+
+export async function exportData(options?: AccountExportOptions): Promise<AdminDataPayload> {
+  const { data } = await apiClient.get<AdminDataPayload>('/admin/accounts/data', {
+    params: buildAccountExportParams(options)
+  })
   return data
 }
 
@@ -709,6 +886,8 @@ export const accountsAPI = {
   create,
   update,
   checkMixedChannelRisk,
+  previewBulkUpdateTargets,
+  resolveBulkUpdateTargets,
   delete: deleteAccount,
   toggleStatus,
   testAccount,

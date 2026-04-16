@@ -2,6 +2,7 @@ package repository
 
 import (
 	"testing"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -56,4 +57,64 @@ func TestOpsRealtimeAccountsToService_AttachesLoadedGroups(t *testing.T) {
 	require.Len(t, out[0].Groups, 1)
 	require.Equal(t, int64(7), out[0].Groups[0].ID)
 	require.Equal(t, "group-7", out[0].Groups[0].Name)
+}
+
+func TestAccountEntityToOpsRealtimeService_DropsHeavyFields(t *testing.T) {
+	errMsg := "ops error"
+	note := "keep out"
+	proxyID := int64(99)
+	loadFactor := 12
+	sessionStatus := "window-open"
+	rateLimitResetAt := time.Now().UTC().Truncate(time.Second)
+	overloadUntil := rateLimitResetAt.Add(5 * time.Minute)
+	tempUnschedulableUntil := rateLimitResetAt.Add(10 * time.Minute)
+
+	out := accountEntityToOpsRealtimeService(&dbent.Account{
+		ID:                     11,
+		Name:                   "ops-lightweight",
+		Notes:                  &note,
+		Platform:               service.PlatformOpenAI,
+		Type:                   service.AccountTypeOAuth,
+		Credentials:            map[string]any{"refresh_token": "secret"},
+		Extra:                  map[string]any{"privacy_mode": service.PrivacyModeTrainingOff},
+		ProxyID:                &proxyID,
+		Concurrency:            7,
+		LoadFactor:             &loadFactor,
+		Priority:               88,
+		RateMultiplier:         1.5,
+		Status:                 service.StatusError,
+		ErrorMessage:           &errMsg,
+		RateLimitResetAt:       &rateLimitResetAt,
+		OverloadUntil:          &overloadUntil,
+		TempUnschedulableUntil: &tempUnschedulableUntil,
+		SessionWindowStatus:    &sessionStatus,
+	})
+
+	require.NotNil(t, out)
+	require.Equal(t, int64(11), out.ID)
+	require.Equal(t, "ops-lightweight", out.Name)
+	require.Equal(t, service.PlatformOpenAI, out.Platform)
+	require.Equal(t, 7, out.Concurrency)
+	require.Equal(t, service.StatusError, out.Status)
+	require.Equal(t, "ops error", out.ErrorMessage)
+	require.False(t, out.Schedulable)
+	require.NotNil(t, out.RateLimitResetAt)
+	require.WithinDuration(t, rateLimitResetAt, *out.RateLimitResetAt, time.Second)
+	require.NotNil(t, out.OverloadUntil)
+	require.WithinDuration(t, overloadUntil, *out.OverloadUntil, time.Second)
+	require.NotNil(t, out.TempUnschedulableUntil)
+	require.WithinDuration(t, tempUnschedulableUntil, *out.TempUnschedulableUntil, time.Second)
+
+	require.Nil(t, out.Notes)
+	require.Empty(t, out.Type)
+	require.Nil(t, out.Credentials)
+	require.Nil(t, out.Extra)
+	require.Nil(t, out.ProxyID)
+	require.Zero(t, out.Priority)
+	require.Nil(t, out.RateMultiplier)
+	require.Nil(t, out.Proxy)
+	require.Empty(t, out.Groups)
+	require.Empty(t, out.GroupIDs)
+	require.Empty(t, out.AccountGroups)
+	require.Empty(t, out.SessionWindowStatus)
 }
