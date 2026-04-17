@@ -124,7 +124,11 @@
         </div>
 
         <div v-if="modelRestrictionModeModel === 'whitelist'">
-          <ModelWhitelistSelector v-model="allowedModelsModel" platform="openai" />
+          <ModelWhitelistSelector
+            v-model="allowedModelsModel"
+            platform="openai"
+            :available-models="availableOpenAIModels"
+          />
           <p class="text-xs text-gray-500 dark:text-gray-400">
             {{ t('admin.accounts.selectedModels', { count: allowedModelsModel.length }) }}
             <span v-if="allowedModelsModel.length === 0">{{ t('admin.accounts.supportsAllModels') }}</span>
@@ -208,7 +212,11 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
-import { getPresetMappingsByPlatform, isValidWildcardPattern } from '@/composables/useModelWhitelist'
+import {
+  getDefaultModelSelection,
+  getPresetMappingsByPlatform,
+  isValidWildcardPattern
+} from '@/composables/useModelWhitelist'
 import {
   OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
@@ -279,6 +287,8 @@ const wsModeOptions = computed(() => [
 const wsModeHintKey = computed(() =>
   resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2ModeModel.value)
 )
+
+const availableOpenAIModels = computed(() => getDefaultModelSelection('openai', { accountType: 'oauth' }))
 
 const presetMappings = computed(() => getPresetMappingsByPlatform('openai'))
 

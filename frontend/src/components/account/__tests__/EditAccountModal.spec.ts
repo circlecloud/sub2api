@@ -228,4 +228,27 @@ describe('EditAccountModal', () => {
       'gpt-5.2': 'gpt-5.2'
     })
   })
+
+  it('preserves empty OpenAI OAuth model mapping when saving without editing models', async () => {
+    const account = buildAccount({
+      type: 'oauth',
+      credentials: {
+        access_token: 'oauth-token',
+        base_url: 'https://api.openai.com'
+      }
+    })
+    getWebSearchEmulationConfigMock.mockResolvedValue({ enabled: false, providers: [] })
+    listTLSFingerprintProfilesMock.mockResolvedValue([])
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('model_mapping')
+  })
 })

@@ -2,14 +2,16 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AccountBatchTestModal from '../AccountBatchTestModal.vue'
 
-const { getAvailableModels } = vi.hoisted(() => ({
-  getAvailableModels: vi.fn()
+const { getAvailableModels, getBatchAvailableModels } = vi.hoisted(() => ({
+  getAvailableModels: vi.fn(),
+  getBatchAvailableModels: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
-      getAvailableModels
+      getAvailableModels,
+      getBatchAvailableModels
     }
   }
 }))
@@ -108,11 +110,13 @@ describe('AccountBatchTestModal', () => {
         stubs: {
           BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
           Select: {
+            name: 'Select',
             props: ['modelValue', 'options'],
             emits: ['update:modelValue'],
             template: '<select class="select-stub" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="option in options" :key="String(option.value)" :value="option.value">{{ option.label }}</option></select>'
           },
           TextArea: {
+            name: 'TextArea',
             props: ['modelValue'],
             emits: ['update:modelValue'],
             template: '<textarea class="textarea-stub" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />'
@@ -130,8 +134,9 @@ describe('AccountBatchTestModal', () => {
     const concurrencyInput = wrapper.find('input[type="number"]')
     expect((concurrencyInput.element as HTMLInputElement).value).toBe('5')
 
-    const modelSelect = wrapper.find('select.select-stub')
-    await modelSelect.setValue('claude-3-5-sonnet')
+    const modelSelect = wrapper.findComponent({ name: 'Select' })
+    modelSelect.vm.$emit('update:modelValue', 'claude-3-5-sonnet')
+    await flushPromises()
     await promptInput.setValue('custom batch prompt')
 
     const startButton = wrapper.findAll('button').find((button) => button.text().includes('开始批量测试'))
@@ -141,9 +146,9 @@ describe('AccountBatchTestModal', () => {
     await flushPromises()
     await flushPromises()
 
-    expect(getAvailableModels).toHaveBeenCalledTimes(2)
-    expect(getAvailableModels).toHaveBeenNthCalledWith(1, 11)
-    expect(getAvailableModels).toHaveBeenNthCalledWith(2, 22)
+    expect(getBatchAvailableModels).toHaveBeenCalledTimes(1)
+    expect(getBatchAvailableModels).toHaveBeenCalledWith([11, 22])
+    expect(getAvailableModels).not.toHaveBeenCalled()
 
     expect(global.fetch).toHaveBeenCalledTimes(2)
     expect((global.fetch as any).mock.calls[0][0]).toBe('/api/v1/admin/accounts/11/test')

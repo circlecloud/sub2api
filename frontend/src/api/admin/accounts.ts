@@ -624,6 +624,27 @@ export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
   return data
 }
 
+export interface BatchAvailableModelsRepresentativeAccount {
+  id: number
+  name: string
+  platform: AccountPlatform
+  type: AccountType
+}
+
+export interface BatchAvailableModelsResponse {
+  count: number
+  signature_count: number
+  models: ClaudeModel[]
+  representative_accounts: BatchAvailableModelsRepresentativeAccount[]
+}
+
+export async function getBatchAvailableModels(accountIds: number[]): Promise<BatchAvailableModelsResponse> {
+  const { data } = await apiClient.post<BatchAvailableModelsResponse>('/admin/accounts/models/batch', {
+    account_ids: accountIds
+  })
+  return data
+}
+
 export interface CRSPreviewAccount {
   crs_account_id: string
   kind: string
@@ -904,6 +925,7 @@ export const accountsAPI = {
   resetTempUnschedulable,
   setSchedulable,
   getAvailableModels,
+  getBatchAvailableModels,
   generateAuthUrl,
   exchangeCode,
   refreshOpenAIToken,

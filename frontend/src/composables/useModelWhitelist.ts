@@ -32,6 +32,13 @@ const openaiModels = [
   'gpt-4o-audio-preview', 'gpt-4o-realtime-preview'
 ]
 
+export const openAIOAuthDefaultModels = [
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.3-codex',
+  'gpt-5.2'
+]
+
 // Anthropic Claude
 export const claudeModels = [
   'claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620',
@@ -389,6 +396,13 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'perplexity': return perplexityModels
     default: return claudeModels
   }
+}
+
+export function getDefaultModelSelection(platform: string, options?: { accountType?: string | null }): string[] {
+  if (platform === 'openai' && options?.accountType === 'oauth') {
+    return openAIOAuthDefaultModels
+  }
+  return getModelsByPlatform(platform)
 }
 
 // 按平台获取预设映射

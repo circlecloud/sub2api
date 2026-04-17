@@ -133,6 +133,7 @@ const props = defineProps<{
   modelValue: string[]
   platform?: string
   platforms?: string[]
+  availableModels?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -162,7 +163,16 @@ const normalizedPlatforms = computed(() => {
   )
 })
 
+const buildExplicitOptions = (models: string[]) => {
+  const dedupedModels = Array.from(new Set(models.map(model => model.trim()).filter(Boolean)))
+  return dedupedModels.map(model => allModels.find(option => option.value === model) ?? { value: model, label: model })
+}
+
 const availableOptions = computed(() => {
+  if (props.availableModels && props.availableModels.length > 0) {
+    return buildExplicitOptions(props.availableModels)
+  }
+
   if (normalizedPlatforms.value.length === 0) {
     return allModels
   }
@@ -219,11 +229,13 @@ const handleEnter = () => {
 
 const fillRelated = () => {
   const newModels = [...props.modelValue]
-  for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
-      if (!newModels.includes(model)) {
-        newModels.push(model)
-      }
+  const sourceModels = props.availableModels && props.availableModels.length > 0
+    ? buildExplicitOptions(props.availableModels).map(option => option.value)
+    : normalizedPlatforms.value.flatMap(platform => getModelsByPlatform(platform))
+
+  for (const model of sourceModels) {
+    if (!newModels.includes(model)) {
+      newModels.push(model)
     }
   }
   emit('update:modelValue', newModels)

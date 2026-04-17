@@ -222,7 +222,7 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 
 func normalizeCodexModel(model string) string {
 	if model == "" {
-		return "gpt-5.1"
+		return "gpt-5.4-mini"
 	}
 
 	modelID := model
@@ -279,10 +279,10 @@ func normalizeCodexModel(model string) string {
 		return "gpt-5.1-codex"
 	}
 	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.1"
+		return "gpt-5.4-mini"
 	}
 
-	return "gpt-5.1"
+	return "gpt-5.4-mini"
 }
 
 func normalizeOpenAIModelForUpstream(account *Account, model string) string {

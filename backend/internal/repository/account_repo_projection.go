@@ -78,6 +78,59 @@ func (r *accountRepository) ListActiveForTokenRefresh(ctx context.Context) ([]se
 	return out, nil
 }
 
+// GetModelProjectionByIDs returns a lightweight account projection for available model calculations.
+// It only loads the fields needed to build model lists and intentionally skips proxy/group hydration.
+func (r *accountRepository) GetModelProjectionByIDs(ctx context.Context, ids []int64) ([]*service.Account, error) {
+	uniqueIDs := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return []*service.Account{}, nil
+	}
+
+	const modelProjectionChunkSize = 1000
+	accountsByID := make(map[int64]*service.Account, len(uniqueIDs))
+	for _, chunk := range chunkPositiveInt64s(uniqueIDs, modelProjectionChunkSize) {
+		accounts, err := r.client.Account.Query().
+			Select(
+				dbaccount.FieldID,
+				dbaccount.FieldPlatform,
+				dbaccount.FieldType,
+				dbaccount.FieldCredentials,
+				dbaccount.FieldExtra,
+			).
+			Where(dbaccount.IDIn(chunk...)).
+			All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, account := range accounts {
+			mapped := accountEntityToService(account)
+			if mapped == nil || mapped.ID <= 0 {
+				continue
+			}
+			accountsByID[mapped.ID] = mapped
+		}
+	}
+
+	out := make([]*service.Account, 0, len(uniqueIDs))
+	for _, id := range uniqueIDs {
+		if account, ok := accountsByID[id]; ok && account != nil {
+			out = append(out, account)
+		}
+	}
+	return out, nil
+}
+
 func (r *accountRepository) opsRealtimeAccountsToService(accounts []*dbent.Account, groupsByAccount map[int64][]*service.Group, groupIDsByAccount map[int64][]int64) []service.Account {
 	if len(accounts) == 0 {
 		return []service.Account{}

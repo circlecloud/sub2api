@@ -169,7 +169,6 @@ const { t } = useI18n()
 
 const DEFAULT_BULK_TEST_CONCURRENCY = 5
 const MAX_BULK_TEST_CONCURRENCY = 10
-const BULK_MODEL_LOAD_CONCURRENCY = 5
 const DEFAULT_BATCH_TEST_PROMPT = '只回复OK'
 const phase = ref<'idle' | 'running' | 'completed'>('idle')
 const customPrompt = ref(DEFAULT_BATCH_TEST_PROMPT)
@@ -271,7 +270,7 @@ const normalizeModelOptions = (models: ClaudeModel[]) => {
   return options
 }
 
-const loadCommonModels = async () => {
+const loadBatchModels = async () => {
   const requestSeq = ++modelLoadSeq
   selectedModelId.value = ''
   modelOptions.value = []
@@ -281,51 +280,14 @@ const loadCommonModels = async () => {
   if (uniqueAccountIds.length === 0) return
 
   loadingModels.value = true
-  const results: Array<Array<{ value: string; label: string }> | null> = new Array(uniqueAccountIds.length).fill(null)
-  let nextIndex = 0
-  let failed = false
-
-  const worker = async () => {
-    while (true) {
-      const currentIndex = nextIndex
-      if (currentIndex >= uniqueAccountIds.length) return
-      nextIndex += 1
-
-      try {
-        const models = await adminAPI.accounts.getAvailableModels(uniqueAccountIds[currentIndex])
-        if (requestSeq !== modelLoadSeq) return
-        results[currentIndex] = normalizeModelOptions(models)
-      } catch {
-        failed = true
-        results[currentIndex] = []
-      }
-    }
-  }
-
   try {
-    await Promise.all(
-      Array.from(
-        { length: Math.min(BULK_MODEL_LOAD_CONCURRENCY, uniqueAccountIds.length) },
-        () => worker()
-      )
-    )
-
+    const response = await adminAPI.accounts.getBatchAvailableModels(uniqueAccountIds)
     if (requestSeq !== modelLoadSeq) return
-
-    if (failed || results.some((item) => item === null)) {
-      modelLoadFailed.value = true
-      modelOptions.value = []
-      return
-    }
-
-    const loadedOptions = results as Array<Array<{ value: string; label: string }>>
-    if (loadedOptions.length === 0) {
-      modelOptions.value = []
-      return
-    }
-
-    const commonValueSets = loadedOptions.slice(1).map((options) => new Set(options.map((item) => item.value)))
-    modelOptions.value = loadedOptions[0].filter((option) => commonValueSets.every((set) => set.has(option.value)))
+    modelOptions.value = normalizeModelOptions(response.models ?? [])
+  } catch {
+    if (requestSeq !== modelLoadSeq) return
+    modelLoadFailed.value = true
+    modelOptions.value = []
   } finally {
     if (requestSeq === modelLoadSeq) {
       loadingModels.value = false
@@ -342,7 +304,7 @@ watch(
       testConcurrency.value = DEFAULT_BULK_TEST_CONCURRENCY
       resetState()
       emit('running-change', false)
-      void loadCommonModels()
+      void loadBatchModels()
     } else {
       loadingModels.value = false
     }

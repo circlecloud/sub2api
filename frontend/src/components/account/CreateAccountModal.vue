@@ -2639,9 +2639,8 @@ import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import {
-  claudeModels,
+  getDefaultModelSelection,
   getPresetMappingsByPlatform,
-  getModelsByPlatform,
   commonErrorCodes,
   buildModelMappingObject,
   fetchAntigravityDefaultMappings,
@@ -3036,6 +3035,11 @@ const isOAuthFlow = computed(() => {
   return accountCategory.value === 'oauth-based'
 })
 
+const resolveDefaultAllowedModels = (platform: string) => {
+  const accountType = platform === 'openai' && accountCategory.value === 'oauth-based' ? 'oauth' : undefined
+  return [...getDefaultModelSelection(platform, { accountType })]
+}
+
 // Watchers
 watch(
   () => props.show,
@@ -3046,7 +3050,7 @@ watch(
         .then(profiles => { tlsFingerprintProfiles.value = profiles.map(p => ({ id: p.id, name: p.name })) })
         .catch(() => { tlsFingerprintProfiles.value = [] })
       // Modal opened - fill related models
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      allowedModels.value = resolveDefaultAllowedModels(form.platform)
       // Antigravity: 默认使用映射模式并填充默认映射
       if (form.platform === 'antigravity') {
         antigravityModelRestrictionMode.value = 'mapping'
@@ -3186,12 +3190,12 @@ const handleSelectGeminiOAuthType = (oauthType: 'code_assist' | 'google_one' | '
   geminiOAuthType.value = oauthType
 }
 
-// Auto-fill related models when switching to whitelist mode or changing platform
+// Auto-fill related models when switching to whitelist mode or changing平台/账号类型
 watch(
-  [modelRestrictionMode, () => form.platform],
+  [modelRestrictionMode, () => form.platform, accountCategory],
   ([newMode]) => {
     if (newMode === 'whitelist') {
-      allowedModels.value = [...getModelsByPlatform(form.platform)]
+      allowedModels.value = resolveDefaultAllowedModels(form.platform)
     }
   }
 )
@@ -3503,7 +3507,7 @@ const resetForm = () => {
   editResetTimezone.value = null
   modelMappings.value = []
   modelRestrictionMode.value = 'whitelist'
-  allowedModels.value = [...claudeModels] // Default fill related models
+  allowedModels.value = resolveDefaultAllowedModels('anthropic')
 
   antigravityModelRestrictionMode.value = 'mapping'
   antigravityWhitelistModels.value = []

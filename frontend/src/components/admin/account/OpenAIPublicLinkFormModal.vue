@@ -125,7 +125,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
 import AccountRuntimeSettingsFields from '@/components/account/AccountRuntimeSettingsFields.vue'
 import OpenAIOAuthDefaultsFields from '@/components/account/OpenAIOAuthDefaultsFields.vue'
-import { buildModelMappingObject } from '@/composables/useModelWhitelist'
+import { buildModelMappingObject, getDefaultModelSelection } from '@/composables/useModelWhitelist'
 import { adminAPI } from '@/api/admin'
 import { useAppStore } from '@/stores'
 import type { AdminGroup, Proxy as AccountProxy } from '@/types'
@@ -199,7 +199,7 @@ const resetForm = () => {
   form.openaiResponsesWebSocketV2Mode = OPENAI_WS_MODE_OFF
   form.codexCLIOnlyEnabled = false
   form.modelRestrictionMode = 'whitelist'
-  form.allowedModels = []
+  form.allowedModels = [...getDefaultModelSelection('openai', { accountType: 'oauth' })]
   form.modelMappings = []
 }
 
@@ -218,7 +218,7 @@ const applyLinkToForm = (link: OpenAIPublicAddLink) => {
         .map(([from, to]) => ({ from: from.trim(), to: String(to).trim() }))
     : []
   const isWhitelistMode =
-    mappingEntries.length > 0 &&
+    mappingEntries.length === 0 ||
     mappingEntries.every((item) => item.from === item.to && !item.from.includes('*'))
 
   form.name = link.name || ''
@@ -237,7 +237,11 @@ const applyLinkToForm = (link: OpenAIPublicAddLink) => {
       : OPENAI_WS_MODE_OFF
   form.codexCLIOnlyEnabled = defaults?.extra?.codex_cli_only === true
   form.modelRestrictionMode = isWhitelistMode ? 'whitelist' : 'mapping'
-  form.allowedModels = isWhitelistMode ? mappingEntries.map((item) => item.from) : []
+  form.allowedModels = isWhitelistMode
+    ? (mappingEntries.length > 0
+        ? mappingEntries.map((item) => item.from)
+        : [...getDefaultModelSelection('openai', { accountType: 'oauth' })])
+    : []
   form.modelMappings = isWhitelistMode ? [] : mappingEntries
   ensureDefaultSelection()
 }

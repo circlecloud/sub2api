@@ -228,6 +228,7 @@
               <ModelWhitelistSelector
                 v-model="allowedModels"
                 :platforms="selectedPlatforms"
+                :available-models="openAIAvailableModels"
               />
 
               <p class="text-xs text-gray-500 dark:text-gray-400">
@@ -917,11 +918,12 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import Icon from '@/components/icons/Icon.vue'
 import {
   buildModelMappingObject as buildModelMappingPayload,
+  getDefaultModelSelection,
   getPresetMappingsByPlatform
 } from '@/composables/useModelWhitelist'
 import {
-  OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
+  OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_PASSTHROUGH,
   isOpenAIWSModeEnabled,
   resolveOpenAIWSModeConcurrencyHintKey
@@ -1112,6 +1114,12 @@ const isOpenAIModelRestrictionDisabled = computed(
     enableOpenAIPassthrough.value &&
     openaiPassthroughEnabled.value
 )
+const openAIAvailableModels = computed(() => {
+  if (selectedOpenAIWSModeAccountType.value !== 'oauth') {
+    return undefined
+  }
+  return getDefaultModelSelection('openai', { accountType: 'oauth' })
+})
 
 const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },

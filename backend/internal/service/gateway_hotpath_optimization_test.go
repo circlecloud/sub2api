@@ -580,6 +580,72 @@ func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 	require.Equal(t, int64(1), okRepo.listAllCalls.Load())
 }
 
+func TestGetAvailableModels_OpenAIOAuthWithoutMappingUsesCuratedDefaults(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(7)
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:       1,
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+				},
+				{
+					ID:          2,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeOAuth,
+					Credentials: map[string]any{},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
+	require.Equal(t, []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"}, models)
+	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
+}
+
+func TestGetAvailableModels_OpenAIOAuthPassthroughIgnoresExplicitMapping(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(8)
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:       1,
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Credentials: map[string]any{
+						"model_mapping": map[string]any{
+							"gpt-5.1": "gpt-5.1",
+						},
+					},
+					Extra: map[string]any{
+						"openai_passthrough": true,
+					},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
+	require.Equal(t, []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"}, models)
+	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
+}
+
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {
 	t.Run("resolve_user_group_rate_cache_ttl", func(t *testing.T) {
 		require.Equal(t, defaultUserGroupRateCacheTTL, resolveUserGroupRateCacheTTL(nil))

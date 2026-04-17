@@ -25,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -8771,8 +8772,28 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	// Collect unique models from all accounts
 	modelSet := make(map[string]struct{})
 	hasAnyMapping := false
+	passthroughDefaultSet := make(map[string]struct{})
+	passthroughDefaults := make([]string, 0)
+	addPassthroughDefaults := func(defaults []string) {
+		for _, model := range defaults {
+			if _, exists := passthroughDefaultSet[model]; exists {
+				continue
+			}
+			passthroughDefaultSet[model] = struct{}{}
+			passthroughDefaults = append(passthroughDefaults, model)
+		}
+	}
 
 	for _, acc := range accounts {
+		if platform == PlatformOpenAI && acc.Platform == PlatformOpenAI && acc.IsOpenAIPassthroughEnabled() {
+			if acc.IsOAuth() {
+				addPassthroughDefaults(openaipkg.DefaultOAuthModelIDs())
+			} else {
+				addPassthroughDefaults(openaipkg.DefaultModelIDs())
+			}
+			continue
+		}
+
 		mapping := acc.GetModelMapping()
 		if len(mapping) > 0 {
 			hasAnyMapping = true
@@ -8782,13 +8803,42 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		}
 	}
 
-	// If no account has model_mapping, return nil (use default)
+	// If no account has model_mapping, OpenAI passthrough/受控 OAuth 分组回退到默认模型；其他情况仍使用上层默认回退。
 	if !hasAnyMapping {
+		if len(passthroughDefaults) > 0 {
+			models := cloneStringSlice(passthroughDefaults)
+			if s.modelsListCache != nil {
+				s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
+				modelsListCacheStoreTotal.Add(1)
+			}
+			return models
+		}
+		if platform == PlatformOpenAI && len(accounts) > 0 {
+			allOAuth := true
+			for _, acc := range accounts {
+				if acc.Platform != PlatformOpenAI || !acc.IsOAuth() {
+					allOAuth = false
+					break
+				}
+			}
+			if allOAuth {
+				models := openaipkg.DefaultOAuthModelIDs()
+				if s.modelsListCache != nil {
+					s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
+					modelsListCacheStoreTotal.Add(1)
+				}
+				return models
+			}
+		}
 		if s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
 		}
 		return nil
+	}
+
+	for _, model := range passthroughDefaults {
+		modelSet[model] = struct{}{}
 	}
 
 	// Convert to slice
