@@ -125,6 +125,7 @@ export interface SystemSettings {
   enable_openai_stream_rectifier: boolean
   openai_stream_response_header_rectifier_timeouts: number[]
   openai_stream_first_token_rectifier_timeouts: number[]
+  openai_usage_probe_method: 'responses' | 'wham' | string
 
   // OpenAI warm pool behavior
   openai_warm_pool_enabled: boolean
@@ -264,6 +265,7 @@ export interface UpdateSettingsRequest {
   enable_openai_stream_rectifier?: boolean
   openai_stream_response_header_rectifier_timeouts?: number[]
   openai_stream_first_token_rectifier_timeouts?: number[]
+  openai_usage_probe_method?: 'responses' | 'wham' | string
   openai_warm_pool_enabled?: boolean
   openai_warm_pool_bucket_target_size?: number
   openai_warm_pool_bucket_refill_below?: number

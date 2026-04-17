@@ -151,6 +151,29 @@ func TestSettingHandler_GetSettings_StartupGroupIDsAlwaysArray(t *testing.T) {
 	require.Len(t, ids, 0)
 }
 
+func TestSettingHandler_GetSettings_OpenAIUsageProbeMethodDefaultsToWham(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := newSettingHandlerRepoStub(map[string]string{})
+	handler := NewSettingHandler(service.NewSettingService(repo, &config.Config{}), nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.GET("/api/v1/admin/settings", handler.GetSettings)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp response.Response
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+
+	payloadBytes, err := json.Marshal(resp.Data)
+	require.NoError(t, err)
+	var settings dto.SystemSettings
+	require.NoError(t, json.Unmarshal(payloadBytes, &settings))
+	require.Equal(t, "wham", settings.OpenAIUsageProbeMethod)
+}
+
 func TestSettingHandler_GetSettings_PaymentConfigErrorReturnsFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	repo := newSettingHandlerRepoStub(map[string]string{})
@@ -193,6 +216,22 @@ func TestSettingHandler_UpdateSettings_RoundTripsOpenAIStreamRectifierFields(t *
 	require.Equal(t, "false", repo.values[service.SettingKeyEnableOpenAIStreamRectifier])
 	require.Equal(t, `[11,13]`, repo.values[service.SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts])
 	require.Equal(t, `[7,9]`, repo.values[service.SettingKeyOpenAIStreamFirstTokenRectifierTimeouts])
+}
+
+func TestSettingHandler_UpdateSettings_RoundTripsOpenAIUsageProbeMethod(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := newSettingHandlerRepoStub(map[string]string{})
+	svc := service.NewSettingService(repo, &config.Config{})
+	handler := NewSettingHandler(svc, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.PUT("/api/v1/admin/settings", handler.UpdateSettings)
+
+	settings := performUpdateSettingsRequest(t, router, map[string]any{
+		"openai_usage_probe_method": "wham",
+	})
+
+	require.Equal(t, "wham", settings.OpenAIUsageProbeMethod)
+	require.Equal(t, "wham", repo.values[service.SettingKeyOpenAIUsageProbeMethod])
 }
 
 func TestSettingHandler_UpdateSettings_RoundTripsNotifyAndPaymentFields(t *testing.T) {

@@ -109,6 +109,15 @@ func TestSettingService_UpdateSettings_DefaultSubscriptions_ValidGroup(t *testin
 	}, got)
 }
 
+func TestSettingServiceGetOpenAIUsageProbeMethodDefaultsToWham(t *testing.T) {
+	ctx := context.Background()
+	svc := &SettingService{}
+	require.Equal(t, string(OpenAIUsageProbeMethodWham), svc.GetOpenAIUsageProbeMethod(ctx))
+
+	svc = &SettingService{settingRepo: &settingUpdateRepoStub{values: map[string]string{}}}
+	require.Equal(t, string(OpenAIUsageProbeMethodWham), svc.GetOpenAIUsageProbeMethod(ctx))
+}
+
 func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsNonSubscriptionGroup(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	groupReader := &defaultSubGroupReaderStub{

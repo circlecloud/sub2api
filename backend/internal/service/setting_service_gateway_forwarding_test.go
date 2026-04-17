@@ -111,3 +111,84 @@ func TestSettingService_GetOpenAIStreamRectifierTimeouts(t *testing.T) {
 		require.Equal(t, []int{6, 7, 9}, first)
 	})
 }
+
+func TestAppendOpenAISettingsUpdates_PersistsProbeMethodAndWarmPoolFields(t *testing.T) {
+	updates := map[string]string{}
+	settings := &SystemSettings{
+		EnableFingerprintUnification:                true,
+		EnableMetadataPassthrough:                   true,
+		EnableCCHSigning:                            true,
+		EnableOpenAIStreamRectifier:                 false,
+		OpenAIStreamResponseHeaderRectifierTimeouts: []int{11, 13},
+		OpenAIStreamFirstTokenRectifierTimeouts:     []int{7, 9},
+		OpenAIUsageProbeMethod:                      "WHAM",
+		OpenAIWarmPoolEnabled:                       true,
+		OpenAIWarmPoolBucketTargetSize:              10,
+		OpenAIWarmPoolBucketRefillBelow:             3,
+		OpenAIWarmPoolBucketSyncFillMin:             1,
+		OpenAIWarmPoolBucketEntryTTLSeconds:         30,
+		OpenAIWarmPoolBucketRefillCooldownSeconds:   15,
+		OpenAIWarmPoolBucketRefillIntervalSeconds:   30,
+		OpenAIWarmPoolGlobalTargetSize:              30,
+		OpenAIWarmPoolGlobalRefillBelow:             10,
+		OpenAIWarmPoolGlobalEntryTTLSeconds:         300,
+		OpenAIWarmPoolGlobalRefillCooldownSeconds:   60,
+		OpenAIWarmPoolGlobalRefillIntervalSeconds:   300,
+		OpenAIWarmPoolNetworkErrorPoolSize:          3,
+		OpenAIWarmPoolNetworkErrorEntryTTLSeconds:   120,
+		OpenAIWarmPoolProbeMaxCandidates:            24,
+		OpenAIWarmPoolProbeConcurrency:              4,
+		OpenAIWarmPoolProbeTimeoutSeconds:           15,
+		OpenAIWarmPoolProbeFailureCooldownSeconds:   120,
+		OpenAIWarmPoolStartupGroupIDs:               []int64{9, 3, 9},
+	}
+
+	require.NoError(t, appendOpenAISettingsUpdates(updates, settings))
+	require.Equal(t, "wham", updates[SettingKeyOpenAIUsageProbeMethod])
+	require.Equal(t, `[11,13]`, updates[SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts])
+	require.Equal(t, `[7,9]`, updates[SettingKeyOpenAIStreamFirstTokenRectifierTimeouts])
+	require.Equal(t, "3,9", updates[SettingKeyOpenAIWarmPoolStartupGroupIDs])
+}
+
+func TestApplyOpenAISettingsFromMap_LoadsGatewayAndWarmPoolFields(t *testing.T) {
+	result := &SystemSettings{}
+	settings := map[string]string{
+		SettingKeyEnableFingerprintUnification:                "false",
+		SettingKeyEnableMetadataPassthrough:                   "true",
+		SettingKeyEnableCCHSigning:                            "true",
+		SettingKeyEnableOpenAIStreamRectifier:                 "false",
+		SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts: `[11,13]`,
+		SettingKeyOpenAIStreamFirstTokenRectifierTimeouts:     `[7,9]`,
+		SettingKeyOpenAIUsageProbeMethod:                      "WHAM",
+		SettingKeyOpenAIWarmPoolEnabled:                       "true",
+		SettingKeyOpenAIWarmPoolBucketTargetSize:              "10",
+		SettingKeyOpenAIWarmPoolBucketRefillBelow:             "3",
+		SettingKeyOpenAIWarmPoolBucketSyncFillMin:             "1",
+		SettingKeyOpenAIWarmPoolBucketEntryTTLSeconds:         "30",
+		SettingKeyOpenAIWarmPoolBucketRefillCooldownSeconds:   "15",
+		SettingKeyOpenAIWarmPoolBucketRefillIntervalSeconds:   "30",
+		SettingKeyOpenAIWarmPoolGlobalTargetSize:              "30",
+		SettingKeyOpenAIWarmPoolGlobalRefillBelow:             "10",
+		SettingKeyOpenAIWarmPoolGlobalEntryTTLSeconds:         "300",
+		SettingKeyOpenAIWarmPoolGlobalRefillCooldownSeconds:   "60",
+		SettingKeyOpenAIWarmPoolGlobalRefillIntervalSeconds:   "300",
+		SettingKeyOpenAIWarmPoolNetworkErrorPoolSize:          "3",
+		SettingKeyOpenAIWarmPoolNetworkErrorEntryTTLSeconds:   "120",
+		SettingKeyOpenAIWarmPoolProbeMaxCandidates:            "24",
+		SettingKeyOpenAIWarmPoolProbeConcurrency:              "4",
+		SettingKeyOpenAIWarmPoolProbeTimeoutSeconds:           "15",
+		SettingKeyOpenAIWarmPoolProbeFailureCooldownSeconds:   "120",
+		SettingKeyOpenAIWarmPoolStartupGroupIDs:               "9,3,9",
+	}
+
+	applyOpenAISettingsFromMap(result, settings, &config.Config{})
+	require.False(t, result.EnableFingerprintUnification)
+	require.True(t, result.EnableMetadataPassthrough)
+	require.True(t, result.EnableCCHSigning)
+	require.False(t, result.EnableOpenAIStreamRectifier)
+	require.Equal(t, []int{11, 13}, result.OpenAIStreamResponseHeaderRectifierTimeouts)
+	require.Equal(t, []int{7, 9}, result.OpenAIStreamFirstTokenRectifierTimeouts)
+	require.Equal(t, "wham", result.OpenAIUsageProbeMethod)
+	require.True(t, result.OpenAIWarmPoolEnabled)
+	require.Equal(t, []int64{3, 9}, result.OpenAIWarmPoolStartupGroupIDs)
+}

@@ -805,6 +805,7 @@ export interface AntigravityModelQuota {
 
 export interface AccountUsageInfo {
   source?: 'passive' | 'active'
+  update_method?: 'usage' | 'response'
   updated_at: string | null
   five_hour: UsageProgress | null
   seven_day: UsageProgress | null

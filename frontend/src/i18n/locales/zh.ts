@@ -4927,6 +4927,14 @@ export default {
         allowUngroupedKey: '允许未分组 Key 调度',
         allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。'
       },
+      openaiUsageProbe: {
+        title: 'OpenAI 用量查询',
+        description: '配置后台查询 OpenAI OAuth 账号用量时使用的上游接口。',
+        method: '查询方式',
+        methodHint: 'responses 会发起探测请求；wham 走 /backend-api/wham/usage，不会额外消耗 responses 探测请求量。为兼容老账号，缺少 chatgpt_account_id 时会自动回退到 responses。',
+        optionResponses: 'responses（兼容旧行为）',
+        optionWham: 'wham（推荐）'
+      },
       openaiWarmPool: {
         title: 'OpenAI 预热池',
         description: '控制 OpenAI OAuth 账号的分组池、全局池和网络异常池三层预热行为。',

@@ -175,6 +175,7 @@ const baseSettings = {
   openai_warm_pool_probe_timeout_seconds: 15,
   openai_warm_pool_probe_failure_cooldown_seconds: 120,
   openai_warm_pool_startup_group_ids: [],
+  openai_usage_probe_method: 'responses',
 }
 
 describe('SettingsView openai warm pool startup groups', () => {
@@ -372,6 +373,49 @@ describe('SettingsView openai warm pool startup groups', () => {
     expect(updateSettings).toHaveBeenCalledTimes(1)
     expect(updateSettings.mock.calls[0][0]).toMatchObject({
       openai_warm_pool_startup_group_ids: [101],
+    })
+  })
+
+  it('submits openai usage probe method from the openai tab', async () => {
+    const wrapper = mountSettingsView()
+
+    await flushPromises()
+    await flushPromises()
+
+    const openaiTab = wrapper.findAll('button').find((node) => node.text().includes('admin.settings.tabs.openai'))
+    expect(openaiTab).toBeTruthy()
+    await openaiTab!.trigger('click')
+    await flushPromises()
+
+    const methodSelect = wrapper.findAll('select').find((node) => node.find('option[value="wham"]').exists())
+    expect(methodSelect).toBeTruthy()
+    await methodSelect!.setValue('wham')
+
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateSettings).toHaveBeenCalledTimes(1)
+    expect(updateSettings.mock.calls[0][0]).toMatchObject({
+      openai_usage_probe_method: 'wham',
+    })
+  })
+
+  it('submits geetest captcha key when the field has a value', async () => {
+    const wrapper = mountSettingsView()
+
+    await flushPromises()
+    await flushPromises()
+
+    const setupState = wrapper.vm.$.setupState as any
+    setupState.form.geetest_enabled = true
+    setupState.form.geetest_captcha_key = 'geetest-secret'
+
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateSettings).toHaveBeenCalledTimes(1)
+    expect(updateSettings.mock.calls[0][0]).toMatchObject({
+      geetest_captcha_key: 'geetest-secret',
     })
   })
 })

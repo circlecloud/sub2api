@@ -4735,6 +4735,14 @@ export default {
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',
         allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.'
       },
+      openaiUsageProbe: {
+        title: 'OpenAI Usage Probe',
+        description: 'Choose which upstream endpoint is used to query OpenAI OAuth account usage.',
+        method: 'Probe method',
+        methodHint: 'responses sends a real probe request. wham uses /backend-api/wham/usage and avoids spending additional responses probe volume. For compatibility, accounts missing chatgpt_account_id automatically fall back to responses.',
+        optionResponses: 'responses (legacy compatible)',
+        optionWham: 'wham (recommended)'
+      },
       openaiWarmPool: {
         title: 'OpenAI Warm Pool',
         description: 'Control the Bucket / Global / NetworkError warm-pool behavior for OpenAI OAuth accounts.',

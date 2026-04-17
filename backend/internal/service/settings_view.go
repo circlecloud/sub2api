@@ -115,6 +115,7 @@ type SystemSettings struct {
 	EnableOpenAIStreamRectifier                 bool
 	OpenAIStreamResponseHeaderRectifierTimeouts []int
 	OpenAIStreamFirstTokenRectifierTimeouts     []int
+	OpenAIUsageProbeMethod                      string
 
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool // 是否启用 web search 模拟

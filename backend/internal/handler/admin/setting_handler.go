@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -98,140 +97,120 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		paymentCfg = &service.PaymentConfig{}
 	}
 
-	response.Success(c, dto.SystemSettings{
-		RegistrationEnabled:                         settings.RegistrationEnabled,
-		EmailVerifyEnabled:                          settings.EmailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist:            settings.RegistrationEmailSuffixWhitelist,
-		PromoCodeEnabled:                            settings.PromoCodeEnabled,
-		PasswordResetEnabled:                        settings.PasswordResetEnabled,
-		FrontendURL:                                 settings.FrontendURL,
-		InvitationCodeEnabled:                       settings.InvitationCodeEnabled,
-		TotpEnabled:                                 settings.TotpEnabled,
-		TotpEncryptionKeyConfigured:                 h.settingService.IsTotpEncryptionKeyConfigured(),
-		SMTPHost:                                    settings.SMTPHost,
-		SMTPPort:                                    settings.SMTPPort,
-		SMTPUsername:                                settings.SMTPUsername,
-		SMTPPasswordConfigured:                      settings.SMTPPasswordConfigured,
-		SMTPFrom:                                    settings.SMTPFrom,
-		SMTPFromName:                                settings.SMTPFromName,
-		SMTPUseTLS:                                  settings.SMTPUseTLS,
-		TurnstileEnabled:                            settings.TurnstileEnabled,
-		TurnstileSiteKey:                            settings.TurnstileSiteKey,
-		TurnstileSecretKeyConfigured:                settings.TurnstileSecretKeyConfigured,
-		GeetestEnabled:                              settings.GeetestEnabled,
-		GeetestCaptchaID:                            settings.GeetestCaptchaID,
-		GeetestCaptchaKeyConfigured:                 settings.GeetestCaptchaKeyConfigured,
-		GeetestPopupOnSubmit:                        settings.GeetestPopupOnSubmit,
-		LinuxDoConnectEnabled:                       settings.LinuxDoConnectEnabled,
-		LinuxDoConnectClientID:                      settings.LinuxDoConnectClientID,
-		LinuxDoConnectClientSecretConfigured:        settings.LinuxDoConnectClientSecretConfigured,
-		LinuxDoConnectRedirectURL:                   settings.LinuxDoConnectRedirectURL,
-		OIDCConnectEnabled:                          settings.OIDCConnectEnabled,
-		OIDCConnectProviderName:                     settings.OIDCConnectProviderName,
-		OIDCConnectClientID:                         settings.OIDCConnectClientID,
-		OIDCConnectClientSecretConfigured:           settings.OIDCConnectClientSecretConfigured,
-		OIDCConnectIssuerURL:                        settings.OIDCConnectIssuerURL,
-		OIDCConnectDiscoveryURL:                     settings.OIDCConnectDiscoveryURL,
-		OIDCConnectAuthorizeURL:                     settings.OIDCConnectAuthorizeURL,
-		OIDCConnectTokenURL:                         settings.OIDCConnectTokenURL,
-		OIDCConnectUserInfoURL:                      settings.OIDCConnectUserInfoURL,
-		OIDCConnectJWKSURL:                          settings.OIDCConnectJWKSURL,
-		OIDCConnectScopes:                           settings.OIDCConnectScopes,
-		OIDCConnectRedirectURL:                      settings.OIDCConnectRedirectURL,
-		OIDCConnectFrontendRedirectURL:              settings.OIDCConnectFrontendRedirectURL,
-		OIDCConnectTokenAuthMethod:                  settings.OIDCConnectTokenAuthMethod,
-		OIDCConnectUsePKCE:                          settings.OIDCConnectUsePKCE,
-		OIDCConnectValidateIDToken:                  settings.OIDCConnectValidateIDToken,
-		OIDCConnectAllowedSigningAlgs:               settings.OIDCConnectAllowedSigningAlgs,
-		OIDCConnectClockSkewSeconds:                 settings.OIDCConnectClockSkewSeconds,
-		OIDCConnectRequireEmailVerified:             settings.OIDCConnectRequireEmailVerified,
-		OIDCConnectUserInfoEmailPath:                settings.OIDCConnectUserInfoEmailPath,
-		OIDCConnectUserInfoIDPath:                   settings.OIDCConnectUserInfoIDPath,
-		OIDCConnectUserInfoUsernamePath:             settings.OIDCConnectUserInfoUsernamePath,
-		SiteName:                                    settings.SiteName,
-		SiteLogo:                                    settings.SiteLogo,
-		SiteSubtitle:                                settings.SiteSubtitle,
-		APIBaseURL:                                  settings.APIBaseURL,
-		ContactInfo:                                 settings.ContactInfo,
-		DocURL:                                      settings.DocURL,
-		HomeContent:                                 settings.HomeContent,
-		HideCcsImportButton:                         settings.HideCcsImportButton,
-		PurchaseSubscriptionEnabled:                 settings.PurchaseSubscriptionEnabled,
-		PurchaseSubscriptionURL:                     settings.PurchaseSubscriptionURL,
-		TableDefaultPageSize:                        settings.TableDefaultPageSize,
-		TablePageSizeOptions:                        settings.TablePageSizeOptions,
-		CustomMenuItems:                             dto.ParseCustomMenuItems(settings.CustomMenuItems),
-		CustomEndpoints:                             dto.ParseCustomEndpoints(settings.CustomEndpoints),
-		DefaultConcurrency:                          settings.DefaultConcurrency,
-		DefaultBalance:                              settings.DefaultBalance,
-		DefaultSubscriptions:                        defaultSubscriptions,
-		EnableModelFallback:                         settings.EnableModelFallback,
-		FallbackModelAnthropic:                      settings.FallbackModelAnthropic,
-		FallbackModelOpenAI:                         settings.FallbackModelOpenAI,
-		FallbackModelGemini:                         settings.FallbackModelGemini,
-		FallbackModelAntigravity:                    settings.FallbackModelAntigravity,
-		EnableIdentityPatch:                         settings.EnableIdentityPatch,
-		IdentityPatchPrompt:                         settings.IdentityPatchPrompt,
-		OpsMonitoringEnabled:                        opsEnabled && settings.OpsMonitoringEnabled,
-		OpsRealtimeMonitoringEnabled:                settings.OpsRealtimeMonitoringEnabled,
-		OpsQueryModeDefault:                         settings.OpsQueryModeDefault,
-		OpsMetricsIntervalSeconds:                   settings.OpsMetricsIntervalSeconds,
-		MinClaudeCodeVersion:                        settings.MinClaudeCodeVersion,
-		MaxClaudeCodeVersion:                        settings.MaxClaudeCodeVersion,
-		AllowUngroupedKeyScheduling:                 settings.AllowUngroupedKeyScheduling,
-		BackendModeEnabled:                          settings.BackendModeEnabled,
-		EnableFingerprintUnification:                settings.EnableFingerprintUnification,
-		EnableMetadataPassthrough:                   settings.EnableMetadataPassthrough,
-		EnableCCHSigning:                            settings.EnableCCHSigning,
-		EnableOpenAIStreamRectifier:                 settings.EnableOpenAIStreamRectifier,
-		OpenAIStreamResponseHeaderRectifierTimeouts: settings.OpenAIStreamResponseHeaderRectifierTimeouts,
-		OpenAIStreamFirstTokenRectifierTimeouts:     settings.OpenAIStreamFirstTokenRectifierTimeouts,
-		OpenAIWarmPoolEnabled:                       settings.OpenAIWarmPoolEnabled,
-		OpenAIWarmPoolBucketTargetSize:              settings.OpenAIWarmPoolBucketTargetSize,
-		OpenAIWarmPoolBucketRefillBelow:             settings.OpenAIWarmPoolBucketRefillBelow,
-		OpenAIWarmPoolBucketSyncFillMin:             settings.OpenAIWarmPoolBucketSyncFillMin,
-		OpenAIWarmPoolBucketEntryTTLSeconds:         settings.OpenAIWarmPoolBucketEntryTTLSeconds,
-		OpenAIWarmPoolBucketRefillCooldownSeconds:   settings.OpenAIWarmPoolBucketRefillCooldownSeconds,
-		OpenAIWarmPoolBucketRefillIntervalSeconds:   settings.OpenAIWarmPoolBucketRefillIntervalSeconds,
-		OpenAIWarmPoolGlobalTargetSize:              settings.OpenAIWarmPoolGlobalTargetSize,
-		OpenAIWarmPoolGlobalRefillBelow:             settings.OpenAIWarmPoolGlobalRefillBelow,
-		OpenAIWarmPoolGlobalEntryTTLSeconds:         settings.OpenAIWarmPoolGlobalEntryTTLSeconds,
-		OpenAIWarmPoolGlobalRefillCooldownSeconds:   settings.OpenAIWarmPoolGlobalRefillCooldownSeconds,
-		OpenAIWarmPoolGlobalRefillIntervalSeconds:   settings.OpenAIWarmPoolGlobalRefillIntervalSeconds,
-		OpenAIWarmPoolNetworkErrorPoolSize:          settings.OpenAIWarmPoolNetworkErrorPoolSize,
-		OpenAIWarmPoolNetworkErrorEntryTTLSeconds:   settings.OpenAIWarmPoolNetworkErrorEntryTTLSeconds,
-		OpenAIWarmPoolProbeMaxCandidates:            settings.OpenAIWarmPoolProbeMaxCandidates,
-		OpenAIWarmPoolProbeConcurrency:              settings.OpenAIWarmPoolProbeConcurrency,
-		OpenAIWarmPoolProbeTimeoutSeconds:           settings.OpenAIWarmPoolProbeTimeoutSeconds,
-		OpenAIWarmPoolProbeFailureCooldownSeconds:   settings.OpenAIWarmPoolProbeFailureCooldownSeconds,
-		OpenAIWarmPoolStartupGroupIDs:               ensureInt64SliceForJSON(settings.OpenAIWarmPoolStartupGroupIDs),
-		WebSearchEmulationEnabled:                   settings.WebSearchEmulationEnabled,
-		BalanceLowNotifyEnabled:                     settings.BalanceLowNotifyEnabled,
-		BalanceLowNotifyThreshold:                   settings.BalanceLowNotifyThreshold,
-		BalanceLowNotifyRechargeURL:                 settings.BalanceLowNotifyRechargeURL,
-		AccountQuotaNotifyEnabled:                   settings.AccountQuotaNotifyEnabled,
-		AccountQuotaNotifyEmails:                    dto.NotifyEmailEntriesFromService(settings.AccountQuotaNotifyEmails),
-		PaymentEnabled:                              paymentCfg.Enabled,
-		PaymentMinAmount:                            paymentCfg.MinAmount,
-		PaymentMaxAmount:                            paymentCfg.MaxAmount,
-		PaymentDailyLimit:                           paymentCfg.DailyLimit,
-		PaymentOrderTimeoutMin:                      paymentCfg.OrderTimeoutMin,
-		PaymentMaxPendingOrders:                     paymentCfg.MaxPendingOrders,
-		PaymentEnabledTypes:                         paymentCfg.EnabledTypes,
-		PaymentBalanceDisabled:                      paymentCfg.BalanceDisabled,
-		PaymentBalanceRechargeMultiplier:            paymentCfg.BalanceRechargeMultiplier,
-		PaymentRechargeFeeRate:                      paymentCfg.RechargeFeeRate,
-		PaymentLoadBalanceStrat:                     paymentCfg.LoadBalanceStrategy,
-		PaymentProductNamePrefix:                    paymentCfg.ProductNamePrefix,
-		PaymentProductNameSuffix:                    paymentCfg.ProductNameSuffix,
-		PaymentHelpImageURL:                         paymentCfg.HelpImageURL,
-		PaymentHelpText:                             paymentCfg.HelpText,
-		PaymentCancelRateLimitEnabled:               paymentCfg.CancelRateLimitEnabled,
-		PaymentCancelRateLimitMax:                   paymentCfg.CancelRateLimitMax,
-		PaymentCancelRateLimitWindow:                paymentCfg.CancelRateLimitWindow,
-		PaymentCancelRateLimitUnit:                  paymentCfg.CancelRateLimitUnit,
-		PaymentCancelRateLimitMode:                  paymentCfg.CancelRateLimitMode,
-	})
+	settingsResp := dto.SystemSettings{
+		RegistrationEnabled:                  settings.RegistrationEnabled,
+		EmailVerifyEnabled:                   settings.EmailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist:     settings.RegistrationEmailSuffixWhitelist,
+		PromoCodeEnabled:                     settings.PromoCodeEnabled,
+		PasswordResetEnabled:                 settings.PasswordResetEnabled,
+		FrontendURL:                          settings.FrontendURL,
+		InvitationCodeEnabled:                settings.InvitationCodeEnabled,
+		TotpEnabled:                          settings.TotpEnabled,
+		TotpEncryptionKeyConfigured:          h.settingService.IsTotpEncryptionKeyConfigured(),
+		SMTPHost:                             settings.SMTPHost,
+		SMTPPort:                             settings.SMTPPort,
+		SMTPUsername:                         settings.SMTPUsername,
+		SMTPPasswordConfigured:               settings.SMTPPasswordConfigured,
+		SMTPFrom:                             settings.SMTPFrom,
+		SMTPFromName:                         settings.SMTPFromName,
+		SMTPUseTLS:                           settings.SMTPUseTLS,
+		TurnstileEnabled:                     settings.TurnstileEnabled,
+		TurnstileSiteKey:                     settings.TurnstileSiteKey,
+		TurnstileSecretKeyConfigured:         settings.TurnstileSecretKeyConfigured,
+		GeetestEnabled:                       settings.GeetestEnabled,
+		GeetestCaptchaID:                     settings.GeetestCaptchaID,
+		GeetestCaptchaKeyConfigured:          settings.GeetestCaptchaKeyConfigured,
+		GeetestPopupOnSubmit:                 settings.GeetestPopupOnSubmit,
+		LinuxDoConnectEnabled:                settings.LinuxDoConnectEnabled,
+		LinuxDoConnectClientID:               settings.LinuxDoConnectClientID,
+		LinuxDoConnectClientSecretConfigured: settings.LinuxDoConnectClientSecretConfigured,
+		LinuxDoConnectRedirectURL:            settings.LinuxDoConnectRedirectURL,
+		OIDCConnectEnabled:                   settings.OIDCConnectEnabled,
+		OIDCConnectProviderName:              settings.OIDCConnectProviderName,
+		OIDCConnectClientID:                  settings.OIDCConnectClientID,
+		OIDCConnectClientSecretConfigured:    settings.OIDCConnectClientSecretConfigured,
+		OIDCConnectIssuerURL:                 settings.OIDCConnectIssuerURL,
+		OIDCConnectDiscoveryURL:              settings.OIDCConnectDiscoveryURL,
+		OIDCConnectAuthorizeURL:              settings.OIDCConnectAuthorizeURL,
+		OIDCConnectTokenURL:                  settings.OIDCConnectTokenURL,
+		OIDCConnectUserInfoURL:               settings.OIDCConnectUserInfoURL,
+		OIDCConnectJWKSURL:                   settings.OIDCConnectJWKSURL,
+		OIDCConnectScopes:                    settings.OIDCConnectScopes,
+		OIDCConnectRedirectURL:               settings.OIDCConnectRedirectURL,
+		OIDCConnectFrontendRedirectURL:       settings.OIDCConnectFrontendRedirectURL,
+		OIDCConnectTokenAuthMethod:           settings.OIDCConnectTokenAuthMethod,
+		OIDCConnectUsePKCE:                   settings.OIDCConnectUsePKCE,
+		OIDCConnectValidateIDToken:           settings.OIDCConnectValidateIDToken,
+		OIDCConnectAllowedSigningAlgs:        settings.OIDCConnectAllowedSigningAlgs,
+		OIDCConnectClockSkewSeconds:          settings.OIDCConnectClockSkewSeconds,
+		OIDCConnectRequireEmailVerified:      settings.OIDCConnectRequireEmailVerified,
+		OIDCConnectUserInfoEmailPath:         settings.OIDCConnectUserInfoEmailPath,
+		OIDCConnectUserInfoIDPath:            settings.OIDCConnectUserInfoIDPath,
+		OIDCConnectUserInfoUsernamePath:      settings.OIDCConnectUserInfoUsernamePath,
+		SiteName:                             settings.SiteName,
+		SiteLogo:                             settings.SiteLogo,
+		SiteSubtitle:                         settings.SiteSubtitle,
+		APIBaseURL:                           settings.APIBaseURL,
+		ContactInfo:                          settings.ContactInfo,
+		DocURL:                               settings.DocURL,
+		HomeContent:                          settings.HomeContent,
+		HideCcsImportButton:                  settings.HideCcsImportButton,
+		PurchaseSubscriptionEnabled:          settings.PurchaseSubscriptionEnabled,
+		PurchaseSubscriptionURL:              settings.PurchaseSubscriptionURL,
+		TableDefaultPageSize:                 settings.TableDefaultPageSize,
+		TablePageSizeOptions:                 settings.TablePageSizeOptions,
+		CustomMenuItems:                      dto.ParseCustomMenuItems(settings.CustomMenuItems),
+		CustomEndpoints:                      dto.ParseCustomEndpoints(settings.CustomEndpoints),
+		DefaultConcurrency:                   settings.DefaultConcurrency,
+		DefaultBalance:                       settings.DefaultBalance,
+		DefaultSubscriptions:                 defaultSubscriptions,
+		EnableModelFallback:                  settings.EnableModelFallback,
+		FallbackModelAnthropic:               settings.FallbackModelAnthropic,
+		FallbackModelOpenAI:                  settings.FallbackModelOpenAI,
+		FallbackModelGemini:                  settings.FallbackModelGemini,
+		FallbackModelAntigravity:             settings.FallbackModelAntigravity,
+		EnableIdentityPatch:                  settings.EnableIdentityPatch,
+		IdentityPatchPrompt:                  settings.IdentityPatchPrompt,
+		OpsMonitoringEnabled:                 opsEnabled && settings.OpsMonitoringEnabled,
+		OpsRealtimeMonitoringEnabled:         settings.OpsRealtimeMonitoringEnabled,
+		OpsQueryModeDefault:                  settings.OpsQueryModeDefault,
+		OpsMetricsIntervalSeconds:            settings.OpsMetricsIntervalSeconds,
+		MinClaudeCodeVersion:                 settings.MinClaudeCodeVersion,
+		MaxClaudeCodeVersion:                 settings.MaxClaudeCodeVersion,
+		AllowUngroupedKeyScheduling:          settings.AllowUngroupedKeyScheduling,
+		BackendModeEnabled:                   settings.BackendModeEnabled,
+		EnableFingerprintUnification:         settings.EnableFingerprintUnification,
+		EnableMetadataPassthrough:            settings.EnableMetadataPassthrough,
+		EnableCCHSigning:                     settings.EnableCCHSigning,
+		WebSearchEmulationEnabled:            settings.WebSearchEmulationEnabled,
+		BalanceLowNotifyEnabled:              settings.BalanceLowNotifyEnabled,
+		BalanceLowNotifyThreshold:            settings.BalanceLowNotifyThreshold,
+		BalanceLowNotifyRechargeURL:          settings.BalanceLowNotifyRechargeURL,
+		AccountQuotaNotifyEnabled:            settings.AccountQuotaNotifyEnabled,
+		AccountQuotaNotifyEmails:             dto.NotifyEmailEntriesFromService(settings.AccountQuotaNotifyEmails),
+		PaymentEnabled:                       paymentCfg.Enabled,
+		PaymentMinAmount:                     paymentCfg.MinAmount,
+		PaymentMaxAmount:                     paymentCfg.MaxAmount,
+		PaymentDailyLimit:                    paymentCfg.DailyLimit,
+		PaymentOrderTimeoutMin:               paymentCfg.OrderTimeoutMin,
+		PaymentMaxPendingOrders:              paymentCfg.MaxPendingOrders,
+		PaymentEnabledTypes:                  paymentCfg.EnabledTypes,
+		PaymentBalanceDisabled:               paymentCfg.BalanceDisabled,
+		PaymentBalanceRechargeMultiplier:     paymentCfg.BalanceRechargeMultiplier,
+		PaymentRechargeFeeRate:               paymentCfg.RechargeFeeRate,
+		PaymentLoadBalanceStrat:              paymentCfg.LoadBalanceStrategy,
+		PaymentProductNamePrefix:             paymentCfg.ProductNamePrefix,
+		PaymentProductNameSuffix:             paymentCfg.ProductNameSuffix,
+		PaymentHelpImageURL:                  paymentCfg.HelpImageURL,
+		PaymentHelpText:                      paymentCfg.HelpText,
+		PaymentCancelRateLimitEnabled:        paymentCfg.CancelRateLimitEnabled,
+		PaymentCancelRateLimitMax:            paymentCfg.CancelRateLimitMax,
+		PaymentCancelRateLimitWindow:         paymentCfg.CancelRateLimitWindow,
+		PaymentCancelRateLimitUnit:           paymentCfg.CancelRateLimitUnit,
+		PaymentCancelRateLimitMode:           paymentCfg.CancelRateLimitMode,
+	}
+	applyOpenAISettingsDTO(&settingsResp, settings)
+	response.Success(c, settingsResp)
 }
 
 // UpdateSettingsRequest 更新设置请求
@@ -344,12 +323,13 @@ type UpdateSettingsRequest struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
-	EnableFingerprintUnification                *bool  `json:"enable_fingerprint_unification"`
-	EnableMetadataPassthrough                   *bool  `json:"enable_metadata_passthrough"`
-	EnableCCHSigning                            *bool  `json:"enable_cch_signing"`
-	EnableOpenAIStreamRectifier                 *bool  `json:"enable_openai_stream_rectifier"`
-	OpenAIStreamResponseHeaderRectifierTimeouts *[]int `json:"openai_stream_response_header_rectifier_timeouts"`
-	OpenAIStreamFirstTokenRectifierTimeouts     *[]int `json:"openai_stream_first_token_rectifier_timeouts"`
+	EnableFingerprintUnification                *bool   `json:"enable_fingerprint_unification"`
+	EnableMetadataPassthrough                   *bool   `json:"enable_metadata_passthrough"`
+	EnableCCHSigning                            *bool   `json:"enable_cch_signing"`
+	EnableOpenAIStreamRectifier                 *bool   `json:"enable_openai_stream_rectifier"`
+	OpenAIStreamResponseHeaderRectifierTimeouts *[]int  `json:"openai_stream_response_header_rectifier_timeouts"`
+	OpenAIStreamFirstTokenRectifierTimeouts     *[]int  `json:"openai_stream_first_token_rectifier_timeouts"`
+	OpenAIUsageProbeMethod                      *string `json:"openai_usage_probe_method"`
 
 	// OpenAI warm pool behavior
 	OpenAIWarmPoolEnabled                     *bool    `json:"openai_warm_pool_enabled"`
@@ -858,49 +838,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	warmPoolDefaults := service.OpenAIWarmPoolSettings{
-		Enabled:                     previousSettings.OpenAIWarmPoolEnabled,
-		BucketTargetSize:            previousSettings.OpenAIWarmPoolBucketTargetSize,
-		BucketRefillBelow:           previousSettings.OpenAIWarmPoolBucketRefillBelow,
-		BucketSyncFillMin:           previousSettings.OpenAIWarmPoolBucketSyncFillMin,
-		BucketEntryTTLSeconds:       previousSettings.OpenAIWarmPoolBucketEntryTTLSeconds,
-		BucketRefillCooldownSeconds: previousSettings.OpenAIWarmPoolBucketRefillCooldownSeconds,
-		BucketRefillIntervalSeconds: previousSettings.OpenAIWarmPoolBucketRefillIntervalSeconds,
-		GlobalTargetSize:            previousSettings.OpenAIWarmPoolGlobalTargetSize,
-		GlobalRefillBelow:           previousSettings.OpenAIWarmPoolGlobalRefillBelow,
-		GlobalEntryTTLSeconds:       previousSettings.OpenAIWarmPoolGlobalEntryTTLSeconds,
-		GlobalRefillCooldownSeconds: previousSettings.OpenAIWarmPoolGlobalRefillCooldownSeconds,
-		GlobalRefillIntervalSeconds: previousSettings.OpenAIWarmPoolGlobalRefillIntervalSeconds,
-		NetworkErrorPoolSize:        previousSettings.OpenAIWarmPoolNetworkErrorPoolSize,
-		NetworkErrorEntryTTLSeconds: previousSettings.OpenAIWarmPoolNetworkErrorEntryTTLSeconds,
-		ProbeMaxCandidates:          previousSettings.OpenAIWarmPoolProbeMaxCandidates,
-		ProbeConcurrency:            previousSettings.OpenAIWarmPoolProbeConcurrency,
-		ProbeTimeoutSeconds:         previousSettings.OpenAIWarmPoolProbeTimeoutSeconds,
-		ProbeFailureCooldownSeconds: previousSettings.OpenAIWarmPoolProbeFailureCooldownSeconds,
-		StartupGroupIDs:             previousSettings.OpenAIWarmPoolStartupGroupIDs,
-	}
-	warmPoolSettings := sanitizeAdminOpenAIWarmPoolSettings(service.OpenAIWarmPoolSettings{
-		Enabled:                     resolveBoolSetting(req.OpenAIWarmPoolEnabled, warmPoolDefaults.Enabled),
-		BucketTargetSize:            resolveIntSetting(req.OpenAIWarmPoolBucketTargetSize, warmPoolDefaults.BucketTargetSize),
-		BucketRefillBelow:           resolveIntSetting(req.OpenAIWarmPoolBucketRefillBelow, warmPoolDefaults.BucketRefillBelow),
-		BucketSyncFillMin:           resolveIntSetting(req.OpenAIWarmPoolBucketSyncFillMin, warmPoolDefaults.BucketSyncFillMin),
-		BucketEntryTTLSeconds:       resolveIntSetting(req.OpenAIWarmPoolBucketEntryTTLSeconds, warmPoolDefaults.BucketEntryTTLSeconds),
-		BucketRefillCooldownSeconds: resolveIntSetting(req.OpenAIWarmPoolBucketRefillCooldownSeconds, warmPoolDefaults.BucketRefillCooldownSeconds),
-		BucketRefillIntervalSeconds: resolveIntSetting(req.OpenAIWarmPoolBucketRefillIntervalSeconds, warmPoolDefaults.BucketRefillIntervalSeconds),
-		GlobalTargetSize:            resolveIntSetting(req.OpenAIWarmPoolGlobalTargetSize, warmPoolDefaults.GlobalTargetSize),
-		GlobalRefillBelow:           resolveIntSetting(req.OpenAIWarmPoolGlobalRefillBelow, warmPoolDefaults.GlobalRefillBelow),
-		GlobalEntryTTLSeconds:       resolveIntSetting(req.OpenAIWarmPoolGlobalEntryTTLSeconds, warmPoolDefaults.GlobalEntryTTLSeconds),
-		GlobalRefillCooldownSeconds: resolveIntSetting(req.OpenAIWarmPoolGlobalRefillCooldownSeconds, warmPoolDefaults.GlobalRefillCooldownSeconds),
-		GlobalRefillIntervalSeconds: resolveIntSetting(req.OpenAIWarmPoolGlobalRefillIntervalSeconds, warmPoolDefaults.GlobalRefillIntervalSeconds),
-		NetworkErrorPoolSize:        resolveIntSetting(req.OpenAIWarmPoolNetworkErrorPoolSize, warmPoolDefaults.NetworkErrorPoolSize),
-		NetworkErrorEntryTTLSeconds: resolveIntSetting(req.OpenAIWarmPoolNetworkErrorEntryTTLSeconds, warmPoolDefaults.NetworkErrorEntryTTLSeconds),
-		ProbeMaxCandidates:          resolveIntSetting(req.OpenAIWarmPoolProbeMaxCandidates, warmPoolDefaults.ProbeMaxCandidates),
-		ProbeConcurrency:            resolveIntSetting(req.OpenAIWarmPoolProbeConcurrency, warmPoolDefaults.ProbeConcurrency),
-		ProbeTimeoutSeconds:         resolveIntSetting(req.OpenAIWarmPoolProbeTimeoutSeconds, warmPoolDefaults.ProbeTimeoutSeconds),
-		ProbeFailureCooldownSeconds: resolveIntSetting(req.OpenAIWarmPoolProbeFailureCooldownSeconds, warmPoolDefaults.ProbeFailureCooldownSeconds),
-		StartupGroupIDs:             resolveInt64SliceSetting(req.OpenAIWarmPoolStartupGroupIDs, warmPoolDefaults.StartupGroupIDs),
-	}, warmPoolDefaults)
-
 	settings := &service.SystemSettings{
 		RegistrationEnabled:              req.RegistrationEnabled,
 		EmailVerifyEnabled:               req.EmailVerifyEnabled,
@@ -1020,24 +957,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.EnableCCHSigning
 		}(),
-		EnableOpenAIStreamRectifier: func() bool {
-			if req.EnableOpenAIStreamRectifier != nil {
-				return *req.EnableOpenAIStreamRectifier
-			}
-			return previousSettings.EnableOpenAIStreamRectifier
-		}(),
-		OpenAIStreamResponseHeaderRectifierTimeouts: func() []int {
-			if req.OpenAIStreamResponseHeaderRectifierTimeouts != nil {
-				return append([]int(nil), (*req.OpenAIStreamResponseHeaderRectifierTimeouts)...)
-			}
-			return append([]int(nil), previousSettings.OpenAIStreamResponseHeaderRectifierTimeouts...)
-		}(),
-		OpenAIStreamFirstTokenRectifierTimeouts: func() []int {
-			if req.OpenAIStreamFirstTokenRectifierTimeouts != nil {
-				return append([]int(nil), (*req.OpenAIStreamFirstTokenRectifierTimeouts)...)
-			}
-			return append([]int(nil), previousSettings.OpenAIStreamFirstTokenRectifierTimeouts...)
-		}(),
 		BalanceLowNotifyEnabled: func() bool {
 			if req.BalanceLowNotifyEnabled != nil {
 				return *req.BalanceLowNotifyEnabled
@@ -1068,26 +987,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return append([]service.NotifyEmailEntry(nil), previousSettings.AccountQuotaNotifyEmails...)
 		}(),
-		OpenAIWarmPoolEnabled:                     warmPoolSettings.Enabled,
-		OpenAIWarmPoolBucketTargetSize:            warmPoolSettings.BucketTargetSize,
-		OpenAIWarmPoolBucketRefillBelow:           warmPoolSettings.BucketRefillBelow,
-		OpenAIWarmPoolBucketSyncFillMin:           warmPoolSettings.BucketSyncFillMin,
-		OpenAIWarmPoolBucketEntryTTLSeconds:       warmPoolSettings.BucketEntryTTLSeconds,
-		OpenAIWarmPoolBucketRefillCooldownSeconds: warmPoolSettings.BucketRefillCooldownSeconds,
-		OpenAIWarmPoolBucketRefillIntervalSeconds: warmPoolSettings.BucketRefillIntervalSeconds,
-		OpenAIWarmPoolGlobalTargetSize:            warmPoolSettings.GlobalTargetSize,
-		OpenAIWarmPoolGlobalRefillBelow:           warmPoolSettings.GlobalRefillBelow,
-		OpenAIWarmPoolGlobalEntryTTLSeconds:       warmPoolSettings.GlobalEntryTTLSeconds,
-		OpenAIWarmPoolGlobalRefillCooldownSeconds: warmPoolSettings.GlobalRefillCooldownSeconds,
-		OpenAIWarmPoolGlobalRefillIntervalSeconds: warmPoolSettings.GlobalRefillIntervalSeconds,
-		OpenAIWarmPoolNetworkErrorPoolSize:        warmPoolSettings.NetworkErrorPoolSize,
-		OpenAIWarmPoolNetworkErrorEntryTTLSeconds: warmPoolSettings.NetworkErrorEntryTTLSeconds,
-		OpenAIWarmPoolProbeMaxCandidates:          warmPoolSettings.ProbeMaxCandidates,
-		OpenAIWarmPoolProbeConcurrency:            warmPoolSettings.ProbeConcurrency,
-		OpenAIWarmPoolProbeTimeoutSeconds:         warmPoolSettings.ProbeTimeoutSeconds,
-		OpenAIWarmPoolProbeFailureCooldownSeconds: warmPoolSettings.ProbeFailureCooldownSeconds,
-		OpenAIWarmPoolStartupGroupIDs:             warmPoolSettings.StartupGroupIDs,
 	}
+	applyAdminOpenAISettingsUpdate(settings, previousSettings, req)
 
 	if err := h.settingService.UpdateSettings(c.Request.Context(), settings); err != nil {
 		response.ErrorFrom(c, err)
@@ -1158,147 +1059,120 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		updatedPaymentCfg = &service.PaymentConfig{}
 	}
 
-	response.Success(c, dto.SystemSettings{
-		RegistrationEnabled:                         updatedSettings.RegistrationEnabled,
-		EmailVerifyEnabled:                          updatedSettings.EmailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist:            updatedSettings.RegistrationEmailSuffixWhitelist,
-		PromoCodeEnabled:                            updatedSettings.PromoCodeEnabled,
-		PasswordResetEnabled:                        updatedSettings.PasswordResetEnabled,
-		FrontendURL:                                 updatedSettings.FrontendURL,
-		InvitationCodeEnabled:                       updatedSettings.InvitationCodeEnabled,
-		TotpEnabled:                                 updatedSettings.TotpEnabled,
-		TotpEncryptionKeyConfigured:                 h.settingService.IsTotpEncryptionKeyConfigured(),
-		SMTPHost:                                    updatedSettings.SMTPHost,
-		SMTPPort:                                    updatedSettings.SMTPPort,
-		SMTPUsername:                                updatedSettings.SMTPUsername,
-		SMTPPasswordConfigured:                      updatedSettings.SMTPPasswordConfigured,
-		SMTPFrom:                                    updatedSettings.SMTPFrom,
-		SMTPFromName:                                updatedSettings.SMTPFromName,
-		SMTPUseTLS:                                  updatedSettings.SMTPUseTLS,
-		TurnstileEnabled:                            updatedSettings.TurnstileEnabled,
-		TurnstileSiteKey:                            updatedSettings.TurnstileSiteKey,
-		TurnstileSecretKeyConfigured:                updatedSettings.TurnstileSecretKeyConfigured,
-		GeetestEnabled:                              updatedSettings.GeetestEnabled,
-		GeetestCaptchaID:                            updatedSettings.GeetestCaptchaID,
-		GeetestCaptchaKeyConfigured:                 updatedSettings.GeetestCaptchaKeyConfigured,
-		GeetestPopupOnSubmit:                        updatedSettings.GeetestPopupOnSubmit,
-		LinuxDoConnectEnabled:                       updatedSettings.LinuxDoConnectEnabled,
-		LinuxDoConnectClientID:                      updatedSettings.LinuxDoConnectClientID,
-		LinuxDoConnectClientSecretConfigured:        updatedSettings.LinuxDoConnectClientSecretConfigured,
-		LinuxDoConnectRedirectURL:                   updatedSettings.LinuxDoConnectRedirectURL,
-		OIDCConnectEnabled:                          updatedSettings.OIDCConnectEnabled,
-		OIDCConnectProviderName:                     updatedSettings.OIDCConnectProviderName,
-		OIDCConnectClientID:                         updatedSettings.OIDCConnectClientID,
-		OIDCConnectClientSecretConfigured:           updatedSettings.OIDCConnectClientSecretConfigured,
-		OIDCConnectIssuerURL:                        updatedSettings.OIDCConnectIssuerURL,
-		OIDCConnectDiscoveryURL:                     updatedSettings.OIDCConnectDiscoveryURL,
-		OIDCConnectAuthorizeURL:                     updatedSettings.OIDCConnectAuthorizeURL,
-		OIDCConnectTokenURL:                         updatedSettings.OIDCConnectTokenURL,
-		OIDCConnectUserInfoURL:                      updatedSettings.OIDCConnectUserInfoURL,
-		OIDCConnectJWKSURL:                          updatedSettings.OIDCConnectJWKSURL,
-		OIDCConnectScopes:                           updatedSettings.OIDCConnectScopes,
-		OIDCConnectRedirectURL:                      updatedSettings.OIDCConnectRedirectURL,
-		OIDCConnectFrontendRedirectURL:              updatedSettings.OIDCConnectFrontendRedirectURL,
-		OIDCConnectTokenAuthMethod:                  updatedSettings.OIDCConnectTokenAuthMethod,
-		OIDCConnectUsePKCE:                          updatedSettings.OIDCConnectUsePKCE,
-		OIDCConnectValidateIDToken:                  updatedSettings.OIDCConnectValidateIDToken,
-		OIDCConnectAllowedSigningAlgs:               updatedSettings.OIDCConnectAllowedSigningAlgs,
-		OIDCConnectClockSkewSeconds:                 updatedSettings.OIDCConnectClockSkewSeconds,
-		OIDCConnectRequireEmailVerified:             updatedSettings.OIDCConnectRequireEmailVerified,
-		OIDCConnectUserInfoEmailPath:                updatedSettings.OIDCConnectUserInfoEmailPath,
-		OIDCConnectUserInfoIDPath:                   updatedSettings.OIDCConnectUserInfoIDPath,
-		OIDCConnectUserInfoUsernamePath:             updatedSettings.OIDCConnectUserInfoUsernamePath,
-		SiteName:                                    updatedSettings.SiteName,
-		SiteLogo:                                    updatedSettings.SiteLogo,
-		SiteSubtitle:                                updatedSettings.SiteSubtitle,
-		APIBaseURL:                                  updatedSettings.APIBaseURL,
-		ContactInfo:                                 updatedSettings.ContactInfo,
-		DocURL:                                      updatedSettings.DocURL,
-		HomeContent:                                 updatedSettings.HomeContent,
-		HideCcsImportButton:                         updatedSettings.HideCcsImportButton,
-		PurchaseSubscriptionEnabled:                 updatedSettings.PurchaseSubscriptionEnabled,
-		PurchaseSubscriptionURL:                     updatedSettings.PurchaseSubscriptionURL,
-		TableDefaultPageSize:                        updatedSettings.TableDefaultPageSize,
-		TablePageSizeOptions:                        updatedSettings.TablePageSizeOptions,
-		CustomMenuItems:                             dto.ParseCustomMenuItems(updatedSettings.CustomMenuItems),
-		CustomEndpoints:                             dto.ParseCustomEndpoints(updatedSettings.CustomEndpoints),
-		DefaultConcurrency:                          updatedSettings.DefaultConcurrency,
-		DefaultBalance:                              updatedSettings.DefaultBalance,
-		DefaultSubscriptions:                        updatedDefaultSubscriptions,
-		EnableModelFallback:                         updatedSettings.EnableModelFallback,
-		FallbackModelAnthropic:                      updatedSettings.FallbackModelAnthropic,
-		FallbackModelOpenAI:                         updatedSettings.FallbackModelOpenAI,
-		FallbackModelGemini:                         updatedSettings.FallbackModelGemini,
-		FallbackModelAntigravity:                    updatedSettings.FallbackModelAntigravity,
-		EnableIdentityPatch:                         updatedSettings.EnableIdentityPatch,
-		IdentityPatchPrompt:                         updatedSettings.IdentityPatchPrompt,
-		OpsMonitoringEnabled:                        updatedSettings.OpsMonitoringEnabled,
-		OpsRealtimeMonitoringEnabled:                updatedSettings.OpsRealtimeMonitoringEnabled,
-		OpsQueryModeDefault:                         updatedSettings.OpsQueryModeDefault,
-		OpsMetricsIntervalSeconds:                   updatedSettings.OpsMetricsIntervalSeconds,
-		MinClaudeCodeVersion:                        updatedSettings.MinClaudeCodeVersion,
-		MaxClaudeCodeVersion:                        updatedSettings.MaxClaudeCodeVersion,
-		AllowUngroupedKeyScheduling:                 updatedSettings.AllowUngroupedKeyScheduling,
-		BackendModeEnabled:                          updatedSettings.BackendModeEnabled,
-		EnableFingerprintUnification:                updatedSettings.EnableFingerprintUnification,
-		EnableMetadataPassthrough:                   updatedSettings.EnableMetadataPassthrough,
-		EnableCCHSigning:                            updatedSettings.EnableCCHSigning,
-		EnableOpenAIStreamRectifier:                 updatedSettings.EnableOpenAIStreamRectifier,
-		OpenAIStreamResponseHeaderRectifierTimeouts: updatedSettings.OpenAIStreamResponseHeaderRectifierTimeouts,
-		OpenAIStreamFirstTokenRectifierTimeouts:     updatedSettings.OpenAIStreamFirstTokenRectifierTimeouts,
-		OpenAIWarmPoolEnabled:                       updatedSettings.OpenAIWarmPoolEnabled,
-		OpenAIWarmPoolBucketTargetSize:              updatedSettings.OpenAIWarmPoolBucketTargetSize,
-		OpenAIWarmPoolBucketRefillBelow:             updatedSettings.OpenAIWarmPoolBucketRefillBelow,
-		OpenAIWarmPoolBucketSyncFillMin:             updatedSettings.OpenAIWarmPoolBucketSyncFillMin,
-		OpenAIWarmPoolBucketEntryTTLSeconds:         updatedSettings.OpenAIWarmPoolBucketEntryTTLSeconds,
-		OpenAIWarmPoolBucketRefillCooldownSeconds:   updatedSettings.OpenAIWarmPoolBucketRefillCooldownSeconds,
-		OpenAIWarmPoolBucketRefillIntervalSeconds:   updatedSettings.OpenAIWarmPoolBucketRefillIntervalSeconds,
-		OpenAIWarmPoolGlobalTargetSize:              updatedSettings.OpenAIWarmPoolGlobalTargetSize,
-		OpenAIWarmPoolGlobalRefillBelow:             updatedSettings.OpenAIWarmPoolGlobalRefillBelow,
-		OpenAIWarmPoolGlobalEntryTTLSeconds:         updatedSettings.OpenAIWarmPoolGlobalEntryTTLSeconds,
-		OpenAIWarmPoolGlobalRefillCooldownSeconds:   updatedSettings.OpenAIWarmPoolGlobalRefillCooldownSeconds,
-		OpenAIWarmPoolGlobalRefillIntervalSeconds:   updatedSettings.OpenAIWarmPoolGlobalRefillIntervalSeconds,
-		OpenAIWarmPoolNetworkErrorPoolSize:          updatedSettings.OpenAIWarmPoolNetworkErrorPoolSize,
-		OpenAIWarmPoolNetworkErrorEntryTTLSeconds:   updatedSettings.OpenAIWarmPoolNetworkErrorEntryTTLSeconds,
-		OpenAIWarmPoolProbeMaxCandidates:            updatedSettings.OpenAIWarmPoolProbeMaxCandidates,
-		OpenAIWarmPoolProbeConcurrency:              updatedSettings.OpenAIWarmPoolProbeConcurrency,
-		OpenAIWarmPoolProbeTimeoutSeconds:           updatedSettings.OpenAIWarmPoolProbeTimeoutSeconds,
-		OpenAIWarmPoolProbeFailureCooldownSeconds:   updatedSettings.OpenAIWarmPoolProbeFailureCooldownSeconds,
-		OpenAIWarmPoolStartupGroupIDs:               ensureInt64SliceForJSON(updatedSettings.OpenAIWarmPoolStartupGroupIDs),
-		WebSearchEmulationEnabled:                   updatedSettings.WebSearchEmulationEnabled,
-		BalanceLowNotifyEnabled:                     updatedSettings.BalanceLowNotifyEnabled,
-		BalanceLowNotifyThreshold:                   updatedSettings.BalanceLowNotifyThreshold,
-		BalanceLowNotifyRechargeURL:                 updatedSettings.BalanceLowNotifyRechargeURL,
-		AccountQuotaNotifyEnabled:                   updatedSettings.AccountQuotaNotifyEnabled,
-		AccountQuotaNotifyEmails:                    dto.NotifyEmailEntriesFromService(updatedSettings.AccountQuotaNotifyEmails),
-		PaymentEnabled:                              updatedPaymentCfg.Enabled,
-		PaymentMinAmount:                            updatedPaymentCfg.MinAmount,
-		PaymentMaxAmount:                            updatedPaymentCfg.MaxAmount,
-		PaymentDailyLimit:                           updatedPaymentCfg.DailyLimit,
-		PaymentOrderTimeoutMin:                      updatedPaymentCfg.OrderTimeoutMin,
-		PaymentMaxPendingOrders:                     updatedPaymentCfg.MaxPendingOrders,
-		PaymentEnabledTypes:                         updatedPaymentCfg.EnabledTypes,
-		PaymentBalanceDisabled:                      updatedPaymentCfg.BalanceDisabled,
-		PaymentBalanceRechargeMultiplier:            updatedPaymentCfg.BalanceRechargeMultiplier,
-		PaymentRechargeFeeRate:                      updatedPaymentCfg.RechargeFeeRate,
-		PaymentLoadBalanceStrat:                     updatedPaymentCfg.LoadBalanceStrategy,
-		PaymentProductNamePrefix:                    updatedPaymentCfg.ProductNamePrefix,
-		PaymentProductNameSuffix:                    updatedPaymentCfg.ProductNameSuffix,
-		PaymentHelpImageURL:                         updatedPaymentCfg.HelpImageURL,
-		PaymentHelpText:                             updatedPaymentCfg.HelpText,
-		PaymentCancelRateLimitEnabled:               updatedPaymentCfg.CancelRateLimitEnabled,
-		PaymentCancelRateLimitMax:                   updatedPaymentCfg.CancelRateLimitMax,
-		PaymentCancelRateLimitWindow:                updatedPaymentCfg.CancelRateLimitWindow,
-		PaymentCancelRateLimitUnit:                  updatedPaymentCfg.CancelRateLimitUnit,
-		PaymentCancelRateLimitMode:                  updatedPaymentCfg.CancelRateLimitMode,
-	})
-}
-
-func ensureInt64SliceForJSON(values []int64) []int64 {
-	if len(values) == 0 {
-		return make([]int64, 0)
+	updatedSettingsResp := dto.SystemSettings{
+		RegistrationEnabled:                  updatedSettings.RegistrationEnabled,
+		EmailVerifyEnabled:                   updatedSettings.EmailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist:     updatedSettings.RegistrationEmailSuffixWhitelist,
+		PromoCodeEnabled:                     updatedSettings.PromoCodeEnabled,
+		PasswordResetEnabled:                 updatedSettings.PasswordResetEnabled,
+		FrontendURL:                          updatedSettings.FrontendURL,
+		InvitationCodeEnabled:                updatedSettings.InvitationCodeEnabled,
+		TotpEnabled:                          updatedSettings.TotpEnabled,
+		TotpEncryptionKeyConfigured:          h.settingService.IsTotpEncryptionKeyConfigured(),
+		SMTPHost:                             updatedSettings.SMTPHost,
+		SMTPPort:                             updatedSettings.SMTPPort,
+		SMTPUsername:                         updatedSettings.SMTPUsername,
+		SMTPPasswordConfigured:               updatedSettings.SMTPPasswordConfigured,
+		SMTPFrom:                             updatedSettings.SMTPFrom,
+		SMTPFromName:                         updatedSettings.SMTPFromName,
+		SMTPUseTLS:                           updatedSettings.SMTPUseTLS,
+		TurnstileEnabled:                     updatedSettings.TurnstileEnabled,
+		TurnstileSiteKey:                     updatedSettings.TurnstileSiteKey,
+		TurnstileSecretKeyConfigured:         updatedSettings.TurnstileSecretKeyConfigured,
+		GeetestEnabled:                       updatedSettings.GeetestEnabled,
+		GeetestCaptchaID:                     updatedSettings.GeetestCaptchaID,
+		GeetestCaptchaKeyConfigured:          updatedSettings.GeetestCaptchaKeyConfigured,
+		GeetestPopupOnSubmit:                 updatedSettings.GeetestPopupOnSubmit,
+		LinuxDoConnectEnabled:                updatedSettings.LinuxDoConnectEnabled,
+		LinuxDoConnectClientID:               updatedSettings.LinuxDoConnectClientID,
+		LinuxDoConnectClientSecretConfigured: updatedSettings.LinuxDoConnectClientSecretConfigured,
+		LinuxDoConnectRedirectURL:            updatedSettings.LinuxDoConnectRedirectURL,
+		OIDCConnectEnabled:                   updatedSettings.OIDCConnectEnabled,
+		OIDCConnectProviderName:              updatedSettings.OIDCConnectProviderName,
+		OIDCConnectClientID:                  updatedSettings.OIDCConnectClientID,
+		OIDCConnectClientSecretConfigured:    updatedSettings.OIDCConnectClientSecretConfigured,
+		OIDCConnectIssuerURL:                 updatedSettings.OIDCConnectIssuerURL,
+		OIDCConnectDiscoveryURL:              updatedSettings.OIDCConnectDiscoveryURL,
+		OIDCConnectAuthorizeURL:              updatedSettings.OIDCConnectAuthorizeURL,
+		OIDCConnectTokenURL:                  updatedSettings.OIDCConnectTokenURL,
+		OIDCConnectUserInfoURL:               updatedSettings.OIDCConnectUserInfoURL,
+		OIDCConnectJWKSURL:                   updatedSettings.OIDCConnectJWKSURL,
+		OIDCConnectScopes:                    updatedSettings.OIDCConnectScopes,
+		OIDCConnectRedirectURL:               updatedSettings.OIDCConnectRedirectURL,
+		OIDCConnectFrontendRedirectURL:       updatedSettings.OIDCConnectFrontendRedirectURL,
+		OIDCConnectTokenAuthMethod:           updatedSettings.OIDCConnectTokenAuthMethod,
+		OIDCConnectUsePKCE:                   updatedSettings.OIDCConnectUsePKCE,
+		OIDCConnectValidateIDToken:           updatedSettings.OIDCConnectValidateIDToken,
+		OIDCConnectAllowedSigningAlgs:        updatedSettings.OIDCConnectAllowedSigningAlgs,
+		OIDCConnectClockSkewSeconds:          updatedSettings.OIDCConnectClockSkewSeconds,
+		OIDCConnectRequireEmailVerified:      updatedSettings.OIDCConnectRequireEmailVerified,
+		OIDCConnectUserInfoEmailPath:         updatedSettings.OIDCConnectUserInfoEmailPath,
+		OIDCConnectUserInfoIDPath:            updatedSettings.OIDCConnectUserInfoIDPath,
+		OIDCConnectUserInfoUsernamePath:      updatedSettings.OIDCConnectUserInfoUsernamePath,
+		SiteName:                             updatedSettings.SiteName,
+		SiteLogo:                             updatedSettings.SiteLogo,
+		SiteSubtitle:                         updatedSettings.SiteSubtitle,
+		APIBaseURL:                           updatedSettings.APIBaseURL,
+		ContactInfo:                          updatedSettings.ContactInfo,
+		DocURL:                               updatedSettings.DocURL,
+		HomeContent:                          updatedSettings.HomeContent,
+		HideCcsImportButton:                  updatedSettings.HideCcsImportButton,
+		PurchaseSubscriptionEnabled:          updatedSettings.PurchaseSubscriptionEnabled,
+		PurchaseSubscriptionURL:              updatedSettings.PurchaseSubscriptionURL,
+		TableDefaultPageSize:                 updatedSettings.TableDefaultPageSize,
+		TablePageSizeOptions:                 updatedSettings.TablePageSizeOptions,
+		CustomMenuItems:                      dto.ParseCustomMenuItems(updatedSettings.CustomMenuItems),
+		CustomEndpoints:                      dto.ParseCustomEndpoints(updatedSettings.CustomEndpoints),
+		DefaultConcurrency:                   updatedSettings.DefaultConcurrency,
+		DefaultBalance:                       updatedSettings.DefaultBalance,
+		DefaultSubscriptions:                 updatedDefaultSubscriptions,
+		EnableModelFallback:                  updatedSettings.EnableModelFallback,
+		FallbackModelAnthropic:               updatedSettings.FallbackModelAnthropic,
+		FallbackModelOpenAI:                  updatedSettings.FallbackModelOpenAI,
+		FallbackModelGemini:                  updatedSettings.FallbackModelGemini,
+		FallbackModelAntigravity:             updatedSettings.FallbackModelAntigravity,
+		EnableIdentityPatch:                  updatedSettings.EnableIdentityPatch,
+		IdentityPatchPrompt:                  updatedSettings.IdentityPatchPrompt,
+		OpsMonitoringEnabled:                 updatedSettings.OpsMonitoringEnabled,
+		OpsRealtimeMonitoringEnabled:         updatedSettings.OpsRealtimeMonitoringEnabled,
+		OpsQueryModeDefault:                  updatedSettings.OpsQueryModeDefault,
+		OpsMetricsIntervalSeconds:            updatedSettings.OpsMetricsIntervalSeconds,
+		MinClaudeCodeVersion:                 updatedSettings.MinClaudeCodeVersion,
+		MaxClaudeCodeVersion:                 updatedSettings.MaxClaudeCodeVersion,
+		AllowUngroupedKeyScheduling:          updatedSettings.AllowUngroupedKeyScheduling,
+		BackendModeEnabled:                   updatedSettings.BackendModeEnabled,
+		EnableFingerprintUnification:         updatedSettings.EnableFingerprintUnification,
+		EnableMetadataPassthrough:            updatedSettings.EnableMetadataPassthrough,
+		EnableCCHSigning:                     updatedSettings.EnableCCHSigning,
+		WebSearchEmulationEnabled:            updatedSettings.WebSearchEmulationEnabled,
+		BalanceLowNotifyEnabled:              updatedSettings.BalanceLowNotifyEnabled,
+		BalanceLowNotifyThreshold:            updatedSettings.BalanceLowNotifyThreshold,
+		BalanceLowNotifyRechargeURL:          updatedSettings.BalanceLowNotifyRechargeURL,
+		AccountQuotaNotifyEnabled:            updatedSettings.AccountQuotaNotifyEnabled,
+		AccountQuotaNotifyEmails:             dto.NotifyEmailEntriesFromService(updatedSettings.AccountQuotaNotifyEmails),
+		PaymentEnabled:                       updatedPaymentCfg.Enabled,
+		PaymentMinAmount:                     updatedPaymentCfg.MinAmount,
+		PaymentMaxAmount:                     updatedPaymentCfg.MaxAmount,
+		PaymentDailyLimit:                    updatedPaymentCfg.DailyLimit,
+		PaymentOrderTimeoutMin:               updatedPaymentCfg.OrderTimeoutMin,
+		PaymentMaxPendingOrders:              updatedPaymentCfg.MaxPendingOrders,
+		PaymentEnabledTypes:                  updatedPaymentCfg.EnabledTypes,
+		PaymentBalanceDisabled:               updatedPaymentCfg.BalanceDisabled,
+		PaymentBalanceRechargeMultiplier:     updatedPaymentCfg.BalanceRechargeMultiplier,
+		PaymentRechargeFeeRate:               updatedPaymentCfg.RechargeFeeRate,
+		PaymentLoadBalanceStrat:              updatedPaymentCfg.LoadBalanceStrategy,
+		PaymentProductNamePrefix:             updatedPaymentCfg.ProductNamePrefix,
+		PaymentProductNameSuffix:             updatedPaymentCfg.ProductNameSuffix,
+		PaymentHelpImageURL:                  updatedPaymentCfg.HelpImageURL,
+		PaymentHelpText:                      updatedPaymentCfg.HelpText,
+		PaymentCancelRateLimitEnabled:        updatedPaymentCfg.CancelRateLimitEnabled,
+		PaymentCancelRateLimitMax:            updatedPaymentCfg.CancelRateLimitMax,
+		PaymentCancelRateLimitWindow:         updatedPaymentCfg.CancelRateLimitWindow,
+		PaymentCancelRateLimitUnit:           updatedPaymentCfg.CancelRateLimitUnit,
+		PaymentCancelRateLimitMode:           updatedPaymentCfg.CancelRateLimitMode,
 	}
-	return append([]int64(nil), values...)
+	applyOpenAISettingsDTO(&updatedSettingsResp, updatedSettings)
+	response.Success(c, updatedSettingsResp)
 }
 
 // hasPaymentFields returns true if any payment-related field was explicitly provided.
@@ -1574,226 +1448,8 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.EnableCCHSigning != after.EnableCCHSigning {
 		changed = append(changed, "enable_cch_signing")
 	}
-	if before.EnableOpenAIStreamRectifier != after.EnableOpenAIStreamRectifier {
-		changed = append(changed, "enable_openai_stream_rectifier")
-	}
-	if !slices.Equal(before.OpenAIStreamResponseHeaderRectifierTimeouts, after.OpenAIStreamResponseHeaderRectifierTimeouts) {
-		changed = append(changed, "openai_stream_response_header_rectifier_timeouts")
-	}
-	if !slices.Equal(before.OpenAIStreamFirstTokenRectifierTimeouts, after.OpenAIStreamFirstTokenRectifierTimeouts) {
-		changed = append(changed, "openai_stream_first_token_rectifier_timeouts")
-	}
-	if before.OpenAIWarmPoolEnabled != after.OpenAIWarmPoolEnabled {
-		changed = append(changed, "openai_warm_pool_enabled")
-	}
-	if before.OpenAIWarmPoolBucketTargetSize != after.OpenAIWarmPoolBucketTargetSize {
-		changed = append(changed, "openai_warm_pool_bucket_target_size")
-	}
-	if before.OpenAIWarmPoolBucketRefillBelow != after.OpenAIWarmPoolBucketRefillBelow {
-		changed = append(changed, "openai_warm_pool_bucket_refill_below")
-	}
-	if before.OpenAIWarmPoolBucketSyncFillMin != after.OpenAIWarmPoolBucketSyncFillMin {
-		changed = append(changed, "openai_warm_pool_bucket_sync_fill_min")
-	}
-	if before.OpenAIWarmPoolBucketEntryTTLSeconds != after.OpenAIWarmPoolBucketEntryTTLSeconds {
-		changed = append(changed, "openai_warm_pool_bucket_entry_ttl_seconds")
-	}
-	if before.OpenAIWarmPoolBucketRefillCooldownSeconds != after.OpenAIWarmPoolBucketRefillCooldownSeconds {
-		changed = append(changed, "openai_warm_pool_bucket_refill_cooldown_seconds")
-	}
-	if before.OpenAIWarmPoolBucketRefillIntervalSeconds != after.OpenAIWarmPoolBucketRefillIntervalSeconds {
-		changed = append(changed, "openai_warm_pool_bucket_refill_interval_seconds")
-	}
-	if before.OpenAIWarmPoolGlobalTargetSize != after.OpenAIWarmPoolGlobalTargetSize {
-		changed = append(changed, "openai_warm_pool_global_target_size")
-	}
-	if before.OpenAIWarmPoolGlobalRefillBelow != after.OpenAIWarmPoolGlobalRefillBelow {
-		changed = append(changed, "openai_warm_pool_global_refill_below")
-	}
-	if before.OpenAIWarmPoolGlobalEntryTTLSeconds != after.OpenAIWarmPoolGlobalEntryTTLSeconds {
-		changed = append(changed, "openai_warm_pool_global_entry_ttl_seconds")
-	}
-	if before.OpenAIWarmPoolGlobalRefillCooldownSeconds != after.OpenAIWarmPoolGlobalRefillCooldownSeconds {
-		changed = append(changed, "openai_warm_pool_global_refill_cooldown_seconds")
-	}
-	if before.OpenAIWarmPoolGlobalRefillIntervalSeconds != after.OpenAIWarmPoolGlobalRefillIntervalSeconds {
-		changed = append(changed, "openai_warm_pool_global_refill_interval_seconds")
-	}
-	if before.OpenAIWarmPoolNetworkErrorPoolSize != after.OpenAIWarmPoolNetworkErrorPoolSize {
-		changed = append(changed, "openai_warm_pool_network_error_pool_size")
-	}
-	if before.OpenAIWarmPoolNetworkErrorEntryTTLSeconds != after.OpenAIWarmPoolNetworkErrorEntryTTLSeconds {
-		changed = append(changed, "openai_warm_pool_network_error_entry_ttl_seconds")
-	}
-	if before.OpenAIWarmPoolProbeMaxCandidates != after.OpenAIWarmPoolProbeMaxCandidates {
-		changed = append(changed, "openai_warm_pool_probe_max_candidates")
-	}
-	if before.OpenAIWarmPoolProbeConcurrency != after.OpenAIWarmPoolProbeConcurrency {
-		changed = append(changed, "openai_warm_pool_probe_concurrency")
-	}
-	if before.OpenAIWarmPoolProbeTimeoutSeconds != after.OpenAIWarmPoolProbeTimeoutSeconds {
-		changed = append(changed, "openai_warm_pool_probe_timeout_seconds")
-	}
-	if before.OpenAIWarmPoolProbeFailureCooldownSeconds != after.OpenAIWarmPoolProbeFailureCooldownSeconds {
-		changed = append(changed, "openai_warm_pool_probe_failure_cooldown_seconds")
-	}
-	if !slices.Equal(before.OpenAIWarmPoolStartupGroupIDs, after.OpenAIWarmPoolStartupGroupIDs) {
-		changed = append(changed, "openai_warm_pool_startup_group_ids")
-	}
+	changed = appendAdminOpenAIDiff(changed, before, after)
 	return changed
-}
-
-func resolveBoolSetting(value *bool, fallback bool) bool {
-	if value != nil {
-		return *value
-	}
-	return fallback
-}
-
-func resolveIntSetting(value *int, fallback int) int {
-	if value != nil {
-		return *value
-	}
-	return fallback
-}
-
-func resolveInt64SliceSetting(value *[]int64, fallback []int64) []int64 {
-	if value == nil {
-		return append([]int64(nil), fallback...)
-	}
-	result := make([]int64, 0, len(*value))
-	seen := make(map[int64]struct{}, len(*value))
-	for _, item := range *value {
-		if item <= 0 {
-			continue
-		}
-		if _, ok := seen[item]; ok {
-			continue
-		}
-		seen[item] = struct{}{}
-		result = append(result, item)
-	}
-	slices.Sort(result)
-	return result
-}
-
-func sanitizeAdminOpenAIWarmPoolSettings(input service.OpenAIWarmPoolSettings, fallback service.OpenAIWarmPoolSettings) service.OpenAIWarmPoolSettings {
-	result := input
-	if result.BucketTargetSize <= 0 {
-		result.BucketTargetSize = fallback.BucketTargetSize
-	}
-	if result.BucketTargetSize <= 0 {
-		result.BucketTargetSize = 10
-	}
-	if result.BucketRefillBelow <= 0 {
-		result.BucketRefillBelow = fallback.BucketRefillBelow
-	}
-	if result.BucketRefillBelow <= 0 {
-		result.BucketRefillBelow = 3
-	}
-	if result.BucketRefillBelow >= result.BucketTargetSize {
-		result.BucketRefillBelow = result.BucketTargetSize - 1
-	}
-	if result.BucketRefillBelow <= 0 {
-		result.BucketRefillBelow = 1
-	}
-	if result.BucketSyncFillMin < 0 {
-		result.BucketSyncFillMin = fallback.BucketSyncFillMin
-	}
-	if result.BucketSyncFillMin < 0 {
-		result.BucketSyncFillMin = 0
-	}
-	if result.BucketSyncFillMin > result.BucketTargetSize {
-		result.BucketSyncFillMin = result.BucketTargetSize
-	}
-	if result.BucketEntryTTLSeconds <= 0 {
-		result.BucketEntryTTLSeconds = fallback.BucketEntryTTLSeconds
-	}
-	if result.BucketEntryTTLSeconds <= 0 {
-		result.BucketEntryTTLSeconds = 30
-	}
-	if result.BucketRefillCooldownSeconds < 0 {
-		result.BucketRefillCooldownSeconds = fallback.BucketRefillCooldownSeconds
-	}
-	if result.BucketRefillCooldownSeconds < 0 {
-		result.BucketRefillCooldownSeconds = 15
-	}
-	if result.BucketRefillIntervalSeconds < 0 {
-		result.BucketRefillIntervalSeconds = fallback.BucketRefillIntervalSeconds
-	}
-	if result.BucketRefillIntervalSeconds < 0 {
-		result.BucketRefillIntervalSeconds = 30
-	}
-	if result.GlobalTargetSize <= 0 {
-		result.GlobalTargetSize = fallback.GlobalTargetSize
-	}
-	if result.GlobalTargetSize <= 0 {
-		result.GlobalTargetSize = 30
-	}
-	if result.GlobalRefillBelow <= 0 {
-		result.GlobalRefillBelow = fallback.GlobalRefillBelow
-	}
-	if result.GlobalRefillBelow <= 0 {
-		result.GlobalRefillBelow = 10
-	}
-	if result.GlobalRefillBelow > result.GlobalTargetSize {
-		result.GlobalRefillBelow = result.GlobalTargetSize
-	}
-	if result.GlobalEntryTTLSeconds <= 0 {
-		result.GlobalEntryTTLSeconds = fallback.GlobalEntryTTLSeconds
-	}
-	if result.GlobalEntryTTLSeconds <= 0 {
-		result.GlobalEntryTTLSeconds = 300
-	}
-	if result.GlobalRefillCooldownSeconds < 0 {
-		result.GlobalRefillCooldownSeconds = fallback.GlobalRefillCooldownSeconds
-	}
-	if result.GlobalRefillCooldownSeconds < 0 {
-		result.GlobalRefillCooldownSeconds = 60
-	}
-	if result.GlobalRefillIntervalSeconds < 0 {
-		result.GlobalRefillIntervalSeconds = fallback.GlobalRefillIntervalSeconds
-	}
-	if result.GlobalRefillIntervalSeconds < 0 {
-		result.GlobalRefillIntervalSeconds = 300
-	}
-	if result.NetworkErrorPoolSize < 0 {
-		result.NetworkErrorPoolSize = fallback.NetworkErrorPoolSize
-	}
-	if result.NetworkErrorPoolSize < 0 {
-		result.NetworkErrorPoolSize = 3
-	}
-	if result.NetworkErrorEntryTTLSeconds < 0 {
-		result.NetworkErrorEntryTTLSeconds = fallback.NetworkErrorEntryTTLSeconds
-	}
-	if result.NetworkErrorEntryTTLSeconds < 0 {
-		result.NetworkErrorEntryTTLSeconds = 120
-	}
-	if result.ProbeMaxCandidates <= 0 {
-		result.ProbeMaxCandidates = fallback.ProbeMaxCandidates
-	}
-	if result.ProbeMaxCandidates <= 0 {
-		result.ProbeMaxCandidates = 24
-	}
-	if result.ProbeConcurrency <= 0 {
-		result.ProbeConcurrency = fallback.ProbeConcurrency
-	}
-	if result.ProbeConcurrency <= 0 {
-		result.ProbeConcurrency = 4
-	}
-	if result.ProbeTimeoutSeconds <= 0 {
-		result.ProbeTimeoutSeconds = fallback.ProbeTimeoutSeconds
-	}
-	if result.ProbeTimeoutSeconds <= 0 {
-		result.ProbeTimeoutSeconds = 15
-	}
-	if result.ProbeFailureCooldownSeconds < 0 {
-		result.ProbeFailureCooldownSeconds = fallback.ProbeFailureCooldownSeconds
-	}
-	if result.ProbeFailureCooldownSeconds < 0 {
-		result.ProbeFailureCooldownSeconds = 120
-	}
-	return result
 }
 
 func normalizeDefaultSubscriptions(input []dto.DefaultSubscriptionSetting) []dto.DefaultSubscriptionSetting {

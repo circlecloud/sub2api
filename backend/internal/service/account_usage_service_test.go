@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -19,6 +20,14 @@ type accountUsageCodexProbeRepo struct {
 	errorMessage    string
 	clearErrorID    int64
 	clearErrorCalls int
+}
+
+type openAIUsageProbeMethodReaderStub struct {
+	method string
+}
+
+func (s openAIUsageProbeMethodReaderStub) GetOpenAIUsageProbeMethod(_ context.Context) string {
+	return s.method
 }
 
 func (r *accountUsageCodexProbeRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -157,9 +166,18 @@ func TestExtractOpenAICodexProbeSnapshotIncludesBadRequestBody(t *testing.T) {
 	require.Contains(t, err.Error(), "probe payload rejected")
 }
 
-func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *testing.T) {
+func TestNormalizeOpenAIUsageProbeMethod(t *testing.T) {
 	t.Parallel()
 
+	require.Equal(t, string(OpenAIUsageProbeMethodWham), normalizeOpenAIUsageProbeMethod(""))
+	require.Equal(t, string(OpenAIUsageProbeMethodWham), normalizeOpenAIUsageProbeMethod("invalid"))
+	require.Equal(t, string(OpenAIUsageProbeMethodWham), normalizeOpenAIUsageProbeMethod("WHAM"))
+}
+
+func TestAccountUsageService_PersistOpenAICodexProbeSnapshotSetsRateLimit(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
 	repo := &accountUsageCodexProbeRepo{
 		updateExtraCh: make(chan map[string]any, 1),
 		rateLimitCh:   make(chan time.Time, 1),
@@ -167,8 +185,8 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *
 	svc := &AccountUsageService{accountRepo: repo}
 	svc.persistOpenAICodexProbeSnapshot(321, map[string]any{
 		"codex_7d_used_percent": 100.0,
-		"codex_7d_reset_at":     time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339),
-	}, nil)
+		"codex_7d_reset_at":     resetAt.Format(time.RFC3339),
+	}, &resetAt)
 
 	select {
 	case updates := <-repo.updateExtraCh:
@@ -181,8 +199,11 @@ func TestAccountUsageService_PersistOpenAICodexProbeSnapshotOnlyUpdatesExtra(t *
 
 	select {
 	case got := <-repo.rateLimitCh:
-		t.Fatalf("不应将探测快照写入运行时限流状态: %v", got)
-	case <-time.After(200 * time.Millisecond):
+		if !got.Equal(resetAt) {
+			t.Fatalf("SetRateLimited() = %v, want %v", got, resetAt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待 codex 探测快照写入限流状态超时")
 	}
 }
 
@@ -226,6 +247,67 @@ func TestAccountUsageService_GetOpenAIUsage_PromotesCodexExtraToRateLimit(t *tes
 	}
 }
 
+func TestAccountUsageService_GetOpenAIUsage_ReturnsActualUpdateMethod(t *testing.T) {
+	t.Parallel()
+
+	baseReset := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)
+	sevenDayReset := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)
+
+	makeAccount := func(extra map[string]any, credentials map[string]any) *Account {
+		return &Account{
+			ID:          321,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Credentials: credentials,
+			Extra:       extra,
+		}
+	}
+
+	makeExtra := func() map[string]any {
+		return map[string]any{
+			"codex_5h_used_percent": 10.0,
+			"codex_5h_reset_at":     baseReset,
+			"codex_7d_used_percent": 20.0,
+			"codex_7d_reset_at":     sevenDayReset,
+		}
+	}
+
+	t.Run("wham with chatgpt account id reports usage", func(t *testing.T) {
+		svc := &AccountUsageService{
+			openAIProbeMethodReader: openAIUsageProbeMethodReaderStub{method: string(OpenAIUsageProbeMethodWham)},
+		}
+		usage, err := svc.getOpenAIUsage(context.Background(), makeAccount(makeExtra(), map[string]any{
+			"access_token":        "token",
+			"chatgpt_account_id": "acc_123",
+		}), false)
+		require.NoError(t, err)
+		require.Equal(t, "usage", usage.UpdateMethod)
+	})
+
+	t.Run("wham missing chatgpt account id falls back to response", func(t *testing.T) {
+		svc := &AccountUsageService{
+			openAIProbeMethodReader: openAIUsageProbeMethodReaderStub{method: string(OpenAIUsageProbeMethodWham)},
+		}
+		usage, err := svc.getOpenAIUsage(context.Background(), makeAccount(makeExtra(), map[string]any{
+			"access_token": "token",
+		}), false)
+		require.NoError(t, err)
+		require.Equal(t, "response", usage.UpdateMethod)
+	})
+
+	t.Run("responses setting reports response", func(t *testing.T) {
+		svc := &AccountUsageService{
+			openAIProbeMethodReader: openAIUsageProbeMethodReaderStub{method: string(OpenAIUsageProbeMethodResponses)},
+		}
+		usage, err := svc.getOpenAIUsage(context.Background(), makeAccount(makeExtra(), map[string]any{
+			"access_token":        "token",
+			"chatgpt_account_id": "acc_123",
+		}), false)
+		require.NoError(t, err)
+		require.Equal(t, "response", usage.UpdateMethod)
+	})
+}
+
 func TestAccountUsageService_HandleOpenAIUsageProbeUnauthorizedMarksError(t *testing.T) {
 	t.Parallel()
 
@@ -247,8 +329,30 @@ func TestBuildOpenAIUsageProbeUnauthorizedErrorIncludesUpstreamMessage(t *testin
 
 	err := buildOpenAIUsageProbeUnauthorizedError([]byte(`{"error":{"message":"session expired"}}`))
 	require.Error(t, err)
-	require.True(t, isOpenAIUsageProbeUnauthorizedError(err))
+	require.True(t, isOpenAIUsageProbeAuthError(err))
 	require.Contains(t, err.Error(), "session expired")
+}
+
+func TestBuildOpenAIUsageProbeForbiddenErrorIncludesUpstreamMessage(t *testing.T) {
+	t.Parallel()
+
+	err := buildOpenAIUsageProbeForbiddenError([]byte(`{"error":{"message":"workspace forbidden"}}`))
+	require.Error(t, err)
+	require.True(t, isOpenAIUsageProbeAuthError(err))
+	require.Contains(t, err.Error(), "workspace forbidden")
+}
+
+func TestAccountUsageService_HandleOpenAIUsageProbeUnauthorizedFallbackPreservesAuthMarker(t *testing.T) {
+	t.Parallel()
+
+	repo := &accountUsageCodexProbeRepo{}
+	svc := &AccountUsageService{accountRepo: repo}
+	account := &Account{ID: 902, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive}
+
+	svc.handleOpenAIUsageProbeUnauthorized(context.Background(), account, nil, fmt.Errorf("openai codex probe returned status 401"))
+
+	require.Equal(t, int64(902), repo.errorID)
+	require.Contains(t, repo.errorMessage, "Unauthorized (401)")
 }
 
 func TestAccountUsageService_GetUsage_DoesNotClearRecoverableErrorOnDegradedOpenAIUsage(t *testing.T) {
@@ -302,6 +406,37 @@ func TestAccountUsageService_GetUsage_ClearsRecoverableErrorAfterHealthyOpenAIUs
 	require.Equal(t, int64(903), repo.clearErrorID)
 	require.Equal(t, StatusActive, repo.accounts[0].Status)
 	require.Empty(t, repo.accounts[0].ErrorMessage)
+}
+
+func TestAccountUsageService_GetUsage_OpenAIForbiddenStatusSurfacesForbiddenState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	repo := &accountUsageCodexProbeRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+		ID:           904,
+		Platform:     PlatformOpenAI,
+		Type:         AccountTypeOAuth,
+		Status:       StatusError,
+		ErrorMessage: "Access forbidden (403): workspace forbidden",
+		Extra: map[string]any{
+			"openai_oauth_responses_websockets_v2_enabled": true,
+			"codex_usage_updated_at":                       now.Format(time.RFC3339),
+			"codex_5h_used_percent":                        12.0,
+			"codex_5h_reset_at":                            now.Add(2 * time.Hour).Format(time.RFC3339),
+			"codex_7d_used_percent":                        34.0,
+			"codex_7d_reset_at":                            now.Add(24 * time.Hour).Format(time.RFC3339),
+		},
+	}}}}
+	svc := &AccountUsageService{accountRepo: repo}
+
+	usage, err := svc.GetUsage(context.Background(), 904, false)
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	require.True(t, usage.IsForbidden)
+	require.Equal(t, errorCodeForbidden, usage.ErrorCode)
+	require.False(t, usage.NeedsReauth)
+	require.Contains(t, usage.ForbiddenReason, "workspace forbidden")
+	require.Equal(t, 0, repo.clearErrorCalls)
 }
 
 func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {

@@ -124,12 +124,13 @@ type SystemSettings struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
-	EnableFingerprintUnification                bool  `json:"enable_fingerprint_unification"`
-	EnableMetadataPassthrough                   bool  `json:"enable_metadata_passthrough"`
-	EnableCCHSigning                            bool  `json:"enable_cch_signing"`
-	EnableOpenAIStreamRectifier                 bool  `json:"enable_openai_stream_rectifier"`
-	OpenAIStreamResponseHeaderRectifierTimeouts []int `json:"openai_stream_response_header_rectifier_timeouts"`
-	OpenAIStreamFirstTokenRectifierTimeouts     []int `json:"openai_stream_first_token_rectifier_timeouts"`
+	EnableFingerprintUnification                bool   `json:"enable_fingerprint_unification"`
+	EnableMetadataPassthrough                   bool   `json:"enable_metadata_passthrough"`
+	EnableCCHSigning                            bool   `json:"enable_cch_signing"`
+	EnableOpenAIStreamRectifier                 bool   `json:"enable_openai_stream_rectifier"`
+	OpenAIStreamResponseHeaderRectifierTimeouts []int  `json:"openai_stream_response_header_rectifier_timeouts"`
+	OpenAIStreamFirstTokenRectifierTimeouts     []int  `json:"openai_stream_first_token_rectifier_timeouts"`
+	OpenAIUsageProbeMethod                      string `json:"openai_usage_probe_method"`
 
 	// OpenAI warm pool behavior
 	OpenAIWarmPoolEnabled                     bool    `json:"openai_warm_pool_enabled"`

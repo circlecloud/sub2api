@@ -274,6 +274,8 @@ const (
 	SettingKeyOpenAIStreamResponseHeaderRectifierTimeouts = "openai_stream_response_header_rectifier_timeouts"
 	// SettingKeyOpenAIStreamFirstTokenRectifierTimeouts OpenAI 流式首 token 整流超时数组（JSON 数组，单位秒）
 	SettingKeyOpenAIStreamFirstTokenRectifierTimeouts = "openai_stream_first_token_rectifier_timeouts"
+	// SettingKeyOpenAIUsageProbeMethod OpenAI OAuth 用量探测方式（responses|wham）
+	SettingKeyOpenAIUsageProbeMethod = "openai_usage_probe_method"
 	// OpenAI 预热池设置
 	SettingKeyOpenAIWarmPoolEnabled                     = "openai_warm_pool_enabled"
 	SettingKeyOpenAIWarmPoolBucketTargetSize            = "openai_warm_pool_bucket_target_size"
