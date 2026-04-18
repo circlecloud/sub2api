@@ -28,6 +28,7 @@ type OpenAIAccountScheduleRequest struct {
 	PreviousResponseID string
 	RequestedModel     string
 	RequiredTransport  OpenAIUpstreamTransport
+	RequiredCapability OpenAIEndpointCapability
 	ExcludedIDs        map[int64]struct{}
 }
 
@@ -97,6 +98,7 @@ type openAISelectionFilterStats struct {
 	PrivacyRequired       int
 	ModelUnsupported      int
 	TransportIncompatible int
+	EndpointIncompatible  int
 }
 
 type OpenAIAccountSchedulerMetricsSnapshot struct {
@@ -302,7 +304,8 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
-			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) {
+			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) ||
+				!s.isAccountEndpointCompatible(selection.Account, req.RequiredCapability) {
 				selection = nil
 			}
 		}
@@ -392,7 +395,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 		return nil, nil
 	}
-	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+	if !s.isAccountTransportCompatible(account, req.RequiredTransport) || !s.isAccountEndpointCompatible(account, req.RequiredCapability) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
@@ -695,7 +698,7 @@ func shouldRetryOpenAISelectionWithDBFallback(failureInfo openAISelectFailureInf
 		return false
 	}
 	switch strings.TrimSpace(failureInfo.Reason) {
-	case "", "warm_pool_empty", "all_candidates_filtered", "unschedulable", "model_unsupported", "transport_incompatible", "all_candidates_became_unschedulable":
+	case "", "warm_pool_empty", "all_candidates_filtered", "unschedulable", "model_unsupported", "transport_incompatible", OpenAISelectionFailureReasonEndpointIncompatible, "all_candidates_became_unschedulable":
 		return true
 	default:
 		return false
@@ -801,6 +804,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalanceCandidates(
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			continue
 		}
+		if !s.isAccountEndpointCompatible(account, req.RequiredCapability) {
+			continue
+		}
 		filtered = append(filtered, account)
 		loadReq = append(loadReq, AccountWithConcurrency{
 			ID:             account.ID,
@@ -809,7 +815,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalanceCandidates(
 	}
 	if len(filtered) == 0 {
 		stats := analyzeOpenAISelectionFilters(candidateBase, req, schedGroup, s)
-		return nil, 0, 0, 0, openAISelectFailureInfo{Reason: pickOpenAISelectionFailureReason(stats), Detail: summarizeOpenAISelectionFilterStats(stats, req.RequiredTransport)}, ErrNoAvailableAccounts
+		return nil, 0, 0, 0, openAISelectFailureInfo{Reason: pickOpenAISelectionFailureReason(stats), Detail: summarizeOpenAISelectionFilterStats(stats, req.RequiredTransport, req.RequiredCapability)}, ErrNoAvailableAccounts
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -902,11 +908,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalanceCandidates(
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountEndpointCompatible(fresh, req.RequiredCapability) {
 			continue
 		}
 		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountEndpointCompatible(fresh, req.RequiredCapability) {
 			continue
 		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
@@ -926,14 +932,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalanceCandidates(
 	}
 
 	if !allowWaitPlan {
-		return nil, len(candidates), topK, loadSkew, openAISelectFailureInfo{Reason: "all_candidates_busy", Detail: buildOpenAISelectionFailureDetail(len(candidateBase), len(filtered), len(candidates), 0, req.RequiredTransport)}, ErrNoAvailableAccounts
+		return nil, len(candidates), topK, loadSkew, openAISelectFailureInfo{Reason: "all_candidates_busy", Detail: buildOpenAISelectionFailureDetail(len(candidateBase), len(filtered), len(candidates), 0, req.RequiredTransport, req.RequiredCapability)}, ErrNoAvailableAccounts
 	}
 
 	cfg := s.service.schedulingConfig()
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	for _, candidate := range selectionOrder {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountEndpointCompatible(fresh, req.RequiredCapability) {
 			continue
 		}
 		return &AccountSelectionResult{
@@ -947,17 +953,18 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalanceCandidates(
 		}, len(candidates), topK, loadSkew, openAISelectFailureInfo{}, nil
 	}
 
-	return nil, len(candidates), topK, loadSkew, openAISelectFailureInfo{Reason: "all_candidates_became_unschedulable", Detail: buildOpenAISelectionFailureDetail(len(candidateBase), len(filtered), len(candidates), len(selectionOrder), req.RequiredTransport)}, ErrNoAvailableAccounts
+	return nil, len(candidates), topK, loadSkew, openAISelectFailureInfo{Reason: "all_candidates_became_unschedulable", Detail: buildOpenAISelectionFailureDetail(len(candidateBase), len(filtered), len(candidates), len(selectionOrder), req.RequiredTransport, req.RequiredCapability)}, ErrNoAvailableAccounts
 }
 
-func buildOpenAISelectionFailureDetail(candidateBaseCount, filteredCount, scoredCount, selectionOrderCount int, requiredTransport OpenAIUpstreamTransport) string {
+func buildOpenAISelectionFailureDetail(candidateBaseCount, filteredCount, scoredCount, selectionOrderCount int, requiredTransport OpenAIUpstreamTransport, requiredCapability OpenAIEndpointCapability) string {
 	return fmt.Sprintf(
-		"candidate_base=%d filtered=%d scored=%d selection_order=%d required_transport=%s",
+		"candidate_base=%d filtered=%d scored=%d selection_order=%d required_transport=%s required_capability=%s",
 		candidateBaseCount,
 		filteredCount,
 		scoredCount,
 		selectionOrderCount,
 		strings.TrimSpace(string(requiredTransport)),
+		strings.TrimSpace(string(normalizeOpenAIEndpointCapability(requiredCapability))),
 	)
 }
 
@@ -993,6 +1000,10 @@ func analyzeOpenAISelectionFilters(candidateBase []*Account, req OpenAIAccountSc
 			stats.TransportIncompatible++
 			continue
 		}
+		if scheduler != nil && !scheduler.isAccountEndpointCompatible(account, req.RequiredCapability) {
+			stats.EndpointIncompatible++
+			continue
+		}
 	}
 	return stats
 }
@@ -1001,6 +1012,8 @@ func pickOpenAISelectionFailureReason(stats openAISelectionFilterStats) string {
 	switch {
 	case stats.TransportIncompatible > 0 && stats.TransportIncompatible == stats.Total:
 		return "transport_incompatible"
+	case stats.EndpointIncompatible > 0 && stats.EndpointIncompatible == stats.Total:
+		return OpenAISelectionFailureReasonEndpointIncompatible
 	case stats.ModelUnsupported > 0 && stats.ModelUnsupported == stats.Total:
 		return "model_unsupported"
 	case stats.PrivacyRequired > 0 && stats.PrivacyRequired == stats.Total:
@@ -1014,9 +1027,9 @@ func pickOpenAISelectionFailureReason(stats openAISelectionFilterStats) string {
 	}
 }
 
-func summarizeOpenAISelectionFilterStats(stats openAISelectionFilterStats, requiredTransport OpenAIUpstreamTransport) string {
+func summarizeOpenAISelectionFilterStats(stats openAISelectionFilterStats, requiredTransport OpenAIUpstreamTransport, requiredCapability OpenAIEndpointCapability) string {
 	return fmt.Sprintf(
-		"total=%d excluded=%d unschedulable=%d not_openai=%d privacy_required=%d model_unsupported=%d transport_incompatible=%d required_transport=%s",
+		"total=%d excluded=%d unschedulable=%d not_openai=%d privacy_required=%d model_unsupported=%d transport_incompatible=%d endpoint_incompatible=%d required_transport=%s required_capability=%s",
 		stats.Total,
 		stats.Excluded,
 		stats.Unschedulable,
@@ -1024,7 +1037,9 @@ func summarizeOpenAISelectionFilterStats(stats openAISelectionFilterStats, requi
 		stats.PrivacyRequired,
 		stats.ModelUnsupported,
 		stats.TransportIncompatible,
+		stats.EndpointIncompatible,
 		strings.TrimSpace(string(requiredTransport)),
+		strings.TrimSpace(string(normalizeOpenAIEndpointCapability(requiredCapability))),
 	)
 }
 
@@ -1037,6 +1052,17 @@ func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Ac
 		return false
 	}
 	return s.service.getOpenAIWSProtocolResolver().Resolve(account).Transport == requiredTransport
+}
+
+func (s *defaultOpenAIAccountScheduler) isAccountEndpointCompatible(account *Account, requiredCapability OpenAIEndpointCapability) bool {
+	requiredCapability = normalizeOpenAIEndpointCapability(requiredCapability)
+	if requiredCapability == OpenAIEndpointCapabilityAny {
+		return true
+	}
+	if account == nil {
+		return false
+	}
+	return account.SupportsOpenAIEndpointCapability(requiredCapability)
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
@@ -1107,6 +1133,19 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	excludedIDs map[int64]struct{},
 	requiredTransport OpenAIUpstreamTransport,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.SelectAccountWithSchedulerForEndpoint(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, OpenAIEndpointCapabilityAny)
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForEndpoint(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	scheduler := s.getOpenAIAccountScheduler()
 	if scheduler == nil {
@@ -1129,6 +1168,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		PreviousResponseID: previousResponseID,
 		RequestedModel:     requestedModel,
 		RequiredTransport:  requiredTransport,
+		RequiredCapability: requiredCapability,
 		ExcludedIDs:        excludedIDs,
 	})
 }

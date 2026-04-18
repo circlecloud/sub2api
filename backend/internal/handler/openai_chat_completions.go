@@ -212,7 +212,14 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
-		result, err := h.gatewayService.ForwardAsChatCompletions(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		var result *service.OpenAIForwardResult
+		setUpstreamEndpointOverride(c, EndpointResponses)
+		if account.UsesOpenAIChatCompletionsUpstream() {
+			setUpstreamEndpointOverride(c, EndpointChatCompletions)
+			result, err = h.gatewayService.ForwardAsChatCompletionsViaChatUpstream(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		} else {
+			result, err = h.gatewayService.ForwardAsChatCompletions(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		}
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {

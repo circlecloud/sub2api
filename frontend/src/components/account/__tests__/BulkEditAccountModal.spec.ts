@@ -171,6 +171,34 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it('OpenAI API Key 批量编辑切到 chat_completions 时应隐藏冲突项并显式提交上游协议', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-openai-upstream-protocol-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-upstream-protocol-select').setValue('chat_completions')
+
+    expect(wrapper.text()).toContain('admin.accounts.openai.upstreamProtocolChatCompletionsHint')
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.oauthPassthrough')
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.wsMode')
+
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        openai_apikey_upstream_protocol: 'chat_completions',
+        openai_apikey_responses_websockets_v2_mode: 'off',
+        openai_apikey_responses_websockets_v2_enabled: false,
+        openai_passthrough: false,
+        openai_oauth_passthrough: false
+      }
+    })
+  })
+
   it('OpenAI API Key 批量编辑应提交 API Key 专属 WS mode 字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

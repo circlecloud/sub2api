@@ -1076,9 +1076,19 @@
         <p class="input-hint">{{ t('admin.accounts.expiresAtHint') }}</p>
       </div>
 
+      <div
+        v-if="isOpenAIApikeyUpstreamProtocolConfigVisible"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <OpenAIUpstreamProtocolSection
+          v-model="openAIApikeyUpstreamProtocol"
+          id-prefix="edit-openai-upstream-protocol"
+        />
+      </div>
+
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="showOpenAICompatibilityControls"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1108,7 +1118,7 @@
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="showOpenAICompatibilityControls"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1853,34 +1863,45 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
-import type { Account, Proxy, AdminGroup, CheckMixedChannelResponse } from '@/types'
+import type {
+  Account,
+  Proxy,
+  AdminGroup,
+  CheckMixedChannelResponse,
+  OpenAIApikeyUpstreamProtocol,
+} from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import GroupSelector from '@/components/common/GroupSelector.vue'
+import ProxySelector from '@/components/common/ProxySelector.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
-import ProxySelector from '@/components/common/ProxySelector.vue'
-import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
+import OpenAIUpstreamProtocolSection from '@/components/account/OpenAIUpstreamProtocolSection.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import {
+  buildModelMappingObject,
+  getDefaultModelSelection,
+  getPresetMappingsByPlatform,
+  isValidWildcardPattern,
+  commonErrorCodes,
+} from '@/composables/useModelWhitelist'
+import {
+  DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL,
+  isOpenAIApikeyChatCompletionsProtocol,
+  resolveOpenAIApikeyUpstreamProtocol,
+} from '@/utils/openaiApikeyUpstreamProtocol'
 import {
   OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
   OPENAI_WS_MODE_PASSTHROUGH,
   isOpenAIWSModeEnabled,
   resolveOpenAIWSModeConcurrencyHintKey,
+  resolveOpenAIWSModeFromExtra,
   type OpenAIWSMode,
-  resolveOpenAIWSModeFromExtra
 } from '@/utils/openaiWsMode'
-import {
-  getDefaultModelSelection,
-  getPresetMappingsByPlatform,
-  commonErrorCodes,
-  buildModelMappingObject,
-  isValidWildcardPattern
-} from '@/composables/useModelWhitelist'
 
 interface Props {
   show: boolean
@@ -1996,6 +2017,7 @@ const customBaseUrlEnabled = ref(false)
 const customBaseUrl = ref('')
 
 // OpenAI 自动透传开关（OAuth/API Key）
+const openAIApikeyUpstreamProtocol = ref<OpenAIApikeyUpstreamProtocol>(DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL)
 const openaiPassthroughEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -2050,8 +2072,24 @@ const openaiResponsesWebSocketV2Mode = computed({
 const openAIWSModeConcurrencyHintKey = computed(() =>
   resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2Mode.value)
 )
+const isOpenAIApikeyUpstreamProtocolConfigVisible = computed(
+  () => props.account?.platform === 'openai' && props.account?.type === 'apikey'
+)
+const isOpenAIApikeyChatCompletionsMode = computed(
+  () =>
+    isOpenAIApikeyUpstreamProtocolConfigVisible.value &&
+    isOpenAIApikeyChatCompletionsProtocol(openAIApikeyUpstreamProtocol.value)
+)
+const showOpenAICompatibilityControls = computed(
+  () =>
+    props.account?.platform === 'openai' &&
+    (props.account?.type === 'oauth' || !isOpenAIApikeyChatCompletionsMode.value)
+)
+const effectiveOpenAIPassthroughEnabled = computed(
+  () => props.account?.platform === 'openai' && openaiPassthroughEnabled.value && !isOpenAIApikeyChatCompletionsMode.value
+)
 const isOpenAIModelRestrictionDisabled = computed(() =>
-  props.account?.platform === 'openai' && openaiPassthroughEnabled.value
+  props.account?.platform === 'openai' && effectiveOpenAIPassthroughEnabled.value
 )
 
 const openAIAvailableModels = computed(() => {
@@ -2188,6 +2226,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   allowOverages.value = extra?.allow_overages === true
 
   // Load OpenAI passthrough toggle (OpenAI OAuth/API Key)
+  openAIApikeyUpstreamProtocol.value = DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL
   openaiPassthroughEnabled.value = false
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -2208,6 +2247,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       fallbackEnabledKeys: ['responses_websockets_v2_enabled', 'openai_ws_enabled'],
       defaultMode: OPENAI_WS_MODE_OFF
     })
+    if (newAccount.type === 'apikey') {
+      openAIApikeyUpstreamProtocol.value = resolveOpenAIApikeyUpstreamProtocol(extra)
+    }
     if (newAccount.type === 'oauth') {
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
     }
@@ -2892,7 +2934,7 @@ const handleSubmit = async () => {
     if (props.account.type === 'apikey') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
-      const shouldApplyModelMapping = !(props.account.platform === 'openai' && openaiPassthroughEnabled.value)
+      const shouldApplyModelMapping = !(props.account.platform === 'openai' && effectiveOpenAIPassthroughEnabled.value)
 
       // Always update credentials for apikey type to handle model mapping changes
       const newCredentials: Record<string, unknown> = {
@@ -3035,7 +3077,7 @@ const handleSubmit = async () => {
       const currentCredentials = (updatePayload.credentials as Record<string, unknown>) ||
         ((props.account.credentials as Record<string, unknown>) || {})
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
-      const shouldApplyModelMapping = !openaiPassthroughEnabled.value
+      const shouldApplyModelMapping = !effectiveOpenAIPassthroughEnabled.value
 
       if (shouldApplyModelMapping) {
         const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
@@ -3208,13 +3250,18 @@ const handleSubmit = async () => {
       if (props.account.type === 'oauth') {
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
         newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+        delete newExtra.openai_apikey_upstream_protocol
       } else if (props.account.type === 'apikey') {
-        newExtra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
-        newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
+        const apiKeyWSMode = isOpenAIApikeyChatCompletionsMode.value
+          ? OPENAI_WS_MODE_OFF
+          : openaiAPIKeyResponsesWebSocketV2Mode.value
+        newExtra.openai_apikey_upstream_protocol = openAIApikeyUpstreamProtocol.value
+        newExtra.openai_apikey_responses_websockets_v2_mode = apiKeyWSMode
+        newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(apiKeyWSMode)
       }
       delete newExtra.responses_websockets_v2_enabled
       delete newExtra.openai_ws_enabled
-      if (openaiPassthroughEnabled.value) {
+      if (effectiveOpenAIPassthroughEnabled.value) {
         newExtra.openai_passthrough = true
       } else {
         delete newExtra.openai_passthrough

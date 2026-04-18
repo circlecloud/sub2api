@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -230,6 +231,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	requiredCapability := service.OpenAIEndpointCapabilityResponses
+	nativeResponsesCompatMessage := ""
+	if service.IsOpenAIResponsesCompactPathForTest(c) {
+		requiredCapability = service.OpenAIEndpointCapabilityResponsesCompact
+	} else if nativeReasons := apicompat.ResponsesRequestNativeResponsesReasonsFromBody(body); len(nativeReasons) > 0 {
+		requiredCapability = service.OpenAIEndpointCapabilityResponsesNative
+		nativeResponsesCompatMessage = apicompat.ResponsesRequestChatUpstreamUnsupportedMessage(nativeReasons)
+	}
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -256,7 +265,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		} else {
 			// Select account supporting the requested model
 			reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForEndpoint(
 				c.Request.Context(),
 				apiKey.GroupID,
 				previousResponseID,
@@ -264,12 +273,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				reqModel,
 				failedAccountIDs,
 				service.OpenAIUpstreamTransportAny,
+				requiredCapability,
 			)
 		}
 		if err != nil {
 			logOpenAIAccountSelectFailure(c, reqLog, "openai.account_select_failed", scheduleDecision, err, len(failedAccountIDs))
 			if len(failedAccountIDs) == 0 {
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, err, false), streamStarted)
+				if nativeResponsesCompatMessage != "" && scheduleDecision.FailureReason == service.OpenAISelectionFailureReasonEndpointIncompatible {
+					h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", nativeResponsesCompatMessage, streamStarted)
+					return
+				}
+				clientMessage := service.ResolveOpenAIEndpointCapabilityClientMessage(scheduleDecision.FailureReason, requiredCapability)
+				if clientMessage == "" {
+					clientMessage = h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, err, false)
+				}
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", clientMessage, streamStarted)
 				return
 			}
 			if lastFailoverErr != nil {
@@ -280,7 +298,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		if selection == nil || selection.Account == nil {
-			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, service.ErrNoAvailableAccounts, true), streamStarted)
+			if nativeResponsesCompatMessage != "" && scheduleDecision.FailureReason == service.OpenAISelectionFailureReasonEndpointIncompatible {
+				h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", nativeResponsesCompatMessage, streamStarted)
+				return
+			}
+			clientMessage := service.ResolveOpenAIEndpointCapabilityClientMessage(scheduleDecision.FailureReason, requiredCapability)
+			if clientMessage == "" {
+				clientMessage = h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, reqModel, scheduleDecision, service.ErrNoAvailableAccounts, true)
+			}
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", clientMessage, streamStarted)
 			return
 		}
 		if previousResponseID != "" && selection != nil && selection.Account != nil {
@@ -321,7 +347,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
-		result, err := h.gatewayService.Forward(forwardCtx, c, account, forwardBody)
+		setUpstreamEndpointOverride(c, EndpointResponses)
+		var result *service.OpenAIForwardResult
+		if account.UsesOpenAIChatCompletionsUpstream() && !service.IsOpenAIResponsesCompactPathForTest(c) {
+			setUpstreamEndpointOverride(c, EndpointChatCompletions)
+			result, err = h.gatewayService.ForwardAsResponsesViaChatUpstream(forwardCtx, c, account, forwardBody)
+		} else {
+			result, err = h.gatewayService.Forward(forwardCtx, c, account, forwardBody)
+		}
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
@@ -558,6 +591,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
+	requiredCapability := service.OpenAIEndpointCapabilityMessages
 
 	// Anthropic 格式的请求在 metadata.user_id 中携带 session 标识，
 	// 而非 OpenAI 的 session_id/conversation_id headers。
@@ -603,7 +637,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			rectifierRetrySelection = nil
 		} else {
 			reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForEndpoint(
 				c.Request.Context(),
 				apiKey.GroupID,
 				"", // no previous_response_id
@@ -611,6 +645,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				currentRoutingModel,
 				failedAccountIDs,
 				service.OpenAIUpstreamTransportAny,
+				requiredCapability,
 			)
 		}
 		if err != nil {
@@ -620,7 +655,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			)
 			if len(failedAccountIDs) == 0 {
 				if err != nil {
-					h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, currentRoutingModel, scheduleDecision, err, false), streamStarted)
+					clientMessage := service.ResolveOpenAIEndpointCapabilityClientMessage(scheduleDecision.FailureReason, requiredCapability)
+					if clientMessage == "" {
+						clientMessage = h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, currentRoutingModel, scheduleDecision, err, false)
+					}
+					h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", clientMessage, streamStarted)
 					return
 				}
 			} else {
@@ -634,7 +673,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			logOpenAIAccountSelectFailure(c, reqLog, "openai_messages.account_select_failed", scheduleDecision, service.ErrNoAvailableAccounts, len(failedAccountIDs))
-			h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, currentRoutingModel, scheduleDecision, service.ErrNoAvailableAccounts, true), streamStarted)
+			clientMessage := service.ResolveOpenAIEndpointCapabilityClientMessage(scheduleDecision.FailureReason, requiredCapability)
+			if clientMessage == "" {
+				clientMessage = h.resolveOpenAINoAvailableAccountMessage(c.Request.Context(), apiKey.GroupID, currentRoutingModel, scheduleDecision, service.ErrNoAvailableAccounts, true)
+			}
+			h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", clientMessage, streamStarted)
 			return
 		}
 		account := selection.Account
@@ -1365,7 +1408,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		firstMessage,
 		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
 	)
-	selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+	requiredCapability := service.OpenAIEndpointCapabilityResponsesWebSocket
+	selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForEndpoint(
 		ctx,
 		apiKey.GroupID,
 		previousResponseID,
@@ -1373,14 +1417,23 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		reqModel,
 		nil,
 		service.OpenAIUpstreamTransportResponsesWebsocketV2,
+		requiredCapability,
 	)
 	if err != nil {
 		logOpenAIAccountSelectFailure(c, reqLog, "openai.websocket_account_select_failed", scheduleDecision, err, 0)
+		if closeReason := service.ResolveOpenAIEndpointCapabilityCloseReason(scheduleDecision.FailureReason, requiredCapability); closeReason != "" {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, closeReason)
+			return
+		}
 		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available account")
 		return
 	}
 	if selection == nil || selection.Account == nil {
 		logOpenAIAccountSelectFailure(c, reqLog, "openai.websocket_account_select_failed", scheduleDecision, service.ErrNoAvailableAccounts, 0)
+		if closeReason := service.ResolveOpenAIEndpointCapabilityCloseReason(scheduleDecision.FailureReason, requiredCapability); closeReason != "" {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, closeReason)
+			return
+		}
 		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available account")
 		return
 	}

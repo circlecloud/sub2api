@@ -31,9 +31,41 @@
         </p>
       </div>
 
+      <div
+        v-if="allOpenAIApikeyAccounts"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="mb-3 flex items-center justify-between">
+          <label
+            id="bulk-edit-openai-upstream-protocol-label"
+            class="input-label mb-0"
+            for="bulk-edit-openai-upstream-protocol-enabled"
+          >
+            {{ t('admin.accounts.openai.upstreamProtocol') }}
+          </label>
+          <input
+            v-model="enableOpenAIApikeyUpstreamProtocol"
+            id="bulk-edit-openai-upstream-protocol-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-upstream-protocol-body"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-upstream-protocol-body"
+          :class="!enableOpenAIApikeyUpstreamProtocol && 'pointer-events-none opacity-50'"
+        >
+          <OpenAIUpstreamProtocolSection
+            v-model="openAIApikeyUpstreamProtocol"
+            id-prefix="bulk-edit-openai-upstream-protocol"
+            :show-label="false"
+          />
+        </div>
+      </div>
+
       <!-- OpenAI passthrough -->
       <div
-        v-if="allOpenAIPassthroughCapable"
+        v-if="showOpenAIPassthroughSection"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="mb-3 flex items-center justify-between">
@@ -663,7 +695,7 @@
       </div>
 
       <!-- OpenAI WS mode（仅在所选账号类型一致时显示） -->
-      <div v-if="allOpenAIWSModeEditable" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="showOpenAIWSModeSection" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-openai-ws-mode-label"
@@ -908,19 +940,30 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type { BulkAccountFilters } from '@/api/admin/accounts'
-import type { Proxy as ProxyConfig, AdminGroup, AccountPlatform, AccountType } from '@/types'
+import type {
+  Proxy as ProxyConfig,
+  AdminGroup,
+  AccountPlatform,
+  AccountType,
+  OpenAIApikeyUpstreamProtocol,
+} from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
+import OpenAIUpstreamProtocolSection from '@/components/account/OpenAIUpstreamProtocolSection.vue'
 import Icon from '@/components/icons/Icon.vue'
 import {
   buildModelMappingObject as buildModelMappingPayload,
   getDefaultModelSelection,
   getPresetMappingsByPlatform
 } from '@/composables/useModelWhitelist'
+import {
+  DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL,
+  isOpenAIApikeyChatCompletionsProtocol,
+} from '@/utils/openaiApikeyUpstreamProtocol'
 import {
   OPENAI_WS_MODE_OFF,
   OPENAI_WS_MODE_CTX_POOL,
@@ -989,7 +1032,28 @@ const selectedOpenAIWSModeAccountType = computed<'oauth' | 'apikey' | null>(() =
   return accountType === 'oauth' || accountType === 'apikey' ? accountType : null
 })
 
+const allOpenAIApikeyAccounts = computed(() => {
+  return (
+    props.selectedPlatforms.length === 1 &&
+    props.selectedPlatforms[0] === 'openai' &&
+    props.selectedTypes.length > 0 &&
+    props.selectedTypes.every(t => t === 'apikey')
+  )
+})
+
 const allOpenAIWSModeEditable = computed(() => selectedOpenAIWSModeAccountType.value !== null)
+const isOpenAIApikeyChatCompletionsMode = computed(
+  () =>
+    allOpenAIApikeyAccounts.value &&
+    enableOpenAIApikeyUpstreamProtocol.value &&
+    isOpenAIApikeyChatCompletionsProtocol(openAIApikeyUpstreamProtocol.value)
+)
+const showOpenAIPassthroughSection = computed(
+  () => allOpenAIPassthroughCapable.value && !isOpenAIApikeyChatCompletionsMode.value
+)
+const showOpenAIWSModeSection = computed(
+  () => allOpenAIWSModeEditable.value && !isOpenAIApikeyChatCompletionsMode.value
+)
 
 // 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
 const allAnthropicOAuthOrSetupToken = computed(() => {
@@ -1052,6 +1116,7 @@ const enablePriority = ref(false)
 const enableRateMultiplier = ref(false)
 const enableStatus = ref(false)
 const enableGroups = ref(false)
+const enableOpenAIApikeyUpstreamProtocol = ref(false)
 const enableOpenAIPassthrough = ref(false)
 const enableOpenAIWSMode = ref(false)
 const enableRpmLimit = ref(false)
@@ -1079,6 +1144,7 @@ const priority = ref(1)
 const rateMultiplier = ref(1)
 const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
+const openAIApikeyUpstreamProtocol = ref<OpenAIApikeyUpstreamProtocol>(DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL)
 const openaiPassthroughEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -1110,7 +1176,7 @@ const statusOptions = computed(() => [
 ])
 const isOpenAIModelRestrictionDisabled = computed(
   () =>
-    allOpenAIPassthroughCapable.value &&
+    showOpenAIPassthroughSection.value &&
     enableOpenAIPassthrough.value &&
     openaiPassthroughEnabled.value
 )
@@ -1270,7 +1336,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     }
   }
 
-  if (enableOpenAIPassthrough.value) {
+  if (enableOpenAIPassthrough.value && showOpenAIPassthroughSection.value) {
     const extra = ensureExtra()
     extra.openai_passthrough = openaiPassthroughEnabled.value
     if (!openaiPassthroughEnabled.value) {
@@ -1312,7 +1378,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.credentials = credentials
   }
 
-  if (enableOpenAIWSMode.value && selectedOpenAIWSModeAccountType.value) {
+  if (enableOpenAIWSMode.value && selectedOpenAIWSModeAccountType.value && showOpenAIWSModeSection.value) {
     const extra = ensureExtra()
     if (selectedOpenAIWSModeAccountType.value === 'apikey') {
       extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
@@ -1324,6 +1390,17 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
       extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(
         openaiOAuthResponsesWebSocketV2Mode.value
       )
+    }
+  }
+
+  if (enableOpenAIApikeyUpstreamProtocol.value && allOpenAIApikeyAccounts.value) {
+    const extra = ensureExtra()
+    extra.openai_apikey_upstream_protocol = openAIApikeyUpstreamProtocol.value
+    if (isOpenAIApikeyChatCompletionsMode.value) {
+      extra.openai_apikey_responses_websockets_v2_mode = OPENAI_WS_MODE_OFF
+      extra.openai_apikey_responses_websockets_v2_enabled = false
+      extra.openai_passthrough = false
+      extra.openai_oauth_passthrough = false
     }
   }
 
@@ -1539,6 +1616,7 @@ const handleSubmit = async () => {
 
   const hasAnyFieldEnabled =
     enableBaseUrl.value ||
+    enableOpenAIApikeyUpstreamProtocol.value ||
     enableOpenAIPassthrough.value ||
     enableModelRestriction.value ||
     enableCustomErrorCodes.value ||
@@ -1648,12 +1726,14 @@ watch(
       enableRateMultiplier.value = false
       enableStatus.value = false
       enableGroups.value = false
+      enableOpenAIApikeyUpstreamProtocol.value = false
       enableOpenAIPassthrough.value = false
       enableOpenAIWSMode.value = false
       enableRpmLimit.value = false
 
       // Reset all values
       baseUrl.value = ''
+      openAIApikeyUpstreamProtocol.value = DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL
       openaiPassthroughEnabled.value = false
       modelRestrictionMode.value = 'whitelist'
       allowedModels.value = []

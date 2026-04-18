@@ -562,6 +562,7 @@ export interface UpdateGroupRequest {
 
 export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock'
+export type OpenAIApikeyUpstreamProtocol = 'responses' | 'chat_completions'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
@@ -694,6 +695,7 @@ export interface Account {
   extra?: (CodexUsageSnapshot & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
+    openai_apikey_upstream_protocol?: OpenAIApikeyUpstreamProtocol
   } & Record<string, unknown>)
   proxy_id: number | null
   concurrency: number

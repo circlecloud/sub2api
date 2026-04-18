@@ -178,6 +178,7 @@ function mountModal(account = buildAccount()) {
     global: {
       stubs: {
         BaseDialog: BaseDialogStub,
+        ConfirmDialog: true,
         Select: SelectStub,
         Icon: true,
         ProxySelector: true,
@@ -250,5 +251,39 @@ describe('EditAccountModal', () => {
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('model_mapping')
+  })
+
+  it('uses OpenAI API Key upstream protocol to hide conflicting controls and submit explicit chat_completions payload', async () => {
+    const account = buildAccount({
+      extra: {
+        openai_passthrough: true,
+        openai_apikey_responses_websockets_v2_mode: 'passthrough',
+        openai_apikey_responses_websockets_v2_enabled: true,
+        openai_apikey_upstream_protocol: 'chat_completions'
+      }
+    })
+    getWebSearchEmulationConfigMock.mockResolvedValue({ enabled: false, providers: [] })
+    listTLSFingerprintProfilesMock.mockResolvedValue([])
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get('#edit-openai-upstream-protocol-select').element.value).toBe('chat_completions')
+    expect(wrapper.text()).toContain('admin.accounts.openai.upstreamProtocolChatCompletionsHint')
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.oauthPassthrough')
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.wsMode')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({
+      openai_apikey_upstream_protocol: 'chat_completions',
+      openai_apikey_responses_websockets_v2_mode: 'off',
+      openai_apikey_responses_websockets_v2_enabled: false
+    })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('openai_passthrough')
   })
 })

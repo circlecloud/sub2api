@@ -2179,9 +2179,19 @@
         @update:auto-pause-on-expired="autoPauseOnExpired = $event"
       />
 
+      <div
+        v-if="isOpenAIApikeyUpstreamProtocolConfigVisible"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <OpenAIUpstreamProtocolSection
+          v-model="openAIApikeyUpstreamProtocol"
+          id-prefix="create-openai-upstream-protocol"
+        />
+      </div>
+
       <!-- OpenAI 自动透传开关（API Key） -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="form.platform === 'openai' && accountCategory === 'apikey' && !isOpenAIApikeyChatCompletionsMode"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2211,7 +2221,7 @@
 
       <!-- OpenAI WS Mode 三态（仅 API Key 仍在此处展示） -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="form.platform === 'openai' && accountCategory === 'apikey' && !isOpenAIApikeyChatCompletionsMode"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2663,7 +2673,8 @@ import type {
   AccountPlatform,
   AccountType,
   CheckMixedChannelResponse,
-  CreateAccountRequest
+  CreateAccountRequest,
+  OpenAIApikeyUpstreamProtocol,
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -2674,8 +2685,13 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import AccountRuntimeSettingsFields from '@/components/account/AccountRuntimeSettingsFields.vue'
 import OpenAIOAuthDefaultsFields from '@/components/account/OpenAIOAuthDefaultsFields.vue'
+import OpenAIUpstreamProtocolSection from '@/components/account/OpenAIUpstreamProtocolSection.vue'
 import { applyInterceptWarmup } from '@/components/account/credentialsBuilder'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import {
+  DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL,
+  isOpenAIApikeyChatCompletionsProtocol,
+} from '@/utils/openaiApikeyUpstreamProtocol'
 import {
   OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
@@ -2815,6 +2831,7 @@ const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
+const openAIApikeyUpstreamProtocol = ref<OpenAIApikeyUpstreamProtocol>(DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL)
 const openaiPassthroughEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -2949,8 +2966,19 @@ const openAIWSModeConcurrencyHintKey = computed(() =>
   resolveOpenAIWSModeConcurrencyHintKey(openaiResponsesWebSocketV2Mode.value)
 )
 
+const isOpenAIApikeyUpstreamProtocolConfigVisible = computed(
+  () => form.platform === 'openai' && accountCategory.value === 'apikey'
+)
+const isOpenAIApikeyChatCompletionsMode = computed(
+  () =>
+    isOpenAIApikeyUpstreamProtocolConfigVisible.value &&
+    isOpenAIApikeyChatCompletionsProtocol(openAIApikeyUpstreamProtocol.value)
+)
+const effectiveOpenAIPassthroughEnabled = computed(
+  () => form.platform === 'openai' && openaiPassthroughEnabled.value && !isOpenAIApikeyChatCompletionsMode.value
+)
 const isOpenAIModelRestrictionDisabled = computed(() =>
-  form.platform === 'openai' && openaiPassthroughEnabled.value
+  form.platform === 'openai' && effectiveOpenAIPassthroughEnabled.value
 )
 
 const mixedChannelWarningMessageText = computed(() => {
@@ -3134,6 +3162,7 @@ watch(
       interceptWarmupRequests.value = false
     }
     if (newPlatform !== 'openai') {
+      openAIApikeyUpstreamProtocol.value = DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL
       openaiPassthroughEnabled.value = false
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -3521,6 +3550,7 @@ const resetForm = () => {
   customErrorCodeInput.value = null
   interceptWarmupRequests.value = false
   autoPauseOnExpired.value = true
+  openAIApikeyUpstreamProtocol.value = DEFAULT_OPENAI_APIKEY_UPSTREAM_PROTOCOL
   openaiPassthroughEnabled.value = false
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -3580,14 +3610,19 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   if (accountCategory.value === 'oauth-based') {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
+    delete extra.openai_apikey_upstream_protocol
   } else if (accountCategory.value === 'apikey') {
-    extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
-    extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
+    const apiKeyWSMode = isOpenAIApikeyChatCompletionsMode.value
+      ? OPENAI_WS_MODE_OFF
+      : openaiAPIKeyResponsesWebSocketV2Mode.value
+    extra.openai_apikey_upstream_protocol = openAIApikeyUpstreamProtocol.value
+    extra.openai_apikey_responses_websockets_v2_mode = apiKeyWSMode
+    extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(apiKeyWSMode)
   }
   // 清理兼容旧键，统一改用分类型开关。
   delete extra.responses_websockets_v2_enabled
   delete extra.openai_ws_enabled
-  if (openaiPassthroughEnabled.value) {
+  if (effectiveOpenAIPassthroughEnabled.value) {
     extra.openai_passthrough = true
   } else {
     delete extra.openai_passthrough

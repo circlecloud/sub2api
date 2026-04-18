@@ -2717,6 +2717,12 @@ export default {
       openai: {
         baseUrlHint: '留空使用官方 OpenAI API',
         apiKeyHint: '您的 OpenAI API Key',
+        upstreamProtocol: '上游协议',
+        upstreamProtocolDesc: '仅对 OpenAI API Key 账号生效。',
+        upstreamProtocolResponses: 'Responses',
+        upstreamProtocolChatCompletions: 'Chat Completions',
+        upstreamProtocolChatCompletionsHint:
+          'Chat Completions 模式下，/v1/chat/completions 将直连上游；/v1/responses 仅支持基础无状态兼容。previous_response_id、store=true、include、reasoning.summary、非 function tools、原生 input 项、/v1/messages、/v1/responses/compact 和 Responses WS 不支持。',
         oauthPassthrough: '自动透传（仅替换认证）',
         oauthPassthroughDesc:
           '开启后，该 OpenAI 账号将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。',

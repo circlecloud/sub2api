@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
@@ -22,9 +23,10 @@ import (
 // --- shared test helpers ---
 
 type queuedHTTPUpstream struct {
-	responses []*http.Response
-	requests  []*http.Request
-	tlsFlags  []bool
+	responses     []*http.Response
+	requests      []*http.Request
+	requestBodies [][]byte
+	tlsFlags      []bool
 }
 
 func (u *queuedHTTPUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
@@ -33,6 +35,12 @@ func (u *queuedHTTPUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*htt
 
 func (u *queuedHTTPUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	u.requests = append(u.requests, req)
+	if req != nil && req.Body != nil {
+		body, _ := io.ReadAll(req.Body)
+		u.requestBodies = append(u.requestBodies, body)
+	} else {
+		u.requestBodies = append(u.requestBodies, nil)
+	}
 	u.tlsFlags = append(u.tlsFlags, profile != nil)
 	if len(u.responses) == 0 {
 		return nil, fmt.Errorf("no mocked response")
@@ -128,6 +136,78 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 	require.Equal(t, 42.0, repo.updatedExtra["codex_5h_used_percent"])
 	require.Equal(t, 88.0, repo.updatedExtra["codex_7d_used_percent"])
 	require.Contains(t, recorder.Body.String(), "test_complete")
+}
+
+func TestAccountTestService_OpenAIApiKeyUsesEndpointByUpstreamProtocol(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name            string
+		protocol        string
+		responseBody    string
+		wantURL         string
+		wantInputPath   string
+		wantMessageRole string
+	}{
+		{
+			name:          "responses protocol uses responses endpoint",
+			protocol:      OpenAIUpstreamProtocolResponses,
+			responseBody:  "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Ok\"}\n\ndata: {\"type\":\"response.completed\"}\n\n",
+			wantURL:       "https://example.com/v1/responses",
+			wantInputPath: "input.0.role",
+		},
+		{
+			name:            "chat completions protocol uses chat completions endpoint",
+			protocol:        OpenAIUpstreamProtocolChatCompletions,
+			responseBody:    "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1730000000,\"model\":\"gpt-5.4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
+			wantURL:         "https://example.com/v1/chat/completions",
+			wantMessageRole: "user",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newTestContext()
+			resp := newJSONResponse(http.StatusOK, "")
+			resp.Header.Set("Content-Type", "text/event-stream")
+			resp.Body = io.NopCloser(strings.NewReader(tt.responseBody))
+
+			upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+			svc := &AccountTestService{
+				httpUpstream: upstream,
+				cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+			}
+			account := &Account{
+				ID:          90,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Concurrency: 1,
+				Credentials: map[string]any{
+					"api_key":  "sk-test",
+					"base_url": "https://example.com",
+				},
+				Extra: map[string]any{
+					"openai_apikey_upstream_protocol": tt.protocol,
+				},
+			}
+
+			err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+			require.NoError(t, err)
+			require.Len(t, upstream.requests, 1)
+			require.Equal(t, tt.wantURL, upstream.requests[0].URL.String())
+			require.Contains(t, recorder.Body.String(), "test_complete")
+			require.Len(t, upstream.requestBodies, 1)
+			require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.requestBodies[0], "model").String())
+			if tt.wantInputPath != "" {
+				require.Equal(t, "user", gjson.GetBytes(upstream.requestBodies[0], tt.wantInputPath).String())
+				require.False(t, gjson.GetBytes(upstream.requestBodies[0], "messages").Exists())
+			}
+			if tt.wantMessageRole != "" {
+				require.Equal(t, tt.wantMessageRole, gjson.GetBytes(upstream.requestBodies[0], "messages.0.role").String())
+				require.False(t, gjson.GetBytes(upstream.requestBodies[0], "input").Exists())
+			}
+		})
+	}
 }
 
 func TestAccountTestService_OpenAI429PersistsSnapshotWithoutRateLimit(t *testing.T) {

@@ -2570,6 +2570,12 @@ export default {
       openai: {
         baseUrlHint: 'Leave default for official OpenAI API',
         apiKeyHint: 'Your OpenAI API Key',
+        upstreamProtocol: 'Upstream protocol',
+        upstreamProtocolDesc: 'Only applies to OpenAI API Key accounts.',
+        upstreamProtocolResponses: 'Responses',
+        upstreamProtocolChatCompletions: 'Chat Completions',
+        upstreamProtocolChatCompletionsHint:
+          'Chat Completions mode sends /v1/chat/completions upstream directly. /v1/responses only supports basic stateless compatibility; previous_response_id, store=true, include, reasoning.summary, non-function tools, native-only input items, /v1/messages, /v1/responses/compact, and Responses WS are not supported.',
         oauthPassthrough: 'Auto passthrough (auth only)',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',
