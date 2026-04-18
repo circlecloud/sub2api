@@ -86,6 +86,17 @@ export const accountMatchesGroupFilters = (account: Account, filters: BulkAccoun
   return true
 }
 
+const parseSearchAccountId = (rawSearch: string) => {
+  const trimmed = rawSearch.trim()
+  if (trimmed.length <= 3 || trimmed.slice(0, 3).toLowerCase() !== 'id:') return null
+
+  const candidate = trimmed.slice(3).trim()
+  if (!candidate || !/^[+-]?\d+$/.test(candidate)) return null
+
+  const id = Number(candidate)
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
 export const accountMatchesCurrentFilters = (account: Account, filters: BulkAccountFilters) => {
   if (filters.platform && account.platform !== filters.platform) return false
   if (filters.type && account.type !== filters.type) return false
@@ -112,9 +123,14 @@ export const accountMatchesCurrentFilters = (account: Account, filters: BulkAcco
     }
   }
   if (!accountMatchesLastUsedFilter(account, filters)) return false
-  const search = String(filters.search || '').trim().toLowerCase()
-  if (search && !account.name.toLowerCase().includes(search)) return false
-  return true
+
+  const search = String(filters.search || '').trim()
+  if (!search) return true
+
+  const searchAccountId = parseSearchAccountId(search)
+  if (searchAccountId !== null) return account.id === searchAccountId
+
+  return account.name.toLowerCase().includes(search.toLowerCase())
 }
 
 export const mergeRuntimeFields = (oldAccount: Account, updatedAccount: Account): Account => ({

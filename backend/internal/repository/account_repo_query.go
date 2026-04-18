@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,22 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqljson"
 )
+
+func parseAccountSearchFilter(raw string) (string, *int64) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if len(trimmed) > 3 && strings.EqualFold(trimmed[:3], "id:") {
+		candidate := strings.TrimSpace(trimmed[3:])
+		if candidate != "" {
+			if id, err := strconv.ParseInt(candidate, 10, 64); err == nil && id > 0 {
+				return "", &id
+			}
+		}
+	}
+	return trimmed, nil
+}
 
 func buildAccountOrderOptions(sortBy, sortOrder string) []dbaccount.OrderOption {
 	fieldMap := map[string]string{
@@ -200,7 +217,12 @@ func (r *accountRepository) buildAccountFilterQuery(filters service.AccountListF
 		}
 	}
 	if filters.Search != "" {
-		q = q.Where(dbaccount.NameContainsFold(filters.Search))
+		searchText, searchID := parseAccountSearchFilter(filters.Search)
+		if searchID != nil {
+			q = q.Where(dbaccount.IDEQ(*searchID))
+		} else if searchText != "" {
+			q = q.Where(dbaccount.NameContainsFold(searchText))
+		}
 	}
 	ungroupedOnly, groupIDs, err := service.ParseAccountGroupFilter(filters.GroupIDs)
 	if err != nil {

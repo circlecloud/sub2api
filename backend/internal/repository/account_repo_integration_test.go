@@ -212,6 +212,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 	multipleGroupFilter := ""
 	excludeGroupFilter := ""
 	exactExcludeGroupFilter := ""
+	searchFilter := ""
 	tests := []struct {
 		name                      string
 		setup                     func(client *dbent.Client)
@@ -219,6 +220,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 		accType                   string
 		status                    string
 		search                    string
+		resolveSearch             func(client *dbent.Client) string
 		groupFilter               string
 		groupExcludeFilter        string
 		groupExact                bool
@@ -370,6 +372,21 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 			wantCount: 1,
 			validate: func(accounts []service.Account) {
 				s.Require().Contains(accounts[0].Name, "alpha")
+			},
+		},
+		{
+			name: "filter_by_search_id_prefix",
+			setup: func(client *dbent.Client) {
+				target := mustCreateAccount(s.T(), client, &service.Account{Name: "non-matching-name"})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "id:" + strconv.FormatInt(target.ID, 10) + "-in-name"})
+				searchFilter = "id:" + strconv.FormatInt(target.ID, 10)
+			},
+			resolveSearch: func(_ *dbent.Client) string {
+				return searchFilter
+			},
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("non-matching-name", accounts[0].Name)
 			},
 		},
 		{
@@ -605,12 +622,16 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 				groupExcludeFilter = tt.resolveGroupExcludeFilter(client)
 			}
 			groupExact := tt.groupExact
+			search := tt.search
+			if tt.resolveSearch != nil {
+				search = tt.resolveSearch(client)
+			}
 
 			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10, SortBy: "id", SortOrder: "desc"}, service.AccountListFilters{
 				Platform:        tt.platform,
 				AccountType:     tt.accType,
 				Status:          tt.status,
-				Search:          tt.search,
+				Search:          search,
 				GroupIDs:        groupFilter,
 				GroupExcludeIDs: groupExcludeFilter,
 				GroupExact:      groupExact,

@@ -324,6 +324,7 @@ describe('admin AccountsView filtered bulk params', () => {
     getAllGroups.mockReset()
     exportData.mockReset()
     setSchedulable.mockReset()
+    setPrivacy.mockReset()
     recoverState.mockReset()
     baseLoad.mockReset()
     baseReload.mockReset()
@@ -374,6 +375,7 @@ describe('admin AccountsView filtered bulk params', () => {
       accounts: [],
     })
     setSchedulable.mockImplementation(async (id: number, schedulable: boolean) => buildAccount({ id, schedulable }))
+    setPrivacy.mockImplementation(async (id: number) => buildAccount({ id, extra: { privacy_mode: 'training_off' } }))
     recoverState.mockImplementation(async (id: number) => buildAccount({ id, status: 'active' }))
 
     vi.stubGlobal('confirm', vi.fn(() => true))
@@ -669,6 +671,37 @@ describe('admin AccountsView filtered bulk params', () => {
 
     expect(baseReload).not.toHaveBeenCalled()
     expect(getRenderedRowIds(wrapper)).toEqual([101])
+    expect(wrapper.text()).not.toContain('admin.accounts.listPendingSyncHint')
+  })
+
+  it('keeps locally patched rows under id: search without decrementing pagination total', async () => {
+    resetTableLoaderState({
+      items: [buildAccount({ id: 101, name: 'Account 101' })],
+      params: {
+        group: '',
+        group_exclude: '',
+        group_match: '',
+        search: 'id:101',
+      },
+      pagination: {
+        total: 1,
+      },
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    baseReload.mockClear()
+
+    await (wrapper.vm.$.setupState as any).handleSetPrivacy(buildAccount({ id: 101, name: 'Account 101' }))
+    await flushPromises()
+
+    expect(setPrivacy).toHaveBeenCalledWith(101)
+    expect(baseReload).not.toHaveBeenCalled()
+    expect(getRenderedRowIds(wrapper)).toEqual([101])
+    expect((wrapper.vm.$.setupState as any).accounts[0].extra.privacy_mode).toBe('training_off')
+    expect((wrapper.vm.$.setupState as any).pagination.total).toBe(1)
+    expect((wrapper.vm.$.setupState as any).pagination.pages).toBe(1)
+    expect((wrapper.vm.$.setupState as any).hasPendingListSync).toBe(false)
     expect(wrapper.text()).not.toContain('admin.accounts.listPendingSyncHint')
   })
 
